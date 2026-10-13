@@ -1,0 +1,8 @@
+.idea/
+.DS_Store
+.tools/
+_build/
+.mooncakes/
+.release/
+dist/
+*.mbti
