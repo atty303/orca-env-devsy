@@ -24,7 +24,7 @@ on x86_64/arm64.
 
 Prepare your Devsy provider and context before using the recipe. The adapter
 installs Orca on the Server target; it does not install system packages or
-register providers. No display server or Xvfb is needed.
+register providers.
 
 ## Configure
 
@@ -74,8 +74,7 @@ use saved settings; editing YAML affects new workspaces only.
 For existing Server connections after a host reboot, pass the saved Orca
 lifecycle payload (including `recipeResult`) to `orca-env-devsy reconnect` on
 stdin. It restores the host tunnel to the existing remote Server and emits an
-updated recipe result. It does not provision or restart the container. There is
-no startup service or automatic SSH fallback.
+updated recipe result. The remote workspace and Server must already be running.
 
 Enable the optional Codex credential handoff with `devsy.addons.codexAuth: true`.
 It transfers a currently valid file-backed ChatGPT access token at create/resume,

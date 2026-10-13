@@ -41,17 +41,16 @@ build checkout. Changing worktrees does not trigger reconstruction.
 
 Create/resume emit exactly one recipe JSON on stdout. Suspend/destroy emit no
 result. Lifecycle input is Orca's schema-1 payload with `recipeResult.userData`.
-Creation also saves the effective Devsy context and its filesystem location\nenvironment; later operations keep those selectors while obtaining live provider\ncredentials from the current environment. The saved Devsy workspace UID is checked before later actions, preventing
-accidental targeting of a replacement workspace with the same ID.
+Creation also saves the effective Devsy context and its filesystem location
+environment; later operations keep those selectors while obtaining live provider
+credentials from the current environment. The saved Devsy workspace UID is
+checked before later actions, preventing accidental targeting of a replacement
+workspace with the same ID.
 
-Server installation extracts the latest stable official Linux AppImage into the
-remote user's private adapter directory and invokes its bundled `orca-ide`
-CLI with `serve --recipe-json --project-root`. The adapter invokes the package
-bin entry inside the downloaded distribution to avoid the Linux 1.4.224 wrapper
-resolving its root under the unpacked CLI directory. Orca prepares its bundled
-orcad template and pinned Node runtime; no display or Xvfb is required. Resume reuses that
-installation. Updates are explicit user operations, separate from resume; this
-version does not expose an update command. Compatibility follows Orca's
+New Server environments install the latest stable official Linux Orca and start
+the Server with its public `serve --recipe-json --project-root` CLI. Resume reuses
+the installed version. Updates are explicit user operations, separate from
+resume; this version does not expose an update command. Compatibility follows Orca's
 protocol/capability negotiation.
 
 Pairing data belongs to the connection result; it is never duplicated in
