@@ -115,6 +115,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
     field(state, "buildCommit"),
     Some(Json::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
   )
+  assert_eq(saved_command(state), ["devsy"])
   assert_eq(field(state, "upArgs"), None)
   let args = @fs.read_file(directory + "/args")
   assert_true(args.text().contains("VALUE=two words; $(ignored)\n"))
@@ -185,7 +186,14 @@ async test "server CLI emits pairing separately and reconnect does not install o
       #|    codexAuth: true
       #|environmentRecipes:
       #|  - id: test
-    @fs.write_file(directory + "/orca.yaml", yaml)
+    let invocation = configured_launcher(directory)
+    let document = @yaml.Yaml::load_from_string(yaml)[0].to_json()
+    set_field(
+      field(document, "devsy").unwrap(),
+      "command",
+      Json::array(invocation.map(Json::string)),
+    )
+    @fs.write_file(directory + "/orca.yaml", document.stringify())
     let (status, output, warnings) = invoke("create", env, directory)
     assert_eq(status, 0)
     let result = @json.parse(output)
@@ -195,6 +203,13 @@ async test "server CLI emits pairing separately and reconnect does not install o
     let state = field(result, "userData").unwrap()
     assert_eq(field(state, "pairingCode"), None)
     assert_false(state.stringify().contains("fixture-pairing"))
+    assert_eq(saved_command(state), invocation)
+    assert_true(
+      @fs.read_file(directory + "/ssh-args")
+      .text()
+      .contains("ProxyCommand=" + proxy(state)),
+    )
+    @fs.write_file(directory + "/orca.yaml", "invalid: [")
     @fs.write_file(directory + "/ssh-args", "")
     let (status, output, _) = invoke("reconnect", env, directory, payload~)
     assert_eq(status, 0)
@@ -203,6 +218,7 @@ async test "server CLI emits pairing separately and reconnect does not install o
       field(result, "connection"),
     )
     let commands = @fs.read_file(directory + "/ssh-args")
+    assert_true(commands.text().contains("ProxyCommand=" + proxy(state)))
     assert_false(commands.text().contains("--recipe-json"))
     assert_false(commands.text().contains("releases/latest"))
   })
@@ -377,4 +393,227 @@ async test "remote server launch returns JSON while the detached server remains 
   assert_eq(@json.parse(output), Json::empty_object())
   let pid = @fs.read_file(directory + "/child-pid").text()
   assert_eq(@process.run("kill", ["-0", pid]), 0)
+}
+
+///|
+async fn configured_launcher(directory : String) -> Array[String] {
+  let arguments = [
+    "", "two words", "single' double\"", "$(touch unexpected); * & | >", "%h %% %r",
+    "line\nbreak",
+  ]
+  let script = StringBuilder()
+  script.write_string("#!/bin/sh\nset -eu\n")
+  for argument in arguments {
+    script.write_string("test \"$1\" = " + quote(argument) + "\nshift\n")
+  }
+  script.write_string(
+    "printf 'ok\\n' >> " +
+    quote(directory + "/launcher-calls") +
+    "\nexec " +
+    quote(directory + "/bin/devsy") +
+    " \"$@\"\n",
+  )
+  let path = directory + "/launcher ' % with spaces"
+  @fs.write_file(path, script.to_string(), permission=0o700)
+  [path] + arguments
+}
+
+///|
+async test "configured command survives YAML and environment changes and real OpenSSH proxy expansion" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  let invocation = configured_launcher(directory)
+  env.set("LAUNCHER", invocation[0])
+  let document : Json = {
+    "devsy": {
+      "connection": "ssh",
+      "command": Json::array(
+        ["${LAUNCHER?}"] + invocation[1:].map(Json::string),
+      ),
+    },
+    "environmentRecipes": [{ "id": "test" }],
+  }
+  @fs.write_file(directory + "/orca.yaml", document.stringify())
+  let (status, output, _) = invoke("create", env, directory)
+  assert_eq(status, 0)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  assert_eq(saved_command(state), invocation)
+  @fs.write_file(directory + "/orca.yaml", "devsy: {command: [missing]}\n")
+  env.set("LAUNCHER", "missing")
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  for mode in ["resume", "reconnect", "suspend"] {
+    let (status, output, _) = invoke(mode, env, directory, payload~)
+    assert_eq(status, 0)
+    if mode != "suspend" {
+      assert_eq(field(@json.parse(output), "userData"), Some(state))
+    }
+  }
+  // OpenSSH expands percent tokens before the shell runs. Use its real consumer
+  // from an unrelated cwd with no recipe PATH or interpolation environment.
+  let proxy_env = { "PATH": "/usr/bin:/bin", "FAKE_HOME": directory }
+  let before = @fs.read_file(directory + "/launcher-calls").text()
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    [
+      "-c",
+      "cd / && exec /usr/bin/ssh \"$@\"",
+      "sh",
+      "-F",
+      "/dev/null",
+      "-o",
+      "ConnectTimeout=2",
+      "-o",
+      "ProxyCommand=" + proxy(state),
+      "developer@devsy-workspace",
+    ],
+    extra_env=proxy_env,
+    inherit_env=false,
+  )
+  // The fake Devsy transport deliberately cannot complete an SSH handshake.
+  assert_true(status != 0)
+  assert_eq(
+    @fs.read_file(directory + "/launcher-calls").text(),
+    before + "ok\n",
+    msg=errors.text(),
+  )
+  let (status, _, _) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0)
+  assert_false(@fs.exists(directory + "/created"))
+}
+
+///|
+async test "invalid command is rejected before Devsy and errors retain only setting location" {
+  for invalid in [Json::null(), [], [""], ["devsy", 1], ["${MISSING}"]] {
+    let (directory, env) = fixture()
+    defer @fs.rmdir(directory, recursive=true)
+    let document : Json = {
+      "devsy": { "connection": "ssh" },
+      "environmentRecipes": [{ "id": "test", "devsy": { "command": invalid } }],
+    }
+    @fs.write_file(directory + "/orca.yaml", document.stringify())
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_eq(output, "")
+    assert_true(errors.contains("environmentRecipes.test.devsy.command"))
+    assert_false(@fs.exists(directory + "/args"))
+  }
+}
+
+///|
+async test "legacy saved state defaults to devsy and invalid saved commands fail before execution" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, _) = invoke("create", env, directory)
+  assert_eq(status, 0)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  if state is Json::Object(map) {
+    map.remove("command")
+  }
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  for mode in ["resume", "reconnect", "suspend"] {
+    let (status, _, _) = invoke(mode, env, directory, payload~)
+    assert_eq(status, 0)
+  }
+  let before = @fs.read_file(directory + "/args").text()
+  set_field(state, "command", [])
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_true(status != 0)
+  assert_true(errors.contains("recipeResult.userData.command"))
+  assert_eq(@fs.read_file(directory + "/args").text(), before)
+  if state is Json::Object(map) {
+    map.remove("command")
+  }
+  let (status, _, _) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0)
+}
+
+///|
+async test "command diagnostics distinguish process failure and exit failure without retaining arguments" {
+  // Exercise the binary so recording uses its own HOME and run identity.
+  let (fixture_dir, env) = fixture()
+  defer @fs.rmdir(fixture_dir, recursive=true)
+  for
+    invocation in [
+      ["missing-command-fixture", "private-argument-fixture"],
+      ["/bin/sh", "-c", "exit 7", "private-argument-fixture"],
+    ] {
+    let document : Json = {
+      "devsy": {
+        "connection": "ssh",
+        "command": Json::array(invocation.map(Json::string)),
+      },
+      "environmentRecipes": [{ "id": "test" }],
+    }
+    @fs.write_file(fixture_dir + "/orca.yaml", document.stringify())
+    let (status, output, errors) = invoke("create", env, fixture_dir)
+    assert_true(status != 0)
+    assert_eq(output, "")
+    assert_false(errors.contains("private-argument-fixture"))
+  }
+  let records = @fs.read_file(
+    fixture_dir + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_true(records.contains("process-error"), msg=records)
+  assert_true(records.contains("exit-error"))
+  assert_true(records.contains("\"exitCode\":7"))
+  assert_true(records.contains("resolve-context"))
+  assert_false(records.contains("private-argument-fixture"))
+  assert_false(records.contains("missing-command-fixture"))
+}
+
+///|
+async test "PATH executable beginning with a dash stays unchanged in direct and proxy calls" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  let invocation = configured_launcher(directory)
+  @fs.symlink(directory + "/bin/-launcher", target=invocation[0])
+  invocation[0] = "-launcher"
+  let document : Json = {
+    "devsy": {
+      "connection": "ssh",
+      "command": Json::array(invocation.map(Json::string)),
+    },
+    "environmentRecipes": [{ "id": "test" }],
+  }
+  @fs.write_file(directory + "/orca.yaml", document.stringify())
+  let (status, output, _) = invoke("create", env, directory)
+  assert_eq(status, 0)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  assert_eq(saved_command(state)[0], "-launcher")
+  let before = @fs.read_file(directory + "/launcher-calls").text()
+  let external_env = {
+    "PATH": directory + "/bin:/usr/bin:/bin",
+    "FAKE_HOME": directory,
+  }
+  let (status, _, errors) = @process.collect_output(
+    "/usr/bin/ssh",
+    [
+      "-F",
+      "/dev/null",
+      "-o",
+      "ConnectTimeout=2",
+      "-o",
+      "ProxyCommand=" + proxy(state),
+      "developer@devsy-workspace",
+    ],
+    extra_env=external_env,
+    inherit_env=false,
+    cwd="/",
+  )
+  assert_true(status != 0)
+  assert_eq(
+    @fs.read_file(directory + "/launcher-calls").text(),
+    before + "ok\n",
+    msg=errors.text(),
+  )
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  let (status, _, _) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0)
 }

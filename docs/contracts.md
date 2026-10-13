@@ -8,6 +8,7 @@ All settings below can appear in `devsy`, `devsy.profiles.<name>`, or
 | Field | Meaning |
 | --- | --- |
 | `connection` | Required explicit `orca-server` or `ssh` |
+| `command` | Nonempty string array: executable then fixed arguments; default `["devsy"]` |
 | `home` | Devsy state directory; omitted uses Devsy's default |
 | `context` | Existing Devsy context; omitted uses Devsy's default |
 | `buildRef` | Remote ref supplying the complete build checkout; default `HEAD` |
@@ -15,6 +16,24 @@ All settings below can appear in `devsy`, `devsy.profiles.<name>`, or
 | `addons.codexAuth` | Optional file-backed Codex ChatGPT authentication handoff; default false |
 | `profile` | Select one common profile; recipe selection overrides common selection |
 | `profiles` | Named settings mappings, owned by the common `devsy` section |
+
+`command` is replaced as a whole in common → selected profile → recipe order.
+Each element supports `${VAR}` and `${VAR?}` expansion. The executable must be
+nonempty after expansion; fixed arguments may be empty. NUL is rejected. Elements
+are passed without splitting or shell evaluation, and the executable is not
+resolved to an absolute path.
+
+For example, `command: ["devsy-launcher", "--environment", "development"]` uses a
+user-provided launcher for every Devsy operation and SSH ProxyCommand, including
+Server tunnels. The command must work from Orca's later process environment and
+working directory; a recipe-local PATH or relative working directory is not
+saved. Use an explicit executable path when needed.
+
+The expanded array is saved in `userData.command` at creation. Resume, suspend,
+destroy and reconnect use that array without rereading YAML or expanding it again.
+Saved states from releases without this field use `["devsy"]`. Do not put
+credentials in command arguments or environment references used by this field;
+use Devsy's credential configuration instead.
 
 The adapter owns workspace identity, result format, context, state directory,
 and IDE launch policy. `upArgs` cannot override `--id`, `--home`, `--context`,
@@ -62,9 +81,11 @@ Remote Server termination follows Devsy's workspace/container lifecycle.
 
 Stderr reports fixed operation stages and safe failure categories. Raw Devsy,
 SSH, Orca, authentication responses and arbitrary subprocess exceptions are not
-printed. Bounded local JSONL records contain only stage, status, run ID and timestamp in
+printed. Bounded local JSONL records contain only stage, status, subprocess exit code when available, run ID and timestamp in
 `$HOME/.local/state/orca-env-devsy/events.jsonl`, with private permissions.
-Recording failures do not affect workspace actions. `ORCA_ENV_DEVSY_RECORDING=0`
+Process records distinguish start, success, process API failure and nonzero exit.
+Command values are not recorded; inspect the saved `userData.command` locally
+when checking the effective invocation. Recording failures do not affect workspace actions. `ORCA_ENV_DEVSY_RECORDING=0`
 disables recording. The file is rotated at 256 KiB; remove it to delete records,
 or copy it locally for diagnosis. There is no remote telemetry.
 

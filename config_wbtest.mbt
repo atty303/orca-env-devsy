@@ -45,3 +45,60 @@ async test "SSH command quoting escapes every quote and never evaluates substitu
   assert_eq(status, 0)
   assert_eq(output.text(), text)
 }
+
+///|
+test "command replaces each selected layer and expands individual arguments" {
+  let document = @json.parse(
+    (
+      #|{"devsy":{"connection":"ssh","command":["common"],"profiles":{"chosen":{"command":["${EXEC?}","","two words; $(ignored)","${MISSING}"]},"unused":{"command":false}}},"environmentRecipes":[{"id":"test","devsy":{}}]}
+    ),
+  )
+  guard field(document, "environmentRecipes") is Some(Json::Array(recipes)) else {
+    fail("missing recipes")
+  }
+  let recipe = recipes[0]
+  let specific = field(recipe, "devsy").unwrap()
+  let lookup = fn(name) { if name == "EXEC" { Some("launcher") } else { None } }
+  assert_eq(resolve_settings(document, "test", lookup).command, ["common"])
+  set_field(specific, "profile", Json::string("chosen"))
+  assert_eq(resolve_settings(document, "test", lookup).command, [
+    "launcher", "", "two words; $(ignored)", "",
+  ])
+  set_field(specific, "command", ["recipe", "fixed"])
+  assert_eq(resolve_settings(document, "test", lookup).command, [
+    "recipe", "fixed",
+  ])
+}
+
+///|
+test "invalid commands report their layer and element without exposing values" {
+  for
+    invalid in [
+      Json::null(),
+      Json::string("devsy"),
+      [],
+      [""],
+      ["devsy", 1],
+      ["${MISSING}"],
+      ["devsy", "a\u0000b"],
+      ["devsy", "${REQUIRED?}"],
+    ] {
+    let document : Json = {
+      "devsy": {
+        "connection": "ssh",
+        "profiles": { "selected": { "command": invalid } },
+      },
+      "environmentRecipes": [
+        { "id": "test", "devsy": { "profile": "selected" } },
+      ],
+    }
+    try {
+      ignore(resolve_settings(document, "test", _ => None))
+      fail("invalid command accepted")
+    } catch {
+      InvalidConfig(message) =>
+        assert_true(message.contains("devsy.profiles.selected.command"))
+      _ => fail("unexpected error")
+    }
+  }
+}

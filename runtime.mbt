@@ -33,11 +33,24 @@ async fn command(
   stage : String,
   environment? : Map[String, String],
 ) -> String {
-  let (status, output, _) = @process.collect_output(
-    program,
-    args,
-    extra_env?=environment,
-    inherit_env=environment is None,
+  save_diagnostic(stage, "started")
+  let (status, output, _) = {
+    errdefer save_diagnostic(stage, "process-error")
+    @process.collect_output(
+      program,
+      args,
+      extra_env?=environment,
+      inherit_env=environment is None,
+    )
+  }
+  save_diagnostic(
+    stage,
+    if status == 0 {
+      "success"
+    } else {
+      "exit-error"
+    },
+    exit_code=status,
   )
   guard status == 0 else {
     raise AdapterError(
@@ -68,7 +81,18 @@ async fn devsy(state : Json, args : Array[String], stage : String) -> String {
       _ => environment.remove(name)
     }
   }
-  command("devsy", devsy_args(state) + args, stage, environment~)
+  let invocation = saved_command(state)
+  command(
+    invocation[0],
+    invocation[1:].to_owned() + devsy_args(state) + args,
+    stage,
+    environment~,
+  )
+}
+
+///|
+fn saved_command(state : Json) -> Array[String] raise ConfigError {
+  command_field(state, "recipeResult.userData").unwrap_or(["devsy"])
 }
 
 ///|
@@ -84,8 +108,11 @@ fn proxy(state : Json) -> String raise {
       args.push(name + "=" + value)
     }
   }
+  // A constant shell trampoline preserves executable names that env would
+  // otherwise interpret as options or assignments. Configuration stays argv.
   (args +
-  ["devsy"] +
+  ["/bin/sh", "-c", "exec -- \"$@\"", "sh"] +
+  saved_command(state) +
   devsy_args(state) +
   [
     "workspace",
@@ -155,7 +182,11 @@ async fn read_document(path : String) -> Json {
 }
 
 ///|
-async fn save_diagnostic(stage : String, status : String) -> Unit {
+async fn save_diagnostic(
+  stage : String,
+  status : String,
+  exit_code? : Int32,
+) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
   }
@@ -178,11 +209,15 @@ async fn save_diagnostic(stage : String, status : String) -> Unit {
       "time": @env.now().to_string(),
       "runId": recording_run_id,
     }
+    if exit_code is Some(code) {
+      set_field(event, "exitCode", Json::number(code.to_double()))
+    }
     @fs.write_file(
       path,
       event.stringify() + "\n",
       permission=0o600,
       append=true,
+      create_mode=@fs.OpenOrCreate,
     )
   } catch {
     _ => ()
@@ -241,6 +276,7 @@ async fn create_state() -> Json {
       },
     )
   }
+  set_field(state, "command", Json::array(config.command.map(Json::string)))
   set_field(state, "devsyEnv", locations)
   if config.home is Some(value) {
     set_field(state, "home", Json::string(value))
@@ -586,6 +622,7 @@ pub async fn execute(mode : String) -> Unit {
 
 ///|
 fn validate_state(state : Json) -> Unit raise {
+  ignore(saved_command(state))
   let id = required(state, "workspaceId")
   let user = required(state, "user")
   guard id.length() <= 100 &&

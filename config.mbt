@@ -12,6 +12,7 @@ pub enum Connection {
 ///|
 pub struct Settings {
   connection : Connection
+  command : Array[String]
   home : String?
   context : String?
   build_ref : String?
@@ -60,6 +61,39 @@ fn args_field(
         }
       })
     _ => raise InvalidConfig("\{location}.upArgs must be an array")
+  }
+}
+
+///|
+fn command_field(
+  value : Json,
+  location : String,
+) -> Array[String]? raise ConfigError {
+  match field(value, "command") {
+    None => None
+    Some(Json::Array(items)) => {
+      guard items.length() > 0 else {
+        raise InvalidConfig("\{location}.command must be a nonempty array")
+      }
+      let command = items.mapi((index, item) => {
+        match item {
+          Json::String(text) => {
+            guard !text.contains("\u0000") && (index != 0 || text != "") else {
+              raise InvalidConfig(
+                "\{location}.command[\{index}] must not contain NUL or have an empty executable",
+              )
+            }
+            text
+          }
+          _ =>
+            raise InvalidConfig(
+              "\{location}.command[\{index}] must be a string",
+            )
+        }
+      })
+      Some(command)
+    }
+    _ => raise InvalidConfig("\{location}.command must be an array of strings")
   }
 }
 
@@ -135,9 +169,11 @@ pub fn resolve_settings(
     None => string_field(common, "profile", "devsy")
   }
   let profiles = object_field(common, "profiles", "devsy")
+  let mut profile_location = "devsy.profiles"
   let profile = match profile_name {
     Some(raw_name) => {
       let name = interpolate(raw_name, lookup, "devsy.profile")
+      profile_location = "devsy.profiles." + name
       match field(profiles, name) {
         Some(Json::Object(_) as value) => value
         _ => raise InvalidConfig("Unknown devsy profile")
@@ -146,6 +182,7 @@ pub fn resolve_settings(
     None => Json::empty_object()
   }
   let layers = [common, profile, specific]
+  let mut command = ["devsy"]
   let mut home = None
   let mut context = None
   let mut build_ref = None
@@ -153,7 +190,19 @@ pub fn resolve_settings(
   let mut codex_auth = false
   let args = []
   for index, layer in layers {
-    let location = ["devsy", "devsy.profiles", "recipe.devsy"][index]
+    let location = [
+        "devsy",
+        profile_location,
+        "environmentRecipes." + recipe_id + ".devsy",
+      ][index]
+    if command_field(layer, location) is Some(raw) {
+      let expanded = raw.mapi((argument_index, argument) => {
+        interpolate(argument, lookup, "\{location}.command[\{argument_index}]")
+      })
+      let value = Json::empty_object()
+      set_field(value, "command", Json::array(expanded.map(Json::string)))
+      command = command_field(value, location).unwrap()
+    }
     for
       pair in [
         ("home", string_field(layer, "home", location)),
@@ -193,7 +242,7 @@ pub fn resolve_settings(
         "devsy.connection must explicitly select orca-server or ssh",
       )
   }
-  { connection, home, context, build_ref, up_args: args, codex_auth, }
+  { connection, command, home, context, build_ref, up_args: args, codex_auth, }
 }
 
 ///|
