@@ -1,0 +1,8 @@
+import {
+  "moonbitlang/async",
+  "atty303/orca-env-devsy" @adapter,
+  "moonbitlang/core/env",
+  "moonbitlang/async/stdio",
+}
+
+pkgtype(kind: "executable")

@@ -1,0 +1,64 @@
+min_version = "2026.10.8"
+include = [
+  "git::https://github.com/atty303/repository-template.git//mise/moonbit.toml?ref=a8cba9d0a44247268265e1068ed0b761c7dc61bf",
+]
+
+[vars]
+moonbit_version = "0.10.15+943464bfa"
+moonbit_sha256_macos_arm64 = "563109ff02c6dc77fdc74acd0be423964ef678dfea4d9b948c19d245dc8b0e83"
+moonbit_sha256_linux_x64 = "24b93a5409d2a4fb8e3d1b84b473f27b63476cef4418094764df96cb26b03c09"
+moonbit_sha256_linux_arm64 = "27551288b9552db1426d186403645bb40308a3f5e525054d0a2860283ae118bf"
+moonbit_sha256_windows_x64 = "6e3ef6cb96aa5086d122183972687f79fc912f80652000907d96ee6ad967e3bf"
+
+[tools]
+zig = "0.17.0"
+actionlint = "1.7.12"
+hk = "1.55.0"
+taplo = "0.10.0"
+
+[env]
+HK_MISE = 1
+
+[hooks]
+postinstall = "hk install --mise"
+
+[tool_config]
+locked = true
+
+[settings]
+experimental = true
+
+[deps.moonbit]
+auto = true
+sources = ["moon.mod", "mise.toml"]
+outputs = [".mooncakes"]
+run = "moon update && moon check --target native --dry-run --quiet"
+
+[tasks.check]
+description = "Check repository formatting, workflows and native types"
+run = "hk check --all"
+
+[tasks.fix]
+description = "Format repository files"
+run = "hk fix --all"
+
+[tasks.test]
+description = "Run unit and local boundary tests"
+depends = ["check"]
+run = [
+  "moon build --target native --release --deny-warn",
+  "moon test --target native --deny-warn",
+]
+
+[tasks.build]
+description = "Build the standalone native executable"
+run = "moon build --target native --release --deny-warn"
+
+[tasks."cross:prepare"]
+description = "Prepare source runtime and checksum-pinned Darwin header"
+run = "./scripts/prepare-cross.sh"
+
+[tasks."release:build"]
+description = "Cross build every standalone artifact for one SemVer release"
+depends = ["cross:prepare"]
+run = "./scripts/release-build.sh"
