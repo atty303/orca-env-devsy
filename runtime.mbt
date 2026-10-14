@@ -517,17 +517,25 @@ async fn create_state() -> Json {
     guard valid_commit(head) && !branch.has_prefix("-") else {
       raise AdapterError("Invalid provisioned-root checkout identity")
     }
-    let script = "cd " +
-      quote(root) +
-      " && git fetch origin " +
-      quote(head) +
-      " && git checkout -B " +
-      quote(branch) +
-      " " +
-      quote(head)
-    ignore(remote(state, script, "checkout-workspace"))
+    ignore(
+      remote(state, checkout_script(root, head, branch), "checkout-workspace"),
+    )
   }
   state
+}
+
+///|
+fn checkout_script(root : String, head : String, branch : String) -> String {
+  "cd " +
+  quote(root) +
+  " && (git cat-file -e " +
+  quote(head + "^{commit}") +
+  " 2>/dev/null || git fetch origin " +
+  quote(head) +
+  ") && git checkout -B " +
+  quote(branch) +
+  " " +
+  quote(head)
 }
 
 ///|

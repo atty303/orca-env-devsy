@@ -279,6 +279,79 @@ async test "provisioned-root uses schema 2 and checks out the supplied task comm
 }
 
 ///|
+async test "task checkout works offline for present commits and fetches only missing commits" {
+  let directory = @fs.tmpdir(prefix="orca-env-devsy-checkout")
+  defer @fs.rmdir(directory, recursive=true)
+  let env = {
+    "PATH": "/usr/bin:/bin",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_TERMINAL_PROMPT": "0",
+  }
+  let setup =
+    #|set -eu
+    #|git init -q "$1/source"
+    #|git -C "$1/source" -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm first
+    #|git -C "$1/source" rev-parse HEAD
+    #|git clone -q "$1/source" "$1/checkout"
+    #|git -C "$1/source" -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm second
+    #|git -C "$1/source" rev-parse HEAD
+    #|git -C "$1/checkout" remote set-url origin "$1/unavailable"
+  let (status, output, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", setup, "sh", directory],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let hashes = output
+    .text()
+    .trim()
+    .split("\n")
+    .to_array()
+    .map(value => value.to_owned())
+  let root = directory + "/checkout"
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", checkout_script(root, hashes[0], "task-existing")],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let fetch = "git -C " +
+    quote(root) +
+    " remote set-url origin " +
+    quote(directory + "/source") +
+    " && " +
+    checkout_script(root, hashes[1], "task-fetched")
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", fetch],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let missing = "git -C " +
+    quote(root) +
+    " remote set-url origin " +
+    quote(directory + "/unavailable") +
+    " && " +
+    checkout_script(
+      root, "cccccccccccccccccccccccccccccccccccccccc", "task-missing",
+    )
+  let (status, _, _) = @process.collect_output(
+    "/bin/sh",
+    ["-c", missing],
+    extra_env=env,
+  )
+  assert_true(status != 0)
+  let (status, output, _) = @process.collect_output(
+    "/usr/bin/git",
+    ["-C", root, "rev-parse", "HEAD"],
+    extra_env=env,
+  )
+  assert_eq(status, 0)
+  assert_eq(output.text().trim(), hashes[1])
+}
+
+///|
 async test "Codex addon delivers synthetic access data only and excludes secrets from output and diagnostics" {
   let (directory, env) = fixture()
   defer @fs.rmdir(directory, recursive=true)

@@ -60,9 +60,11 @@ and commit refs use full clones; an explicit native clone option in `upArgs`
 overrides the automatic choice. Branch names are validated by Git before use.
 
 Build source and task source are separate: Devsy builds from `buildRef` first.
-For provisioned-root the adapter then checks out Orca's task commit; it does not
-rebuild the devcontainer. Dockerfile, context and lifecycle hooks belong to the
-build checkout. Changing worktrees does not trigger reconstruction.
+For provisioned-root the adapter then checks out Orca's task commit, reusing it
+when already present. Missing commits are fetched using the workspace's Git
+authentication. This does not rebuild the devcontainer. Dockerfile, context and
+lifecycle hooks belong to the build checkout. Changing worktrees does not trigger
+reconstruction.
 
 Create/resume emit exactly one recipe JSON on stdout. Suspend/destroy emit no
 result. Lifecycle input is Orca's schema-1 payload with `recipeResult.userData`.
