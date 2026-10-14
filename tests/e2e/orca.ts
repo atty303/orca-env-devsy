@@ -2,6 +2,7 @@ import { _electron, type ElectronApplication } from "playwright";
 import { mkdir, chmod, rm, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { budgets, measure } from "./timing.ts";
+import { DiagnosticError, failureCategory } from "./diagnostics.ts";
 import { run, type Environment } from "../../scripts/process.ts";
 
 export type Runtime = {
@@ -69,6 +70,8 @@ export class Orca {
       const result = await measure(`ipc-${section}.${method}`, budget, () => Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`IPC ${section}.${method} exceeded deadline`)), budget); })]));
       console.log(`IPC ${section}.${method}: completed`);
       return result;
+    } catch (error) {
+      throw new DiagnosticError(failureCategory(error));
     } finally { clearTimeout(timer!); }
   }
   async close() {

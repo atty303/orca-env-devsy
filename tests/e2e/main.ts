@@ -7,6 +7,7 @@ import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
 import { workspace, firstUse } from "./scenarios.ts";
 import { budgets, timings, measure } from "./timing.ts";
+import { failureCategory, adapterDiagnostics } from "./diagnostics.ts";
 
 const index = process.argv.indexOf("--provider");
 const provider = index < 0 ? undefined : process.argv[index + 1];
@@ -30,6 +31,7 @@ const cleanupErrors: string[] = [];
 const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
 const pending = new Set<string>();
+const provisionFailures: { workspace: number; category: string }[] = [];
 let interrupted = false;
 const interrupt = () => {
   interrupted = true;
@@ -74,9 +76,20 @@ try {
   const provisioned = await Promise.allSettled(definitions.map(async (definition, index) => {
     const provisionId = "provision-" + index;
     pending.add(provisionId);
-    const result = await measure("provision", budgets.provision, () => orca!.call<Provision>("ephemeralVm", "provision", { provisionId, repoId: added.repo!.id, recipeId: definition.id, workspaceName: "e2e-" + index, workspaceId: "e2e-" + index, branch: "task", ref: source!.task }), index);
+    const result = await measure("provision", budgets.provision, async () => {
+      const result = await orca!.call<Provision>("ephemeralVm", "provision", { provisionId, repoId: added.repo!.id, recipeId: definition.id, workspaceName: "e2e-" + index, workspaceId: "e2e-" + index, branch: "task", ref: source!.task }).catch(error => {
+        const category = failureCategory(error);
+        provisionFailures.push({ workspace: index, category });
+        throw new Error(`Orca recipe IPC failed (${definition.id}, ${category})`);
+      });
+      if (!result.ok) {
+        const category = failureCategory(result.error);
+        provisionFailures.push({ workspace: index, category });
+        throw new Error(`Orca recipe provisioning failed (${definition.id}, ${category})`);
+      }
+      return result;
+    }, index);
     pending.delete(provisionId);
-    assert(result.ok, `Orca recipe provisioning failed (${definition.id})`);
     runtimes.push(result.runtime);
     assert.equal(result.runtime.workspaceId, "e2e-" + index);
     assert.equal(result.runtime.status, "running");
@@ -181,7 +194,7 @@ try {
   shared?.close();
   for (const child of children) stop(child, "SIGKILL");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, provisionFailures, adapterDiagnostics: await adapterDiagnostics(env.XDG_STATE_HOME!), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   process.removeListener("SIGINT", interrupt);
