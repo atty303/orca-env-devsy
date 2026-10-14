@@ -7,6 +7,7 @@ import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
 import { workspace, firstUse } from "./scenarios.ts";
 import { budgets, timings, measure } from "./timing.ts";
+import { installMicrosandboxDiagnostics } from "./microsandbox.ts";
 import { failureCategory, adapterDiagnostics } from "./diagnostics.ts";
 
 const index = process.argv.indexOf("--provider");
@@ -59,6 +60,7 @@ try {
   versions[provider] = await version(provider === "docker" ? ["docker", "version", "--format", "{{.Server.Version}}"] : [provider === "apple" ? "container" : provider === "microsandbox" ? "msb" : "podman", "--version"]);
   if (provider === "podman") assert.equal((await run(["podman", "info", "--format", "{{.Host.Security.Rootless}}"], { env, timeout: budgets.operation })).trim(), "true");
   shared = await services(root, env);
+  if (provider === "microsandbox") await installMicrosandboxDiagnostics(root, env);
   await writeFile(root + "/bin/ssh", '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
   await d(["context", "set", "-o", "TELEMETRY=false", "-o", "SSH_INJECT_DOCKER_CREDENTIALS=false"]);
   const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + Bun.which("podman")!, "-o", `PODMAN_HOST=unix:///run/user/${process.getuid!()}/podman/podman.sock`] : [];
@@ -195,7 +197,7 @@ try {
   shared?.close();
   for (const child of children) stop(child, "SIGKILL");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, provisionFailures, adapterDiagnostics: diagnostics, gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, provisionFailures, adapterDiagnostics: diagnostics, microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   process.removeListener("SIGINT", interrupt);

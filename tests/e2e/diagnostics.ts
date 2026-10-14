@@ -46,5 +46,5 @@ export async function adapterDiagnostics(state: string) {
       events.push({ stage: event.stage, status: event.status, ...(phases.has(event.phase) ? { phase: event.phase } : {}), ...(errors.has(event.errorType) ? { errorType: event.errorType } : {}), ...(Number.isInteger(event.exitCode) && Math.abs(event.exitCode) <= 255 ? { exitCode: event.exitCode } : {}) });
     } catch { omitted++; }
   }
-  return { available: true, omitted, truncated: events.length > 100, events: events.slice(-100) };
+  return { available: true, omitted, truncated: events.length > 100, events: [...events.slice(0, -100).filter(event => ["failed", "exit-error", "process-error", "warning"].includes(event.status)), ...events.slice(-100)] };
 }
