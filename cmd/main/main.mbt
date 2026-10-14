@@ -2,6 +2,7 @@
 async fn main {
   let args = @env.args()
   match args {
+    [_, "--tunnel-worker", directory] => @adapter.tunnel_worker(directory)
     [_, "--version"] =>
       @stdio.stdout.write("orca-env-devsy " + @adapter.version + "\n")
     [_, "create" | "resume" | "suspend" | "destroy" | "reconnect" as mode] =>

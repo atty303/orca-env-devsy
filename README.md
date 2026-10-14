@@ -17,6 +17,7 @@ mise use github:atty303/orca-env-devsy
 | Host | Devsy (`devsy`), Git (`git`), OpenSSH (`ssh`), a POSIX shell and `env` supporting `-u` |
 | Devcontainer, both connections | Git and a POSIX-compatible SSH command shell |
 | Devcontainer, Server connection | Linux x86_64/arm64; `curl`, `uname`, `mkdir`, `mktemp`, `chmod`, `mv`, `rm`; [official Orca Linux runtime libraries](https://github.com/stablyai/orca/blob/v1.4.224/config/docker/cli-launch-contract/Dockerfile) |
+| Host, Codex addon refresh | Codex (`codex`) with managed ChatGPT file authentication |
 | Devcontainer, Codex addon enabled | `grep`, `cat`, `sha256sum`, `mkdir`, `mktemp`, `mv`, `rm` |
 
 Host binaries support macOS 13+ on Apple Silicon and Linux with glibc 2.31+
@@ -77,10 +78,12 @@ stdin. It restores the host tunnel to the existing remote Server and emits an
 updated recipe result. The remote workspace and Server must already be running.
 
 Enable the optional Codex credential handoff with `devsy.addons.codexAuth: true`.
-It transfers a currently valid file-backed ChatGPT access token at create/resume,
-without the refresh token. Missing, expired or incompatible authentication warns
-and continues. Remote manually managed authentication is preserved. This addon
-does not refresh host tokens or establish an ongoing refresh service.
+At create/resume it refreshes file-backed ChatGPT authentication through the host
+Codex CLI when less than seven days remain, then transfers only access/account
+data. Refresh failure warns and allows a still-valid token to be forwarded;
+expired or unavailable authentication warns and continues without delivery.
+Remote manually managed authentication is preserved. There is no ongoing
+background authentication synchronization.
 
 See [configuration and contracts](docs/contracts.md) for the supported fields,
 connection constraints and local diagnostic controls.

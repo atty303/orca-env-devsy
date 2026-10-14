@@ -53,6 +53,12 @@ configuration. No host HEAD is consulted to infer Orca's task starting commit.
 | `orca-worktree` | Schema 1; Orca creates a linked worktree | Schema 1; Orca creates a linked worktree |
 | `provisioned-root` | Schema 2; checkout supplied `ORCA_REPO_REF_HEAD` and `ORCA_REPO_BRANCH` | Rejected |
 
+Branch build refs use shallow clones. If Devsy reports that the pinned commit is
+missing during cloning, the adapter retries with a full clone while retaining
+the same commit and workspace UID. Other failures are not retried. `HEAD`, tags
+and commit refs use full clones; an explicit native clone option in `upArgs`
+overrides the automatic choice. Branch names are validated by Git before use.
+
 Build source and task source are separate: Devsy builds from `buildRef` first.
 For provisioned-root the adapter then checks out Orca's task commit; it does not
 rebuild the devcontainer. Dockerfile, context and lifecycle hooks belong to the
@@ -66,16 +72,24 @@ credentials from the current environment. The saved Devsy workspace UID is
 checked before later actions, preventing accidental targeting of a replacement
 workspace with the same ID.
 
-New Server environments install the latest stable official Linux Orca and start
-the Server with its public `serve --recipe-json --project-root` CLI. Resume reuses
-the installed version. Updates are explicit user operations, separate from
+Server environments validate and reuse an existing Orca installation. When none
+exists, they install the latest stable official Linux Orca. The public
+`serve --recipe-json --project-root` CLI starts the Server. Resume reuses the
+installed version, reusing a running Server and starting it when absent. Updates
+are explicit user operations, separate from
 resume; this version does not expose an update command. Compatibility follows Orca's
 protocol/capability negotiation.
 
 Pairing data belongs to the connection result; it is never duplicated in
 `userData`. Local SSH control sockets belong to the adapter's tunnels and are
 closed at suspend/destroy. Reconnect reuses the saved connection offer and port.
-Remote Server termination follows Devsy's workspace/container lifecycle.
+A detached adapter worker owns the SSH master and reconnects after transient
+transport failures using the same local port with bounded exponential backoff.
+It does not start stopped workspaces or register a boot service. Suspend/destroy
+stop the workspace first; on failure the worker remains enabled. Successful
+stop/delete disables and reaps the worker. Destroy also cleans up when the
+workspace is already deleted, and may be repeated. Remote Server termination
+follows Devsy's workspace/container lifecycle.
 
 ## Diagnostics and authentication
 
@@ -87,12 +101,17 @@ Process records distinguish start, success, process API failure and nonzero exit
 Command values are not recorded; inspect the saved `userData.command` locally
 when checking the effective invocation. Recording failures do not affect workspace actions. `ORCA_ENV_DEVSY_RECORDING=0`
 disables recording. The file is rotated at 256 KiB; remove it to delete records,
-or copy it locally for diagnosis. There is no remote telemetry.
+or copy it locally for diagnosis. Tunnel control state is stored privately in
+the directory recorded as `userData.tunnelDirectory`; successful shutdown removes
+its owned files. There is no remote telemetry.
 
 The Codex addon reads `$CODEX_HOME/auth.json` (default `$HOME/.codex/auth.json`),
-requires an unexpired ChatGPT JWT, and sends only access/account data through
-SSH stdin to the remote Codex home. It does not support API keys, keyring-only
-credentials, or token refresh. The remote file uses external-token mode, without
+refreshes managed ChatGPT credentials when fewer than seven days remain using
+`codex app-server` and `account/read` with `refreshToken: true`. A per-home advisory
+lock serializes adapter refreshes; renewed access data must be persisted before
+forwarding. Refresh failure warns, rereads the file and forwards only if it is
+still valid. The addon sends only access/account data through SSH stdin to the
+remote Codex home. It does not support API keys or keyring-only credentials. The remote file uses external-token mode, without
 refresh credentials. A private digest marker protects authentication subsequently
 modified by the user. Delivery is bounded to 45 seconds and cannot fail core
 create/resume. Tokens and pairing data are excluded from saved adapter settings,

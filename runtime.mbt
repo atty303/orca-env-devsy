@@ -27,12 +27,12 @@ fn quote(text : String) -> String {
 }
 
 ///|
-async fn command(
+async fn command_result(
   program : String,
   args : Array[String],
   stage : String,
   environment? : Map[String, String],
-) -> String {
+) -> (Int32, String) {
   save_diagnostic(stage, "started")
   let (status, output, _) = {
     errdefer save_diagnostic(stage, "process-error")
@@ -52,12 +52,23 @@ async fn command(
     },
     exit_code=status,
   )
+  (status, output.text())
+}
+
+///|
+async fn command(
+  program : String,
+  args : Array[String],
+  stage : String,
+  environment? : Map[String, String],
+) -> String {
+  let (status, output) = command_result(program, args, stage, environment?)
   guard status == 0 else {
     raise AdapterError(
       "\{stage} failed (exit \{status}); command output withheld",
     )
   }
-  output.text()
+  output
 }
 
 ///|
@@ -73,7 +84,11 @@ fn devsy_args(state : Json) -> Array[String] {
 }
 
 ///|
-async fn devsy(state : Json, args : Array[String], stage : String) -> String {
+async fn devsy_result(
+  state : Json,
+  args : Array[String],
+  stage : String,
+) -> (Int32, String) {
   let environment = @env.get_env_vars()
   for name in location_variables {
     match field(field(state, "devsyEnv").unwrap(), name) {
@@ -82,12 +97,23 @@ async fn devsy(state : Json, args : Array[String], stage : String) -> String {
     }
   }
   let invocation = saved_command(state)
-  command(
+  command_result(
     invocation[0],
     invocation[1:].to_owned() + devsy_args(state) + args,
     stage,
     environment~,
   )
+}
+
+///|
+async fn devsy(state : Json, args : Array[String], stage : String) -> String {
+  let (status, output) = devsy_result(state, args, stage)
+  guard status == 0 else {
+    raise AdapterError(
+      "\{stage} failed (exit \{status}); command output withheld",
+    )
+  }
+  output
 }
 
 ///|
@@ -257,6 +283,35 @@ async fn create_state() -> Json {
   guard !(mode == "provisioned-root" && config.connection == Server) else {
     raise AdapterError("provisioned-root requires SSH")
   }
+  guard valid_workspace_id(environment("ORCA_VM_INSTANCE_ID")) else {
+    raise AdapterError("Invalid workspace identity")
+  }
+  if config.home is Some(home) {
+    guard home.has_prefix("/") else {
+      raise AdapterError("devsy.home must be absolute")
+    }
+  }
+  if config.context is Some(context) {
+    guard valid_context(context) else {
+      raise AdapterError("Invalid devsy.context")
+    }
+  }
+  if mode == "provisioned-root" {
+    guard valid_commit(environment("ORCA_REPO_REF_HEAD")) else {
+      raise AdapterError("Invalid provisioned-root commit")
+    }
+    let branch = environment("ORCA_REPO_BRANCH")
+    guard !branch.has_prefix("-") else {
+      raise AdapterError("Invalid provisioned-root branch")
+    }
+    ignore(
+      command(
+        "git",
+        ["check-ref-format", "refs/heads/" + branch],
+        "validate-branch",
+      ),
+    )
+  }
   let state : Json = {
     "adapterVersion": 1,
     "workspaceId": environment("ORCA_VM_INSTANCE_ID"),
@@ -334,6 +389,7 @@ async fn create_state() -> Json {
     }
   }
   let build_ref = config.build_ref.unwrap_or("HEAD")
+  let mut resolved_branch = None
   let hash = if valid_commit(build_ref) {
     build_ref
   } else {
@@ -352,8 +408,11 @@ async fn create_state() -> Json {
       lines
     }
     guard selected.length() == 1 &&
-      selected[0].split_once("\t") is Some((commit, _)) else {
+      selected[0].split_once("\t") is Some((commit, resolved_ref)) else {
       raise AdapterError("buildRef must resolve to one remote ref or commit")
+    }
+    if resolved_ref.has_prefix("refs/heads/") {
+      resolved_branch = shallow_branch(resolved_ref.to_owned())
     }
     commit.to_owned()
   }
@@ -383,23 +442,60 @@ async fn create_state() -> Json {
   @fs.rmdir(reservation)
   set_field(state, "workspaceUid", Json::string(uid))
   errdefer discard_created_workspace(state)
-  let args = [
+  let create_args = fn(source : String, strategy : String) raise {
+    [
       "--result-format",
       "json",
       "--uid",
       required(state, "workspaceUid"),
       "workspace",
       "up",
-      repository + "@sha256:" + hash,
+      source,
       "--id",
       required(state, "workspaceId"),
       "--ide-launch",
       "skip",
-      // Devsy represents its full clone strategy with an empty option value.
-      "--git-clone-strategy=",
+      "--git-clone-strategy=" + strategy,
     ] +
     config.up_args
-  let output = devsy(state, args, "workspace-create")
+  }
+  let args = create_args(repository + "@sha256:" + hash, "")
+  let shallow = if config.up_args
+    .iter()
+    .any(arg => {
+      arg == "--git-clone-strategy" || arg.has_prefix("--git-clone-strategy=")
+    }) {
+    None
+  } else {
+    resolved_branch
+  }
+  let output = if shallow is Some(branch) {
+    ignore(
+      command(
+        "git",
+        ["check-ref-format", "refs/heads/" + branch],
+        "validate-build-branch",
+      ),
+    )
+    let shallow_args = create_args(
+      repository + "@sha256:" + hash + "@" + branch,
+      "shallow",
+    )
+    let (status, output) = devsy_result(state, shallow_args, "workspace-create")
+    if status != 0 && missing_shallow_commit(output, hash) {
+      save_diagnostic("clone-fallback", "started")
+      devsy(state, args, "workspace-create-full")
+    } else {
+      guard status == 0 else {
+        raise AdapterError(
+          "workspace-create failed (exit \{status}); command output withheld",
+        )
+      }
+      output
+    }
+  } else {
+    devsy(state, args, "workspace-create")
+  }
   let created = workspace(state).unwrap()
   guard required(created, "uid") == uid else {
     raise AdapterError("Created workspace identity does not match request")
@@ -408,8 +504,23 @@ async fn create_state() -> Json {
   set_field(state, "user", Json::string(required(result, "remoteUser")))
   validate_state(state)
   let root_script = match field(result, "remoteWorkspaceFolder") {
-    Some(Json::String(folder)) => "cd " + quote(folder) + " && "
-    _ => ""
+    Some(Json::String(folder)) => {
+      guard folder == "" ||
+        (
+          folder.has_prefix("/") &&
+          !folder.contains("\n") &&
+          !folder.contains("\r")
+        ) else {
+        raise AdapterError("Invalid remote workspace folder")
+      }
+      if folder == "" {
+        ""
+      } else {
+        "cd " + quote(folder) + " && "
+      }
+    }
+    None => ""
+    _ => raise AdapterError("Invalid remote workspace folder")
   }
   let root = remote(
       state,
@@ -419,7 +530,7 @@ async fn create_state() -> Json {
     )
     .trim()
     .to_owned()
-  guard root.has_prefix("/") && !root.contains("\n") else {
+  guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
     raise AdapterError("Invalid remote project root")
   }
   let actual_commit = remote(
@@ -456,7 +567,7 @@ async fn create_state() -> Json {
 }
 
 ///|
-async fn lifecycle_state() -> (Json, Json) {
+async fn lifecycle_state(mode : String) -> (Json, Json) {
   let input = @stdio.stdin.read_all()
   let payload = @json.parse(input.text())
   guard field(payload, "schemaVersion") == Some(Json::number(1)) else {
@@ -474,9 +585,10 @@ async fn lifecycle_state() -> (Json, Json) {
     raise AdapterError("Unsupported adapter state")
   }
   validate_state(state)
-  guard workspace(state) is Some(current) &&
-    field(current, "uid") == field(state, "workspaceUid") else {
-    raise AdapterError("Workspace missing or replaced")
+  match workspace(state) {
+    Some(current) if field(current, "uid") == field(state, "workspaceUid") => ()
+    None if mode == "destroy" => ()
+    _ => raise AdapterError("Workspace missing or replaced")
   }
   (state, result)
 }
@@ -536,7 +648,7 @@ async fn execute_inner(mode : String) -> Unit {
   let (state, previous) = if mode == "create" {
     (create_state(), Json::null())
   } else {
-    lifecycle_state()
+    lifecycle_state(mode)
   }
   match mode {
     "create" => {
@@ -561,11 +673,15 @@ async fn execute_inner(mode : String) -> Unit {
         ),
       )
       codex_addon(state)
-      emit_connection(state, false)
+      if required(state, "connection") == "orca-server" &&
+        server_is_running(state) {
+        emit_connection(state, false, existing=previous)
+      } else {
+        emit_connection(state, false)
+      }
     }
     "reconnect" => emit_connection(state, false, existing=previous)
     "suspend" => {
-      close_tunnel(state)
       ignore(
         devsy(
           state,
@@ -573,9 +689,9 @@ async fn execute_inner(mode : String) -> Unit {
           "workspace-stop",
         ),
       )
+      close_tunnel(state)
     }
     "destroy" => {
-      close_tunnel(state)
       ignore(
         devsy(
           state,
@@ -588,6 +704,7 @@ async fn execute_inner(mode : String) -> Unit {
           "workspace-delete",
         ),
       )
+      close_tunnel(state)
     }
     _ => raise AdapterError("Unknown command")
   }
@@ -627,26 +744,8 @@ pub async fn execute(mode : String) -> Unit {
 ///|
 fn validate_state(state : Json) -> Unit raise {
   ignore(saved_command(state))
-  let id = required(state, "workspaceId")
-  let user = required(state, "user")
-  guard id.length() <= 100 &&
-    user.length() <= 64 &&
-    !id.has_prefix("-") &&
-    !user.has_prefix("-") &&
-    [id, user]
-    .iter()
-    .all(text => {
-      text
-      .to_array()
-      .iter()
-      .all(c => {
-        (c >= 'a' && c <= 'z') ||
-        (c >= 'A' && c <= 'Z') ||
-        (c >= '0' && c <= '9') ||
-        c == '-' ||
-        c == '_'
-      })
-    }) else {
+  guard valid_workspace_id(required(state, "workspaceId")) &&
+    valid_user(required(state, "user")) else {
     raise AdapterError("Invalid workspace identity")
   }
 }
@@ -731,4 +830,112 @@ async fn discard_created_workspace(state : Json) -> Unit {
       }
     }
   })
+}
+
+///|
+fn valid_workspace_id(id : String) -> Bool {
+  id.length() > 0 &&
+  id.length() <= 48 &&
+  ((id[0] >= 'a' && id[0] <= 'z') || (id[0] >= '0' && id[0] <= '9')) &&
+  id
+  .to_array()
+  .iter()
+  .all(c => (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')
+}
+
+///|
+fn valid_context(value : String) -> Bool {
+  value != "" &&
+  value
+  .to_array()
+  .iter()
+  .all(c => {
+    (c >= 'a' && c <= 'z') ||
+    (c >= 'A' && c <= 'Z') ||
+    (c >= '0' && c <= '9') ||
+    c == '_' ||
+    c == '-'
+  })
+}
+
+///|
+fn valid_user(user : String) -> Bool {
+  let name = if user.has_suffix("$") {
+    user[:user.length() - 1].to_owned()
+  } else {
+    user
+  }
+  name != "" &&
+  user.length() <= 64 &&
+  (
+    (name[0] >= 'a' && name[0] <= 'z') ||
+    (name[0] >= 'A' && name[0] <= 'Z') ||
+    name[0] == '_'
+  ) &&
+  name
+  .to_array()
+  .iter()
+  .all(c => {
+    (c >= 'a' && c <= 'z') ||
+    (c >= 'A' && c <= 'Z') ||
+    (c >= '0' && c <= '9') ||
+    c == '_' ||
+    c == '-'
+  })
+}
+
+///|
+fn shallow_branch(build_ref : String) -> String? {
+  if build_ref == "HEAD" ||
+    valid_commit(build_ref) ||
+    (build_ref.has_prefix("refs/") && !build_ref.has_prefix("refs/heads/")) {
+    return None
+  }
+  let branch = if build_ref.has_prefix("refs/heads/") {
+    build_ref[11:].to_owned()
+  } else {
+    build_ref
+  }
+  if branch != "" &&
+    branch
+    .to_array()
+    .iter()
+    .all(c => {
+      (c >= 'a' && c <= 'z') ||
+      (c >= 'A' && c <= 'Z') ||
+      (c >= '0' && c <= '9') ||
+      c == '/' ||
+      c == '.' ||
+      c == '_' ||
+      c == '-'
+    }) {
+    Some(branch)
+  } else {
+    None
+  }
+}
+
+///|
+fn missing_shallow_commit(output : String, commit : String) -> Bool {
+  output
+  .split("\n")
+  .iter()
+  .any(line => {
+    if line.trim() == "" {
+      return false
+    }
+    let event = @json.parse(line.to_owned())
+    let missing = match
+      field(field(event, "error").unwrap_or(Json::null()), "message") {
+      Some(Json::String(message)) =>
+        message.contains("Could not parse object '" + commit + "'")
+      _ => false
+    }
+    field(event, "kind") == Some(Json::string("status")) &&
+    field(event, "phase") == Some(Json::string("cloning_repository")) &&
+    field(event, "state") == Some(Json::string("failed")) &&
+    missing
+  }) catch {
+    _ => false
+  }
 }
