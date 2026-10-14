@@ -1,7 +1,14 @@
 // Export only source-owned labels. IPC errors and process streams can contain
 // credentials, so unrecognized values never cross the CI artifact boundary.
 export class DiagnosticError extends Error {
-  constructor(readonly category: string) { super(`IPC failed (${category})`); }
+  readonly category: string;
+  readonly markers: string[];
+  constructor(error: unknown) {
+    const observation = provisionFailure(error);
+    super(`IPC failed (${observation.category})`);
+    this.category = observation.category;
+    this.markers = observation.markers;
+  }
 }
 
 export function failureCategory(error: unknown): string {
@@ -27,6 +34,16 @@ export function failureCategory(error: unknown): string {
     schema: ["invalid recipe", "invalid connection", "validation", "schema"],
   })) if (phrases.some(phrase => text.includes(phrase))) return category;
   return "unclassified";
+}
+
+export function provisionFailure(error: unknown, stderr?: string) {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const labels = ["ssh", "managed", "orcad", "registration", "generation", "profile", "preflight", "candidate", "bootstrap", "install", "deploy", "launch", "release", "download", "github", "rate limit", "rate_limited", "rate-limit", "429", "403", "fetch", "network", "connection", "socket", "closed", "reset", "handshake", "authentication", "channel", "exec", "exit", "signal", "killed", "memory", "certificate", "checksum", "sqlite", "database", "timeout", "unverifiable", "not connected", "not found", "no such file", "permission", "address", "already", "port", "stale", "pending"];
+  const markers = (text: string) => {
+    const lower = text.slice(-16_384).toLowerCase();
+    return labels.filter(label => lower.includes(label));
+  };
+  return { category: failureCategory(error), markers: error instanceof DiagnosticError ? error.markers : markers(message), ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }) };
 }
 
 const runOrdinals = new Map<string, number>();
