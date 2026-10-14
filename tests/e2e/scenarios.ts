@@ -32,7 +32,7 @@ export async function firstUse(runtime: Runtime, index: number, env: Environment
   console.log(`PASS workspace ${index}: first Git use within ${budgets.firstUse} ms`);
 }
 
-export async function workspace(orca: Orca, runtime: Runtime, index: number, env: Environment, service: Services, expected: { build: string; task: string }, restarting = false, connectionsReady: () => Promise<void> = async () => {}) {
+export async function workspace(orca: Orca, runtime: Runtime, index: number, env: Environment, service: Services, expected: { build: string; task: string }, restarting = false, connectionsReady: () => Promise<void> = async () => {}, acquireConnectionStart: () => Promise<() => void> = async () => () => {}) {
   const state = runtime.recipeResult.userData;
   assert.equal(typeof state.workspaceId, "string");
   const id = state.workspaceId as string, user = state.user as string, path = runtime.recipeResult.connection.projectRoot;
@@ -51,6 +51,8 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     await rm(socketRoot, { recursive: true, force: true });
   }
   try {
+    const release = await acquireConnectionStart();
+    try {
     for (let i = 0; i < 3; i++) {
       const child = start([...base, "-M", "-S", socketRoot + "/" + i, "-o", "ExitOnForwardFailure=yes", ...(i === 0 ? ["-R", `18080:127.0.0.1:${service.port}`] : []), "-N", target], { env });
       child.stdout?.resume();
@@ -64,6 +66,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       console.error("SSH connection failure:", JSON.stringify({ workspace: index, sessions: sessions.map((child, i) => ({ exitCode: child.exitCode, category: processFailureCategory(sessionErrors[i] ?? "") })) }));
       throw error;
     });
+    } finally { release(); }
     await connectionsReady();
     assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse HEAD")).trim(), index === 1 ? expected.task : expected.build);
     assert.equal((await exec(0, "cat " + quote(path + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : "fixture-build");

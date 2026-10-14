@@ -78,6 +78,14 @@ try {
   const connected = Promise.withResolvers<void>();
   void connected.promise.catch(() => {});
   let readyCount = 0;
+  let connectionStart = Promise.resolve();
+  const acquireConnectionStart = async () => {
+    const previous = connectionStart;
+    const next = Promise.withResolvers<void>();
+    connectionStart = next.promise;
+    await previous;
+    return () => next.resolve();
+  };
   const allConnectionsReady = async () => {
     if (++readyCount === definitions.length) connected.resolve();
     await connected.promise;
@@ -111,7 +119,7 @@ try {
   const connectedWorkspaces = await Promise.allSettled(provisioned.map(async result => {
     assert.equal(result.status, "fulfilled");
     const { runtime, index } = (result as PromiseFulfilledResult<{ runtime: Runtime; index: number }>).value;
-    const active = await workspace(orca!, runtime, index, env, shared!, source!, false, allConnectionsReady);
+    const active = await workspace(orca!, runtime, index, env, shared!, source!, false, allConnectionsReady, acquireConnectionStart);
     workspaces.push(active);
     if (active.serverVersion) assert.equal(active.serverVersion, latest.version);
   }).map(operation => operation.catch(error => { connected.reject(error); throw error; })));
