@@ -569,6 +569,32 @@ async test "command diagnostics distinguish process failure and exit failure wit
 }
 
 ///|
+async test "proxy preserves binary streams and the configured command exit status" {
+  let directory = @fs.tmpdir(prefix="orca-env-devsy-proxy-test")
+  defer @fs.rmdir(directory, recursive=true)
+  let input = b"\x00SSH\n\xff"
+  @fs.write_file(directory + "/input", input)
+  let state : Json = {
+    "devsyEnv": {},
+    "command": ["/bin/sh", "-c", "cat; exit \"$PROXY_EXIT\"", "sh"],
+    "workspaceId": "test-id",
+    "user": "developer",
+  }
+  for expected in [0, 37] {
+    let (status, output, errors) = @process.collect_output(
+      "/bin/sh",
+      ["-c", "exec " + proxy(state)],
+      extra_env={ "PATH": "/usr/bin:/bin", "PROXY_EXIT": expected.to_string() },
+      inherit_env=false,
+      cwd="/",
+      stdin=@process.redirect_from_file(directory + "/input"),
+    )
+    assert_eq(status, expected, msg=errors.text())
+    assert_eq(output.binary(), input)
+  }
+}
+
+///|
 async test "PATH executable beginning with a dash stays unchanged in direct and proxy calls" {
   let (directory, env) = fixture()
   defer @fs.rmdir(directory, recursive=true)

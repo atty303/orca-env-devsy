@@ -108,10 +108,13 @@ fn proxy(state : Json) -> String raise {
       args.push(name + "=" + value)
     }
   }
-  // A constant shell trampoline preserves executable names that env would
-  // otherwise interpret as options or assignments. Configuration stays argv.
+  // bash accepts exec --, while dash treats -- as an executable. Probe the
+  // builtin in a subshell to preserve leading-dash command names on both.
   (args +
-  ["/bin/sh", "-c", "exec -- \"$@\"", "sh"] +
+  [
+    "/bin/sh", "-c", "if (exec --) 2>/dev/null; then exec -- \"$@\"; else exec \"$@\"; fi",
+    "sh",
+  ] +
   saved_command(state) +
   devsy_args(state) +
   [
