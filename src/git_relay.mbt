@@ -94,13 +94,14 @@ async fn stop_git_management(state : Json) -> Unit {
 ///|
 async fn monitor_git_relay(state : Json, directory : String) -> Unit {
   let enabled = directory + "/enabled"
+  let mut git_enabled = false
   while @fs.exists(enabled) {
     try {
-      if !@async.with_timeout(10000, async fn() {
-          git_forwarding_enabled(state)
-        }) {
+      git_enabled = @async.with_timeout(10000, async fn() {
+        git_forwarding_enabled(state)
+      })
+      if !git_enabled {
         git_relay_status(directory, "disabled")
-        return
       }
       break
     } catch {
@@ -114,7 +115,7 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
   let mut last = ""
   let mut attempt = 0
   while @fs.exists(enabled) {
-    if git_relay_ready(state, directory) {
+    if git_enabled && git_relay_ready(state, directory) {
       if last != "ready" {
         git_relay_status(directory, "ready")
         last = "ready"
@@ -123,8 +124,10 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
       @async.sleep(2000)
       continue
     }
-    git_relay_status(directory, "unavailable")
-    last = "unavailable"
+    if git_enabled {
+      git_relay_status(directory, "unavailable")
+      last = "unavailable"
+    }
     @async.with_task_group(async fn(group) {
       let sink = @process.redirect_to_file("/dev/null", shared=true)
       defer sink.close()
@@ -153,7 +156,7 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
       let deadline = @env.now() + 10000
       let mut recovered = false
       while @fs.exists(enabled) && child.try_wait() is None {
-        let ready = git_relay_ready(state, directory)
+        let ready = git_enabled && git_relay_ready(state, directory)
         if ready && !recovered {
           recovered = true
           attempt = 0
@@ -162,7 +165,8 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
         }
         // 1.23.0 stops the losing service. Recreate only the management
         // connection when the relay vanishes, never the Orca master.
-        if (!ready && recovered) || (!recovered && @env.now() >= deadline) {
+        if git_enabled &&
+          ((!ready && recovered) || (!recovered && @env.now() >= deadline)) {
           break
         }
         @async.sleep(1000)
@@ -173,8 +177,10 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
     if @fs.exists(enabled) {
       attempt = if attempt < 5 { attempt + 1 } else { 5 }
       let delay = if attempt < 5 { 1000 * (1 << attempt) } else { 30000 }
-      git_relay_status(directory, "unavailable")
-      last = "unavailable"
+      if git_enabled {
+        git_relay_status(directory, "unavailable")
+        last = "unavailable"
+      }
       save_diagnostic("git-relay", "retry", attempt~, retry_delay_ms=delay)
       @async.sleep(delay)
     }

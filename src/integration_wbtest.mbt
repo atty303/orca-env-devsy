@@ -20,7 +20,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      while test ! -f "$FAKE_HOME/release-list"; do sleep 0.1; done
     #|    fi
     #|    if test -f "$FAKE_HOME/created"; then printf '[{"id":"test-id","uid":"%s"}]\n' "$(cat "$FAKE_HOME/uid")"; else printf '[]\n'; fi ;;
-    #|  *'workspace status'*) if test -f "$FAKE_HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
+    #|  *'workspace status'*) test ! -f "$FAKE_HOME/fail-status"; if test -f "$FAKE_HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
     #|  *'workspace up'*) rm -f "$FAKE_HOME/stopped"; touch "$FAKE_HOME/created"; test ! -f "$FAKE_HOME/fail-up"
     #|    if test -f "$FAKE_HOME/up-result"; then cat "$FAKE_HOME/up-result"; else printf '{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}\n'; fi ;;
     #|  *'workspace stop'*) test ! -f "$FAKE_HOME/fail-stop"; touch "$FAKE_HOME/stopped" ;;
@@ -84,6 +84,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      sleep 0.01
     #|    done ;;
     #|  *'-N'* )
+    #|    case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac
     #|    trap 'rm -f "$control"' EXIT HUP INT TERM
     #|    touch "$control"
     #|    while test -f "$control" && test -f "$FAKE_HOME/created"; do sleep 0.01; done ;;
@@ -1153,7 +1154,7 @@ async test "unrecoverable Git readiness warns and retries while Orca remains ava
 }
 
 ///|
-async test "disabled Git forwarding creates neither readiness probes nor management connections" {
+async test "disabled Git forwarding retains the services owner without Git readiness probes" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   env.set("FAKE_GIT_FORWARDING", "false")
@@ -1167,7 +1168,12 @@ async test "disabled Git forwarding creates neither readiness probes nor managem
     let result = @json.parse(output)
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
-    assert_false(@fs.exists(directory + "/git-management"))
+    @async.with_timeout(5000, async fn() {
+      while !@fs.exists(directory + "/git-management") {
+        @async.sleep(50)
+      }
+    })
+    assert_true(@fs.exists(directory + "/git-management"))
     assert_false(
       @fs.read_file(directory + "/ssh-args")
       .text()
@@ -2009,6 +2015,7 @@ async test "SSH recipes retain a recovery worker without a server port and reap 
   assert_eq(field(saved, "localPort"), None)
   assert_eq(field(saved, "connection"), Some(Json::string("ssh")))
   assert_true(worker_alive(worker))
+  assert_eq(@fs.read_file(directory + "/primary-services").text(), "disabled")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   let (status, _, errors) = invoke("suspend", env, directory, payload~)
   assert_eq(status, 0, msg=errors)
@@ -2054,7 +2061,10 @@ async test "adoption rejects stopped replaced or unqueryable workspaces and reap
     @fs.write_file(worker + "/enabled", "")
     match condition {
       "stopped" => @fs.write_file(directory + "/stopped", "")
-      "replaced" => @fs.write_file(directory + "/uid", "different-uid")
+      "replaced" => {
+        @fs.write_file(directory + "/uid", "different-uid")
+        @fs.write_file(directory + "/fail-status", "")
+      }
       _ =>
         @fs.write_file(
           directory + "/bin/devsy",
@@ -2076,5 +2086,14 @@ async test "adoption rejects stopped replaced or unqueryable workspaces and reap
     assert_false(@fs.exists(socket + "/socket"))
     assert_false(@fs.exists(socket + "/credential-socket"))
     assert_false(worker_alive(worker))
+    if condition == "replaced" {
+      assert_eq(
+        field(
+          @json.parse(@fs.read_file(worker + "/status.json").text()),
+          "status",
+        ),
+        Some(Json::string("ownership-error")),
+      )
+    }
   }
 }

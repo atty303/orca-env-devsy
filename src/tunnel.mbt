@@ -133,8 +133,10 @@ async fn ensure_ssh_worker(state : Json, port : Int32?) -> Unit {
       _ => false
     }
     if reusable {
-      if @fs.exists(directory + "/status.json") {
-        @fs.remove(directory + "/status.json")
+      for name in ["status.json", "git-status"] {
+        if @fs.exists(directory + "/" + name) {
+          @fs.remove(directory + "/" + name)
+        }
       }
       spawn_tunnel_worker(directory)
       wait_tunnel(directory)
@@ -504,6 +506,8 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         tunnel_status(directory, "workspace-stopped")
         return
       }
+      // Only the dedicated management connection starts credential services.
+      // Starting them on this master as well races Devsy's asynchronous setup.
       // The worker owns this master and reaps it before reconnecting.
       let (errors, stderr) = @process.read_from_process()
       defer errors.close()
@@ -514,7 +518,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       let child = @process.spawn(
         group,
         "ssh",
-        ssh_args(state) +
+        ssh_args(state, services=false) +
         [
           "-M",
           "-S",
@@ -626,11 +630,16 @@ async fn check_tunnel(state : Json, directory : String) -> Unit {
 async fn worker_workspace(state : Json, directory : String) -> Json? {
   @async.with_timeout(10000, async fn() {
     @async.with_task_group(async fn(group) {
+      let running = group.spawn(
+        async fn() { workspace_running(state) },
+        allow_failure=true,
+        no_wait=true,
+      )
       let query = group.spawn(async fn() {
         let current = workspace(state)
         if current is Some(value) &&
           field(value, "uid") == field(state, "workspaceUid") {
-          set_field(value, "running", Json::boolean(workspace_running(state)))
+          set_field(value, "running", Json::boolean(running.wait()))
         }
         current
       })
