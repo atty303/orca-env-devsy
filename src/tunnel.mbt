@@ -402,7 +402,7 @@ async fn close_tunnel(state : Json) -> Unit {
     for
       name in [
         "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-        "socket", "git-status",
+        "socket", "git-status", "git-established",
       ] {
       if @fs.exists(directory + "/" + name) {
         @fs.remove(directory + "/" + name)
@@ -506,10 +506,18 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       tunnel_status(directory, "stopped")
       return
     }
-    stop_git_management(state)
+    stop_tunnel_master(state, directory)
+    @fs.mkdir(
+      required(state, "socketDirectory"),
+      permission=0o700,
+      allow_exist=true,
+    )
   }
   let mut attempt = 0
   while @fs.exists(enabled) {
+    if @fs.exists(directory + "/git-established") {
+      @fs.remove(directory + "/git-established")
+    }
     git_relay_status(directory, "pending")
     tunnel_status(directory, "connecting")
     let mut terminal = false
