@@ -2576,3 +2576,49 @@ async test "adopted primary is stopped before reconnecting after a failed health
     })
   })
 }
+
+///|
+async test "provisioned task checkout waits beyond five seconds for primary Git readiness" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+  env.set("ORCA_REPO_BRANCH", "task-branch")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+  )
+  @fs.write_file(directory + "/git-unavailable", "")
+  @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|case "$*" in
+    #|  *'git checkout -B'*)
+    #|    touch "$FAKE_HOME/task-checkout"
+    #|    if test -f "$FAKE_HOME/git-unavailable"; then
+    #|      touch "$FAKE_HOME/checkout-before-ready"
+    #|      exit 7
+    #|    fi ;;
+    #|esac
+    #|exec "$FAKE_HOME/bin/ssh-original" "$@"
+  @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
+  let (status, output, errors) = @async.with_task_group(async fn(group) {
+    group.spawn_bg(async fn() {
+      while !@fs.exists(directory + "/git-probed") {
+        @async.sleep(10)
+      }
+      @async.sleep(6500)
+      @fs.remove(directory + "/git-unavailable")
+    })
+    invoke("create", env, directory)
+  })
+  assert_eq(status, 0, msg=errors)
+  let payload : Json = {
+    "schemaVersion": 1,
+    "recipeResult": @json.parse(output),
+  }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  assert_false(@fs.exists(directory + "/checkout-before-ready"))
+  assert_true(@fs.exists(directory + "/task-checkout"))
+  assert_false(@fs.exists(directory + "/git-management"))
+  assert_false(errors.contains("readiness is unavailable"))
+}

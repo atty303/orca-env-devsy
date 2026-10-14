@@ -544,7 +544,7 @@ async fn create_state() -> Json {
   } else {
     None
   }
-  ensure_ssh_worker(state, port)
+  ensure_ssh_worker(state, port, git_required=mode == "provisioned-root")
   let root = remote(
       state,
       root_script +
