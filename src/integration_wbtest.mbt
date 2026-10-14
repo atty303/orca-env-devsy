@@ -35,6 +35,12 @@ async fn fixture() -> (String, Map[String, String]) {
     #|#!/bin/sh
     #|set -eu
     #|printf '%s\n' "$@" >> "$FAKE_HOME/ssh-args"
+    #|control=
+    #|previous=
+    #|for arg in "$@"; do
+    #|  if test "$previous" = -S; then control="$arg"; fi
+    #|  previous="$arg"
+    #|done
     #|case "$*" in
     #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
     #|  *'pwd -P'*) printf '/workspace/repo\n' ;;
@@ -44,21 +50,25 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    if test -f "$FAKE_HOME/fail-tunnel-cleanup"; then
     #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
     #|    fi
-    #|    test -f "$FAKE_HOME/listener-ready" ;;
-    #|  *'-O exit'*) rm -f "$FAKE_HOME/listener-ready" ;;
+    #|    test -f "$control" ;;
+    #|  *'-O exit'*) rm -f "$control" ;;
     #|  *'cat >'* ) test ! -f "$FAKE_HOME/fail-addon"; cat > "$FAKE_HOME/delivered-auth" ;;
     #|  *'-L 127.0.0.1:'* )
     #|    while test "$1" != '-L'; do shift; done
     #|    port=${2#127.0.0.1:}; port=${port%%:*}
-    #|    printf '%s\n' "$port" > "$FAKE_HOME/listener-port"
+    #|    printf '%s\n' "$port" > "$FAKE_HOME/listener-port.tmp"
+    #|    mv "$FAKE_HOME/listener-port.tmp" "$FAKE_HOME/listener-port"
     #|    count=0
     #|    while ! test -f "$FAKE_HOME/listener-ready"; do count=$((count+1)); test "$count" -lt 100; sleep 0.01; done
+    #|    keeper=
+    #|    trap 'rm -f "$control"; if test -n "$keeper"; then kill "$keeper" 2>/dev/null || true; wait "$keeper" 2>/dev/null || true; fi' EXIT HUP INT TERM
+    #|    while test -f "$FAKE_HOME/hold-proxy-setup"; do sleep 0.01; done
     #|    if test -f "$FAKE_HOME/keep-proxy-stderr"; then
     #|      sleep 60 & keeper=$!
     #|      printf '%s\n' "$keeper" > "$FAKE_HOME/keeper-pid"
-    #|      trap 'kill "$keeper" 2>/dev/null || true; wait "$keeper" 2>/dev/null || true' EXIT HUP INT TERM
     #|    fi
-    #|    while test -f "$FAKE_HOME/listener-ready"; do
+    #|    touch "$control"
+    #|    while test -f "$control"; do
     #|      if test -f "$FAKE_HOME/drop-tunnel"; then rm "$FAKE_HOME/drop-tunnel"; printf "Permission denied (publickey). private-stderr-secret\n" >&2; exit 1; fi
     #|      sleep 0.01
     #|    done ;;
@@ -439,38 +449,32 @@ async test "failed provisioning cleans the requested UID before a recipe receipt
 
 ///|
 async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
-  @fs.write_file(directory + "/fixture-tunnel-enabled", "")
   @async.with_task_group(async fn(group) {
-    group.spawn_bg(async fn() {
-      while @fs.exists(directory + "/fixture-tunnel-enabled") {
-        if !@fs.exists(directory + "/listener-port") {
-          @async.sleep(10)
-          continue
-        }
-        let port = @fs.read_file(directory + "/listener-port")
-          .text()
-          .trim()
-          .to_owned()
-        let listener = @socket.TcpServer(
-          @socket.Addr::parse("127.0.0.1:" + port),
-        )
-        defer listener.close()
-        @fs.write_file(directory + "/listener-ready", "")
-        while @fs.exists(directory + "/listener-ready") &&
-              @fs.exists(directory + "/fixture-tunnel-enabled") {
-          @async.sleep(10)
-        }
+    group.spawn_bg(no_wait=true, async fn() {
+      while !@fs.exists(directory + "/listener-port") {
         @async.sleep(10)
       }
+      let port = @fs.read_file(directory + "/listener-port")
+        .text()
+        .trim()
+        .to_owned()
+      // Masters share a listener; resume may rebind its port after TCP probes.
+      let listener = @socket.TcpServer(
+        @socket.Addr::parse("127.0.0.1:" + port),
+        reuse_addr=true,
+      )
+      defer {
+        listener.close()
+        @fs.remove(directory + "/listener-ready") catch {
+          _ => ()
+        }
+      }
+      @fs.write_file(directory + "/listener-ready", "")
+      while true {
+        let (connection, _) = listener.accept()
+        connection.close()
+      }
     })
-    defer {
-      @fs.remove(directory + "/fixture-tunnel-enabled") catch {
-        _ => ()
-      }
-      @fs.remove(directory + "/listener-ready") catch {
-        _ => ()
-      }
-    }
     run()
   })
 }
@@ -1064,7 +1068,8 @@ async test "tunnel worker reconnects on the same port and remains running when s
       assert_true(status != 0)
       assert_true(worker_alive(worker))
       assert_true(@fs.exists(worker + "/enabled"))
-      assert_true(@fs.exists(directory + "/listener-ready"))
+      let (status, _, errors) = invoke("reconnect", env, directory, payload~)
+      assert_eq(status, 0, msg=errors)
       @fs.remove(directory + "/" + marker)
     }
     @fs.remove(directory + "/created")
@@ -1194,14 +1199,43 @@ async test "server create returns recipe JSON while the tunnel child retains std
       directory + "/orca.yaml",
       "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
     )
-    let (status, output, errors) = @async.with_timeout(5000, async fn() {
-      invoke("create", env, directory)
-    })
+    @fs.write_file(directory + "/hold-proxy-setup", "")
+    let ((status, output, errors), premature_check) = @async.with_timeout(
+      5000,
+      async fn() {
+        @async.with_task_group(async fn(group) {
+          let creation = group.spawn(async fn() {
+            invoke("create", env, directory)
+          })
+          defer (@fs.remove(directory + "/hold-proxy-setup") catch { _ => () })
+          while !@fs.exists(directory + "/listener-ready") {
+            @async.sleep(10)
+          }
+          let base = directory + "/.local/state/orca-env-devsy/tunnels"
+          let saved = @json.parse(
+            @fs.read_file(base + "/" + @fs.readdir(base)[0] + "/state.json").text(),
+          )
+          let (check, _, _) = @process.collect_output(
+            directory + "/bin/ssh",
+            [
+              "-S",
+              required(saved, "socketDirectory") + "/socket",
+              "-O",
+              "check",
+            ],
+            extra_env=env,
+          )
+          @fs.remove(directory + "/hold-proxy-setup")
+          (creation.wait(), check)
+        })
+      },
+    )
     assert_eq(status, 0, msg=errors)
     let result = @json.parse(output)
     let state = field(result, "userData").unwrap()
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
+    assert_true(premature_check != 0)
     assert_eq(
       field(field(result, "connection").unwrap(), "type"),
       Some(Json::string("orca-server")),
@@ -1340,7 +1374,6 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
     // Repair only this deliberately corrupted test state so the owned worker can stop.
     @fs.remove(worker + "/state.json")
     @fs.remove(worker + "/enabled")
-    @fs.remove(directory + "/listener-ready")
     @async.with_timeout(5000, async fn() {
       while worker_alive(worker) {
         @async.sleep(100)
