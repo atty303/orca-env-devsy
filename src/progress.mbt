@@ -46,7 +46,7 @@ async fn progress_message(message : String) -> Unit {
     pad(clock / 60UL % 60UL) +
     ":" +
     pad(clock % 60UL) +
-    "Z orca-env-devsy: " +
+    " " +
     message +
     "\n",
   ) catch {

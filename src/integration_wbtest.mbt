@@ -1713,7 +1713,14 @@ async test "lifecycle progress reaches stderr and diagnostics before workspace u
   assert_true(errors.contains("create: done ("))
   for line in errors.split("\n") {
     if line != "" {
-      assert_true(line.contains("Z orca-env-devsy:"), msg=line.to_owned())
+      assert_true(
+        line.length() > 9 &&
+        line[2:3] == ":" &&
+        line[5:6] == ":" &&
+        line[8:9] == " ",
+        msg=line.to_owned(),
+      )
+      assert_false(line.contains("orca-env-devsy:"), msg=line.to_owned())
     }
   }
   let receipt = @json.parse(
@@ -1812,7 +1819,7 @@ async test "filesystem failure reports safe timestamped elapsed time before any 
   let (status, output, errors) = invoke("create", env, directory)
   assert_true(status != 0)
   assert_eq(output, "")
-  assert_true(errors.contains("Z orca-env-devsy: create: failed ("), msg=errors)
+  assert_true(errors.contains(" create: failed ("), msg=errors)
   assert_true(errors.contains(", elapsed "))
   assert_false(errors.contains(directory))
   assert_false(@fs.exists(directory + "/args"))
