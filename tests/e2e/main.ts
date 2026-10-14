@@ -105,13 +105,17 @@ try {
     if (definition.connection === "ssh") assert(result.sshTargetId);
     else assert(result.environment?.id);
     await firstUse(result.runtime, index, env, shared!);
-    // Connect as each provision completes, then synchronize the Git workload.
-    const active = await workspace(orca!, result.runtime, index, env, shared!, source!, false, allConnectionsReady);
+    return { runtime: result.runtime, index };
+  }));
+  for (const result of provisioned) if (result.status === "rejected") throw result.reason;
+  const connectedWorkspaces = await Promise.allSettled(provisioned.map(async result => {
+    assert.equal(result.status, "fulfilled");
+    const { runtime, index } = (result as PromiseFulfilledResult<{ runtime: Runtime; index: number }>).value;
+    const active = await workspace(orca!, runtime, index, env, shared!, source!, false, allConnectionsReady);
     workspaces.push(active);
     if (active.serverVersion) assert.equal(active.serverVersion, latest.version);
-    return { runtime: result.runtime, index };
   }).map(operation => operation.catch(error => { connected.reject(error); throw error; })));
-  for (const result of provisioned) if (result.status === "rejected") throw result.reason;
+  for (const result of connectedWorkspaces) if (result.status === "rejected") throw result.reason;
   assert.equal(new Set(runtimes.map(r => r.recipeResult.userData.workspaceId)).size, 4);
   if (interrupted) throw new Error("E2E interrupted");
   const saved = await orca.call<Runtime[]>("ephemeralVm", "listRuntimes");
