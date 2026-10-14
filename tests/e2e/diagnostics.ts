@@ -29,6 +29,13 @@ export function failureCategory(error: unknown): string {
   return "unclassified";
 }
 
+const runOrdinals = new Map<string, number>();
+export function diagnosticRun(id: unknown): number | undefined {
+  if (typeof id !== "string" || id.length > 64) return undefined;
+  if (!runOrdinals.has(id)) runOrdinals.set(id, runOrdinals.size);
+  return runOrdinals.get(id);
+}
+
 export async function adapterDiagnostics(state: string) {
   const file = Bun.file(state + "/orca-env-devsy/events.jsonl");
   if (!await file.exists()) return { available: false, events: [] };
@@ -37,13 +44,18 @@ export async function adapterDiagnostics(state: string) {
   const statuses = new Set("adopted started succeeded skipped diagnostics-truncated success failed warning degraded stopped retry process-error exit-error connected connecting disconnected ready disabled unavailable ownership-error workspace-stopped target-removed".split(" "));
   const errors = new Set("address_in_use authentication_failed host_key_failed connection_refused connection_timeout name_resolution control_socket missing_resource permission_denied process_exit database_locked file_limit vm_boot vm_network vm_mount memory_exhausted disk_exhausted vm_image vm_create vm_start process_api readiness_unavailable progress_io backend_phase phase_limit".split(" "));
   const phases = new Set("cloning_repository resolving_config initialize_command preparing_devcontainer building_image starting_container injecting_agent running_lifecycle_hook waiting_for running_command configuring_workspace configuring_ssh starting_ssh_tunnel launching_ide stopping_workspace deleting_workspace rebuilding_workspace resetting_workspace importing_workspace ready failed installing_provider resolving_options running_init".split(" "));
-  const events: { stage: string; status: string; phase?: string; errorType?: string; exitCode?: number }[] = [];
+  const events: { stage: string; status: string; run?: number; elapsedMs?: number; phase?: string; errorType?: string; exitCode?: number }[] = [];
+  let origin: number | undefined;
   let omitted = 0;
   for (const line of (await file.text()).split("\n").filter(Boolean)) {
     try {
       const event = JSON.parse(line);
       if (!stages.has(event.stage) || !statuses.has(event.status)) { omitted++; continue; }
-      events.push({ stage: event.stage, status: event.status, ...(phases.has(event.phase) ? { phase: event.phase } : {}), ...(errors.has(event.errorType) ? { errorType: event.errorType } : {}), ...(Number.isInteger(event.exitCode) && Math.abs(event.exitCode) <= 255 ? { exitCode: event.exitCode } : {}) });
+      const run = diagnosticRun(event.runId);
+      const time = typeof event.time === "string" ? Number(event.time) : NaN;
+      if (Number.isFinite(time) && origin === undefined) origin = time;
+      const elapsedMs = origin === undefined ? NaN : time - origin;
+      events.push({ stage: event.stage, status: event.status, ...(run === undefined ? {} : { run }), ...(Number.isFinite(elapsedMs) && Math.abs(elapsedMs) <= 86_400_000 ? { elapsedMs: Math.round(elapsedMs) } : {}), ...(phases.has(event.phase) ? { phase: event.phase } : {}), ...(errors.has(event.errorType) ? { errorType: event.errorType } : {}), ...(Number.isInteger(event.exitCode) && Math.abs(event.exitCode) <= 255 ? { exitCode: event.exitCode } : {}) });
     } catch { omitted++; }
   }
   return { available: true, omitted, truncated: events.length > 100, events: [...events.slice(0, -100).filter(event => ["failed", "exit-error", "process-error", "warning"].includes(event.status)), ...events.slice(-100)] };

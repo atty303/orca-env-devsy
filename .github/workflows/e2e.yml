@@ -31,16 +31,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: xvfb-run -a mise run test:e2e -- --provider "${{ matrix.provider }}"
-      - name: Diagnose native Microsandbox startup
-        if: failure() && matrix.provider == 'microsandbox'
-        run: mise exec -- bun tests/e2e/probe-microsandbox.ts
       - name: Preserve sanitized run result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-${{ matrix.os }}-${{ matrix.provider }}
-          path: |
-            .e2e/*/result.json
-            .e2e/runtime-probe/diagnostic.json
+          path: .e2e/*/result.json
           include-hidden-files: true
           if-no-files-found: warn
