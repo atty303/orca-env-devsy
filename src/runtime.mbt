@@ -97,7 +97,7 @@ async fn command_result(
       @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
       None
     } else {
-      Some(process_error_type(errors))
+      Some(process_error_type(output + "\n" + errors))
     },
   )
   (status, output)

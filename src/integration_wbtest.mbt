@@ -702,6 +702,9 @@ async test "command diagnostics distinguish process failure and exit failure wit
     invocation in [
       ["missing-command-fixture", "private-argument-fixture"],
       ["/bin/sh", "-c", "exit 7", "private-argument-fixture"],
+      [
+        "/bin/sh", "-c", "printf 'create microsandbox VM: private-argument-fixture\\n'; exit 7",
+      ],
     ] {
     let document : Json = {
       "devsy": {
@@ -723,6 +726,7 @@ async test "command diagnostics distinguish process failure and exit failure wit
   assert_true(records.contains("exit-error"))
   assert_true(records.contains("\"exitCode\":7"))
   assert_true(records.contains("resolve-context"))
+  assert_true(records.contains("vm_create"))
   assert_false(records.contains("private-argument-fixture"))
   assert_false(records.contains("missing-command-fixture"))
 }
