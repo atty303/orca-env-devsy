@@ -5,9 +5,10 @@ import { run, start, terminate, until, quote, type Environment, processFailureCa
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
 import { budgets, measure } from "./timing.ts";
+import { diagnosticRun } from "./diagnostics.ts";
 
 type Services = Awaited<ReturnType<typeof services>>;
-export const firstUseFailures: { workspace: number; helper?: boolean; endpoint?: boolean; unavailable?: boolean }[] = [];
+export const firstUseFailures: { workspace: number; run?: number; helper?: boolean; endpoint?: boolean; unavailable?: boolean }[] = [];
 export async function firstUse(runtime: Runtime, index: number, env: Environment, service: Services) {
   const state = runtime.recipeResult.userData;
   const saved = JSON.parse(await readFile(state.tunnelDirectory + "/state.json", "utf8"));
@@ -24,7 +25,8 @@ export async function firstUse(runtime: Runtime, index: number, env: Environment
       // Observe the failed first attempt; never repair or retry it into a pass.
       const script = `helper=false; endpoint=false; git config --global --get credential.helper | grep -Fq 'internal agent git-credentials' && helper=true; test "$(curl --noproxy '*' -fsS --max-time 1 http://localhost:12049/owner)" = ${quote(state.user as string)} && endpoint=true; printf '{"helper":%s,"endpoint":%s}' "$helper" "$endpoint"`;
       const observed = await run([...base, target, script], { env, timeout: 1500 }).then(output => JSON.parse(output) as { helper: boolean; endpoint: boolean }).catch(() => ({ unavailable: true }));
-      firstUseFailures.push({ workspace: index, ...observed });
+      const runOrdinal = await readFile(state.tunnelDirectory + "/status.json", "utf8").then(text => diagnosticRun(JSON.parse(text).runId)).catch(() => undefined);
+      firstUseFailures.push({ workspace: index, ...(runOrdinal === undefined ? {} : { run: runOrdinal }), ...observed });
       throw error;
     }
     assert((service.requests.get("w-" + index) ?? 0) > accepted, "First use must authenticate to the Git server");

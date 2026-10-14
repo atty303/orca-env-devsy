@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, chmod, symlink, appendFile } from "node:fs/promises";
+import { mkdir, chmod, symlink, appendFile, access, constants } from "node:fs/promises";
 import { resolve } from "node:path";
 import { run } from "../../scripts/process.ts";
 
@@ -47,7 +47,15 @@ if (provider === "docker") {
   await chmod(root + "/msb", 0o755);
   await symlink("libkrunfw.so.5.6.1", root + "/libkrunfw.so.5").catch(error => { if (error.code !== "EEXIST") throw error; });
   await symlink("libkrunfw.so.5", root + "/libkrunfw.so").catch(error => { if (error.code !== "EEXIST") throw error; });
-  await run(["sudo", "setfacl", "-m", `u:${process.getuid!()}:rw`, "/dev/kvm"], { inherit: true });
+  // KVM's first udev event can replace an ACL applied only to the current node.
+  // Keep access scoped to this runner UID as device events complete.
+  const acl = `u:${process.getuid!()}:rw`;
+  await run(["sudo", "tee", "/etc/udev/rules.d/99-orca-e2e-kvm.rules"], { input: `KERNEL=="kvm", RUN+="/usr/bin/setfacl -m ${acl} /dev/kvm"\n` });
+  await run(["sudo", "udevadm", "control", "--reload-rules"]);
+  await run(["sudo", "udevadm", "trigger", "--name-match=kvm"]);
+  await run(["sudo", "udevadm", "settle"]);
+  await run(["sudo", "setfacl", "-m", acl, "/dev/kvm"], { inherit: true });
+  await access("/dev/kvm", constants.R_OK | constants.W_OK);
   await appendFile(Bun.env.GITHUB_PATH!, root + "\n");
   await appendFile(Bun.env.GITHUB_ENV!, "LD_LIBRARY_PATH=" + root + "\n");
 }
