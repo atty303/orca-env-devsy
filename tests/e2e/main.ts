@@ -165,7 +165,7 @@ try {
     // Receipt-based resume must preserve guest modifications to auth.
     const state = resumed.recipeResult.userData;
     const proxy = [...state.command as string[], "--home", state.home as string, "workspace", "ssh", state.workspaceId as string, "--stdio", "--start-services=false", "--user", state.user as string].map(quote).join(" ");
-    const output = await run(["ssh", "-o", "ProxyCommand=" + proxy, `${state.user}@${state.workspaceId}.devsy`, 'cat "$HOME/.codex/auth.json"'], { env });
+    const output = await measure("codex-auth-read", budgets.operation, () => run(["ssh", "-o", "ProxyCommand=" + proxy, `${state.user}@${state.workspaceId}.devsy`, 'cat "$HOME/.codex/auth.json"'], { env, timeout: budgets.operation }), current.index);
     if (current.index === 0) assert.equal(output, "manual-change");
     else assert.equal(JSON.parse(output).tokens.access_token, JSON.parse(await Bun.file(env.CODEX_HOME + "/auth.json").text()).tokens.access_token);
     // Reopen transport and verify persisted data without recreating the fixture.
