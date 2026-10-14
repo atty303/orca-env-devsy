@@ -83,7 +83,7 @@ try {
       await eventually(() => succeeds(() => ssh(sockets + "/orca/socket", ["-o", "ProxyCommand=false", "root@devsy-workspace", "true"])));
       if (scenario.disabled) {
         await status("disabled");
-        assert(!await lstat(sockets + "/orca/credential-socket").then(() => true, () => false));
+        await eventually(() => lstat(sockets + "/orca/credential-socket").then(value => value.isSocket(), () => false));
         assert(!await succeeds(fill));
         console.log("PASS disabled forwarding");
         continue;
