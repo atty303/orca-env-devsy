@@ -1,4 +1,15 @@
 ///|
+fn codex_timestamp(milliseconds : UInt64) -> String raise {
+  let utc = @time.PlainDateTime::from_unix_second(
+    (milliseconds / 1000).reinterpret_as_int64(),
+    0,
+    @time.utc_offset,
+  )
+  let fraction = (milliseconds % 1000).to_string()
+  utc.to_string() + "." + "0".repeat(3 - fraction.length()) + fraction + "Z"
+}
+
+///|
 async fn codex_addon(state : Json) -> Unit {
   if field(state, "codexAuth") != Some(Json::boolean(true)) {
     return
@@ -23,6 +34,7 @@ async fn codex_addon(state : Json) -> Unit {
           "refresh_token": "",
           "account_id": auth.account,
         },
+        "last_refresh": codex_timestamp(@env.now()),
       }
       let script =
         #|set -eu

@@ -382,13 +382,37 @@ async test "Codex addon delivers synthetic access data only and excludes secrets
     directory + "/orca.yaml",
     "devsy:\n  connection: ssh\n  addons:\n    codexAuth: true\nenvironmentRecipes:\n  - id: test\n",
   )
+  let before = @env.now().reinterpret_as_int64()
   let (status, output, errors) = invoke("create", env, directory)
+  let after = @env.now().reinterpret_as_int64()
   assert_eq(status, 0)
   assert_false(errors.contains("addon failed"), msg=errors)
   let delivered = @json.parse(
     @fs.read_file(directory + "/delivered-auth").text(),
   )
   let tokens = field(delivered, "tokens").unwrap()
+  let refreshed = required(delivered, "last_refresh")
+  assert_eq(refreshed.length(), 24)
+  for index, character in refreshed.to_array() {
+    match index {
+      4 | 7 => assert_eq(character, '-')
+      10 => assert_eq(character, 'T')
+      13 | 16 => assert_eq(character, ':')
+      19 => assert_eq(character, '.')
+      23 => assert_eq(character, 'Z')
+      _ => assert_true(character >= '0' && character <= '9')
+    }
+  }
+  let parsed : @time.PlainDateTime = @string.FromStr::from_str(refreshed[0:23])
+  let refreshed_ms = parsed.to_unix_second() * 1000 +
+    (parsed.nanosecond() / 1000000).to_int64()
+  assert_true(refreshed_ms >= before && refreshed_ms <= after)
+  assert_eq(
+    field(delivered, "auth_mode"),
+    Some(Json::string("chatgptAuthTokens")),
+  )
+  assert_eq(field(tokens, "id_token"), Some(Json::string(token)))
+  assert_eq(field(tokens, "account_id"), Some(Json::string("fixture-account")))
   assert_eq(field(tokens, "access_token"), Some(Json::string(token)))
   assert_eq(field(tokens, "refresh_token"), Some(Json::string("")))
   let records = @fs.read_file(

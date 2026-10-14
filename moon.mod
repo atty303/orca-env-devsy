@@ -15,4 +15,5 @@ preferred_target = "native"
 import {
   "moonbitlang/async@0.22.4",
   "moonbit-community/yaml@0.0.6",
+  "moonbitlang/x@0.5.5",
 }
