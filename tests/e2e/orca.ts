@@ -2,7 +2,7 @@ import { _electron, type ElectronApplication } from "playwright";
 import { mkdir, chmod, rm, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { budgets, measure } from "./timing.ts";
-import { DiagnosticError, failureCategory } from "./diagnostics.ts";
+import { DiagnosticError } from "./diagnostics.ts";
 import { run, type Environment } from "../../scripts/process.ts";
 
 export type Runtime = {
@@ -10,7 +10,7 @@ export type Runtime = {
   recipeResult: { userData: Record<string, unknown>; connection: { type: string; projectRoot: string; pairingCode?: string } };
   sshTargetId?: string; runtimeEnvironmentId?: string;
 };
-export type Provision = { ok: boolean; error?: string; runtime: Runtime; sshTargetId?: string; environment?: { id: string } };
+export type Provision = { ok: boolean; error?: string; stderr?: string; runtime: Runtime; sshTargetId?: string; environment?: { id: string } };
 
 export async function latestOrca() {
   const headers: Record<string, string> = { "Accept": "application/vnd.github+json" };
@@ -71,7 +71,7 @@ export class Orca {
       console.log(`IPC ${section}.${method}: completed`);
       return result;
     } catch (error) {
-      throw new DiagnosticError(failureCategory(error));
+      throw new DiagnosticError(error);
     } finally { clearTimeout(timer!); }
   }
   async close() {

@@ -9,7 +9,7 @@ import { workspace, firstUse, firstUseFailures } from "./scenarios.ts";
 import { budgets, timings, measure } from "./timing.ts";
 import { installMicrosandboxDiagnostics } from "./microsandbox.ts";
 import { installPodmanDiagnostics } from "./podman.ts";
-import { failureCategory, adapterDiagnostics } from "./diagnostics.ts";
+import { failureCategory, provisionFailure, adapterDiagnostics } from "./diagnostics.ts";
 
 const index = process.argv.indexOf("--provider");
 const provider = index < 0 ? undefined : process.argv[index + 1];
@@ -33,7 +33,7 @@ const cleanupErrors: string[] = [];
 const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
 const pending = new Set<string>();
-const provisionFailures: { workspace: number; category: string }[] = [];
+const provisionFailures: ({ workspace: number } & ReturnType<typeof provisionFailure>)[] = [];
 let interrupted = false;
 const interrupt = () => {
   interrupted = true;
@@ -98,12 +98,12 @@ try {
     const result = await measure("provision", budgets.provision, async () => {
       const result = await orca!.call<Provision>("ephemeralVm", "provision", { provisionId, repoId: added.repo!.id, recipeId: definition.id, workspaceName: "e2e-" + index, workspaceId: "e2e-" + index, branch: "task", ref: source!.task }).catch(error => {
         const category = failureCategory(error);
-        provisionFailures.push({ workspace: index, category });
+        provisionFailures.push({ workspace: index, ...provisionFailure(error) });
         throw new Error(`Orca recipe IPC failed (${definition.id}, ${category})`);
       });
       if (!result.ok) {
         const category = failureCategory(result.error);
-        provisionFailures.push({ workspace: index, category });
+        provisionFailures.push({ workspace: index, ...provisionFailure(result.error, result.stderr) });
         throw new Error(`Orca recipe provisioning failed (${definition.id}, ${category})`);
       }
       return result;
