@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, lstat } from "node:fs/promises";
 import { run, start, terminate, until, quote, type Environment, processFailureCategory } from "../../scripts/process.ts";
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
@@ -48,7 +48,10 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       child.stderr?.on("data", data => { sessionErrors[i] = ((sessionErrors[i] ?? "") + data.toString()).slice(-8192); });
       sessions.push(child);
     }
-    await measure("parallel-ssh-ready", budgets.sshConnections, () => Promise.all([0, 1, 2].map(async session => until(async () => { try { await run([...base, "-S", socketRoot + "/" + session, "-O", "check", target], { env }); return true; } catch { return false; } }, budgets.sshConnections))), index).catch(error => {
+    await measure("parallel-ssh-ready", budgets.sshConnections, () => Promise.all([0, 1, 2].map(async session => {
+      await until(() => lstat(socketRoot + "/" + session).then(stat => stat.isSocket(), () => false), budgets.sshConnections);
+      await run([...base, "-S", socketRoot + "/" + session, "-O", "check", target], { env, timeout: budgets.operation });
+    })), index).catch(error => {
       console.error("SSH connection failure:", JSON.stringify({ workspace: index, sessions: sessions.map((child, i) => ({ exitCode: child.exitCode, category: processFailureCategory(sessionErrors[i] ?? "") })) }));
       throw error;
     });
@@ -146,7 +149,12 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       const processes = await run(["ps", "-ww", "-axo", "pid=,command="], { env, timeout: budgets.operation });
       const matches = processes.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match?.[2] === expected);
       assert.equal(matches.length, 1, "Crash only the worker with this exact executable and owned directory");
-      process.kill(Number(matches[0]![1]), "SIGKILL");
+      const pid = Number(matches[0]![1]);
+      process.kill(pid, "SIGKILL");
+      await until(async () => {
+        try { process.kill(pid, 0); return false; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+      }, budgets.recovery);
     };
     const recoverRelay = async () => {
       const saved = JSON.parse(await readFile(state.tunnelDirectory + "/state.json", "utf8"));

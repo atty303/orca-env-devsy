@@ -2023,3 +2023,55 @@ async test "SSH recipes retain a recovery worker without a server port and reap 
   assert_eq(status, 0, msg=errors)
   assert_false(@fs.exists(resumed_worker))
 }
+
+///|
+async test "adoption rejects stopped replaced or unqueryable workspaces and reaps the old master" {
+  for condition in ["stopped", "replaced", "unqueryable"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let state = field(@json.parse(output), "userData").unwrap()
+    let worker = required(state, "tunnelDirectory")
+    @fs.remove(worker + "/enabled")
+    @async.with_timeout(5000, async fn() {
+      while worker_alive(worker) {
+        @async.sleep(100)
+      }
+    })
+    let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
+    let socket = required(saved, "socketDirectory")
+    @fs.mkdir(socket, recursive=true, allow_exist=true)
+    // Fake OpenSSH checks this owned marker as a live orphaned master.
+    @fs.write_file(socket + "/socket", "")
+    @fs.write_file(worker + "/enabled", "")
+    match condition {
+      "stopped" => @fs.write_file(directory + "/stopped", "")
+      "replaced" => @fs.write_file(directory + "/uid", "different-uid")
+      _ =>
+        @fs.write_file(
+          directory + "/bin/devsy",
+          "#!/bin/sh\nexit 1\n",
+          permission=0o700,
+        )
+    }
+    let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
+      @env.current_dir().unwrap() +
+      "/_build/native/release/build/cmd/main/main.exe",
+    )
+    ignore(
+      @process.collect_output(
+        executable,
+        ["--tunnel-worker", worker],
+        extra_env=env,
+      ),
+    )
+    assert_false(@fs.exists(socket + "/socket"))
+    assert_false(@fs.exists(socket + "/credential-socket"))
+    assert_false(worker_alive(worker))
+  }
+}
