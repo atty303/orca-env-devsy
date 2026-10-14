@@ -392,7 +392,8 @@ async fn create_state() -> Json {
       required(state, "workspaceId"),
       "--ide-launch",
       "skip",
-      "--git-clone-strategy=full",
+      // Devsy represents its full clone strategy with an empty option value.
+      "--git-clone-strategy=",
     ] +
     config.up_args
   let output = devsy(state, args, "workspace-create")

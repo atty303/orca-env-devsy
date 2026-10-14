@@ -118,6 +118,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   assert_eq(saved_command(state), ["devsy"])
   assert_eq(field(state, "upArgs"), None)
   let args = @fs.read_file(directory + "/args")
+  assert_true(args.text().contains("\n--git-clone-strategy=\n"))
   assert_true(args.text().contains("VALUE=two words; $(ignored)\n"))
   @fs.write_file(directory + "/orca.yaml", "deliberately invalid yaml: [")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
