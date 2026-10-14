@@ -19,9 +19,10 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      while test ! -f "$FAKE_HOME/release-list"; do sleep 0.1; done
     #|    fi
     #|    if test -f "$FAKE_HOME/created"; then printf '[{"id":"test-id","uid":"%s"}]\n' "$(cat "$FAKE_HOME/uid")"; else printf '[]\n'; fi ;;
-    #|  *'workspace up'*) touch "$FAKE_HOME/created"; test ! -f "$FAKE_HOME/fail-up"
+    #|  *'workspace status'*) if test -f "$FAKE_HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
+    #|  *'workspace up'*) rm -f "$FAKE_HOME/stopped"; touch "$FAKE_HOME/created"; test ! -f "$FAKE_HOME/fail-up"
     #|    if test -f "$FAKE_HOME/up-result"; then cat "$FAKE_HOME/up-result"; else printf '{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}\n'; fi ;;
-    #|  *'workspace stop'*) test ! -f "$FAKE_HOME/fail-stop" ;;
+    #|  *'workspace stop'*) test ! -f "$FAKE_HOME/fail-stop"; touch "$FAKE_HOME/stopped" ;;
     #|  *'workspace delete'*) test ! -f "$FAKE_HOME/fail-delete"; rm -f "$FAKE_HOME/created" ;;
     #|  *) exit 2 ;;
     #|esac
@@ -41,7 +42,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'--recipe-json'*) touch "$FAKE_HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
     #|  *'-O check'*)
     #|    if test -f "$FAKE_HOME/fail-tunnel-cleanup"; then
-    #|      for arg in "$@"; do case "$arg" in */socket) printf '{invalid' > "${arg%/socket}/state.json" ;; esac; done
+    #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
     #|    fi
     #|    test -f "$FAKE_HOME/listener-ready" ;;
     #|  *'-O exit'*) rm -f "$FAKE_HOME/listener-ready" ;;
@@ -72,6 +73,7 @@ async fn fixture() -> (String, Map[String, String]) {
     "/bin:" +
     @env.get_env_var("PATH").unwrap_or("/usr/bin:/bin"),
     "HOME": directory,
+    "XDG_STATE_HOME": directory + "/.local/state",
     "CODEX_HOME": directory + "/.codex",
     "FAKE_HOME": directory,
     "ORCA_REPO_PATH": directory,
@@ -102,7 +104,11 @@ async fn invoke(
   }
   let (status, stdout, stderr) = @process.collect_output(
     executable,
-    [mode],
+    if mode == "reconnect" && payload is Some(_) {
+      [mode, "--receipt"]
+    } else {
+      [mode]
+    },
     extra_env=env,
     stdin?=input,
   )
@@ -360,23 +366,38 @@ async test "failed provisioning cleans the requested UID before a recipe receipt
 
 ///|
 async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
+  @fs.write_file(directory + "/fixture-tunnel-enabled", "")
   @async.with_task_group(async fn(group) {
     group.spawn_bg(async fn() {
-      while !@fs.exists(directory + "/listener-port") {
-        @async.sleep(10)
-      }
-      let port = @fs.read_file(directory + "/listener-port")
-        .text()
-        .trim()
-        .to_owned()
-      let listener = @socket.TcpServer(@socket.Addr::parse("127.0.0.1:" + port))
-      defer listener.close()
-      @fs.write_file(directory + "/listener-ready", "")
-      while @fs.exists(directory + "/listener-ready") {
+      while @fs.exists(directory + "/fixture-tunnel-enabled") {
+        if !@fs.exists(directory + "/listener-port") {
+          @async.sleep(10)
+          continue
+        }
+        let port = @fs.read_file(directory + "/listener-port")
+          .text()
+          .trim()
+          .to_owned()
+        let listener = @socket.TcpServer(
+          @socket.Addr::parse("127.0.0.1:" + port),
+        )
+        defer listener.close()
+        @fs.write_file(directory + "/listener-ready", "")
+        while @fs.exists(directory + "/listener-ready") &&
+              @fs.exists(directory + "/fixture-tunnel-enabled") {
+          @async.sleep(10)
+        }
         @async.sleep(10)
       }
     })
-    defer (@fs.remove(directory + "/listener-ready") catch { _ => () })
+    defer {
+      @fs.remove(directory + "/fixture-tunnel-enabled") catch {
+        _ => ()
+      }
+      @fs.remove(directory + "/listener-ready") catch {
+        _ => ()
+      }
+    }
     run()
   })
 }
@@ -1238,7 +1259,11 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
       .to_array()
     let sockets = args.filter(arg => arg.has_suffix("/socket"))
     assert_true(sockets.length() > 0)
-    let worker = sockets[0].to_owned().replace_all(old="/socket", new="")
+    let base = directory + "/.local/state/orca-env-devsy/tunnels"
+    let worker = base + "/" + @fs.readdir(base)[0]
+    let socket_directory = sockets[0]
+      .to_owned()
+      .replace_all(old="/socket", new="")
     // Repair only this deliberately corrupted test state so the owned worker can stop.
     @fs.remove(worker + "/state.json")
     @fs.remove(worker + "/enabled")
@@ -1249,6 +1274,7 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
       }
     })
     @fs.rmdir(worker, recursive=true)
+    @fs.rmdir(socket_directory, recursive=true)
     let records = @fs.read_file(
       directory + "/.local/state/orca-env-devsy/events.jsonl",
     ).text()
@@ -1324,4 +1350,123 @@ async test "binary stderr never changes command failure with recording enabled o
   assert_true(records.contains("authentication_failed"))
   assert_true(records.contains("\"exitCode\":7"))
   assert_false(records.contains("private-binary-secret"))
+}
+
+///|
+async test "bulk reconnect restores persistent XDG state without a receipt or current YAML" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  env.set("XDG_STATE_HOME", directory + "/xdg-state")
+  with_fake_tunnel(directory, async fn() {
+    let document : Json = {
+      "devsy": {
+        "connection": "orca-server",
+        "command": Json::array(configured_launcher(directory).map(Json::string)),
+      },
+      "environmentRecipes": [{ "id": "test" }],
+    }
+    @fs.write_file(directory + "/orca.yaml", document.stringify())
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let receipt = @json.parse(output)
+    let state = field(receipt, "userData").unwrap()
+    let worker = required(state, "tunnelDirectory")
+    assert_true(
+      worker.has_prefix(directory + "/xdg-state/orca-env-devsy/tunnels/"),
+    )
+    let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    let before = @json.parse(@fs.read_file(worker + "/state.json").text())
+    assert_false(before.stringify().contains("fixture-pairing"))
+    @fs.remove(worker + "/enabled")
+    @async.with_timeout(5000, async fn() {
+      while worker_alive(worker) {
+        @async.sleep(100)
+      }
+    })
+    @fs.rmdir(required(before, "socketDirectory"), recursive=true)
+    @fs.write_file(worker + "/enabled", "")
+    @fs.write_file(directory + "/orca.yaml", "invalid: [")
+    let (status, output, errors) = invoke("reconnect", env, directory)
+    assert_eq(status, 0, msg=errors)
+    assert_eq(output, "")
+    let after = @json.parse(@fs.read_file(worker + "/state.json").text())
+    assert_eq(field(after, "localPort"), field(before, "localPort"))
+    assert_eq(field(after, "command"), field(before, "command"))
+    assert_true(
+      field(after, "socketDirectory") != field(before, "socketDirectory"),
+    )
+    assert_true(worker_alive(worker))
+    let (status, output, _) = invoke("reconnect", env, directory)
+    assert_eq(status, 0)
+    assert_eq(output, "")
+    assert_eq(@json.parse(@fs.read_file(worker + "/state.json").text()), after)
+    let (status, _, _) = invoke("suspend", env, directory, payload~)
+    assert_eq(status, 0)
+    assert_false(@fs.exists(worker))
+    let (status, output, _) = invoke("reconnect", env, directory)
+    assert_eq(status, 0)
+    assert_eq(output, "")
+  })
+}
+
+///|
+async test "bulk recovery skips disabled stopped and replaced workspaces and continues past corrupt entries" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let receipt = @json.parse(output)
+    let state = field(receipt, "userData").unwrap()
+    let worker = required(state, "tunnelDirectory")
+    let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    @fs.remove(worker + "/enabled")
+    @async.with_timeout(5000, async fn() {
+      while worker_alive(worker) {
+        @async.sleep(100)
+      }
+    })
+    let base = directory + "/.local/state/orca-env-devsy/tunnels"
+    @fs.mkdir(base + "/disabled")
+    @fs.write_file(base + "/disabled/state.json", "{invalid")
+    let (status, _, _) = invoke("reconnect", env, directory)
+    assert_eq(status, 0)
+    assert_false(worker_alive(worker))
+    @fs.write_file(worker + "/enabled", "")
+    @fs.write_file(directory + "/stopped", "")
+    let args = @fs.read_file(directory + "/ssh-args").text()
+    let (status, _, _) = invoke("reconnect", env, directory)
+    assert_eq(status, 0)
+    assert_eq(@fs.read_file(directory + "/ssh-args").text(), args)
+    @fs.remove(directory + "/stopped")
+    @fs.mkdir(base + "/blocked")
+    let blocked = @json.parse(@fs.read_file(worker + "/state.json").text())
+    set_field(blocked, "command", ["/bin/sh", "-c", "exec sleep 60", "sh"])
+    @fs.write_file(base + "/blocked/state.json", blocked.stringify())
+    @fs.write_file(base + "/blocked/enabled", "")
+    @fs.mkdir(base + "/corrupt")
+    @fs.write_file(base + "/corrupt/enabled", "")
+    @fs.write_file(base + "/corrupt/state.json", "{invalid")
+    let (status, _, _) = invoke("reconnect", env, directory)
+    assert_true(status != 0)
+    assert_true(worker_alive(worker))
+    @fs.remove(base + "/blocked/enabled")
+    @fs.remove(base + "/corrupt/enabled")
+    @fs.write_file(worker + "/enabled", "")
+    let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
+    set_field(saved, "workspaceUid", Json::string("replaced-fixture-uid"))
+    // Use a separate inactive entry, leaving the live test worker owned by its receipt.
+    @fs.mkdir(base + "/replaced")
+    @fs.write_file(base + "/replaced/state.json", saved.stringify())
+    @fs.write_file(base + "/replaced/enabled", "")
+    let (status, _, _) = invoke("reconnect", env, directory)
+    assert_eq(status, 0)
+    assert_false(@fs.exists(base + "/replaced/enabled"))
+  })
 }

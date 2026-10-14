@@ -748,7 +748,7 @@ fn valid_commit(value : String) -> Bool {
 ///|
 pub async fn usage_error() -> Unit {
   @stdio.stderr.write(
-    "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect>\n",
+    "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]>\n",
   )
   raise AdapterError("Invalid command")
 }

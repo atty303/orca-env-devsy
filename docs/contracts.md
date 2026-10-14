@@ -82,10 +82,17 @@ protocol/capability negotiation.
 
 Pairing data belongs to the connection result; it is never duplicated in
 `userData`. Local SSH control sockets belong to the adapter's tunnels and are
-closed at suspend/destroy. Reconnect reuses the saved connection offer and port.
+closed at suspend/destroy. `reconnect` restores every enabled tunnel in the current
+adapter state directory, retaining each saved command, location environment, UID
+and local port. It emits no recipe JSON. `reconnect --receipt` accepts the saved
+lifecycle payload and re-emits its connection offer after restoring that tunnel.
+Neither path rereads YAML or installs/starts a Server. Workspace status is checked
+before worker connections; stopped or busy workspaces are skipped by bulk recovery.
+Devsy's SSH path can itself start a workspace, so a stop racing that status check
+is not guaranteed to remain stopped.
 A detached adapter worker owns the SSH master and reconnects after transient
 transport failures using the same local port with bounded exponential backoff.
-It does not start stopped workspaces or register a boot service. Suspend/destroy
+It does not run workspace-up or register a boot service. Suspend/destroy
 stop the workspace first; on failure the worker remains enabled. Successful
 stop/delete disables and reaps the worker. Destroy also cleans up when the
 workspace is already deleted, and may be repeated. Remote Server termination
@@ -98,7 +105,7 @@ SSH, Orca, authentication responses and arbitrary subprocess exceptions are not
 printed. Bounded local JSONL records contain stage, status, adapter version, run ID, timestamp,
 process duration and exit code, fixed failure classifications, known Devsy phase
 transitions, and tunnel retry attempt/delay in
-`$HOME/.local/state/orca-env-devsy/events.jsonl`, with private permissions.
+`${XDG_STATE_HOME:-$HOME/.local/state}/orca-env-devsy/events.jsonl`, with private permissions.
 Process records distinguish start, success, process API failure and nonzero exit.
 Devsy phase records are observed after process output completes; they are not live
 backend timing measurements. Unknown phases and free-text errors are omitted.
@@ -106,8 +113,14 @@ Command values are not recorded; inspect the saved `userData.command` locally
 when checking the effective invocation. Recording failures do not affect workspace actions. `ORCA_ENV_DEVSY_RECORDING=0`
 disables recording. The file is rotated at 256 KiB; remove it to delete records,
 or copy it locally for diagnosis. Tunnel control state is stored privately in
-the directory recorded as `userData.tunnelDirectory`; successful shutdown removes
-its owned files. There is no remote telemetry.
+`${XDG_STATE_HOME:-$HOME/.local/state}/orca-env-devsy/tunnels/`, with one private
+directory per tunnel recorded as `userData.tunnelDirectory`. Existing state and
+its enabled marker survive host restart; SSH control sockets use separate short
+temporary paths. Successful suspend/destroy removes the owned state. Missing or
+replaced workspace UIDs disable recovery; one failed target does not prevent
+attempting the others. Existing temporary states become persistent on the next
+resume or receipt-based reconnect; previously unregistered states cannot be
+recovered in bulk after their temporary files have disappeared. There is no remote telemetry.
 
 The Codex addon reads `$CODEX_HOME/auth.json` (default `$HOME/.codex/auth.json`),
 refreshes managed ChatGPT credentials when fewer than seven days remain using

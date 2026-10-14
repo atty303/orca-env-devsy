@@ -13,8 +13,7 @@ async fn save_diagnostic(
     return
   }
   try {
-    let home = environment("HOME")
-    let dir = home + "/.local/state/orca-env-devsy"
+    let dir = adapter_state_home()
     @fs.mkdir(dir, permission=0o700, recursive=true, allow_exist=true)
     @fs.chmod(dir, 0o700)
     let path = dir + "/events.jsonl"
