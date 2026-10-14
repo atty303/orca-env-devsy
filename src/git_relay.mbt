@@ -126,11 +126,16 @@ async fn monitor_git_relay(
   }
   let mut last = ""
   let mut attempt = 0
-  // Devsy starts primary services asynchronously. Do not race that startup
-  // with a second service owner; successful readiness never waits this grace.
-  let startup_deadline = @env.now() + 2000
+  // A cold primary can take arbitrarily long to start services. Only a relay
+  // that was previously ready can be lost; preserve that fact across adoption.
+  let established = directory + "/git-established"
+  let mut was_ready = @fs.exists(established)
   while @fs.exists(enabled) {
     if git_relay_ready(state, directory) {
+      if !was_ready {
+        @fs.write_file(established, "", permission=0o600)
+        was_ready = true
+      }
       if last != "ready" {
         git_relay_status(directory, "ready")
         last = "ready"
@@ -139,7 +144,11 @@ async fn monitor_git_relay(
       @async.sleep(500)
       continue
     }
-    if @env.now() < startup_deadline {
+    if !was_ready {
+      if last != "pending" {
+        git_relay_status(directory, "pending")
+        last = "pending"
+      }
       @async.sleep(100)
       continue
     }

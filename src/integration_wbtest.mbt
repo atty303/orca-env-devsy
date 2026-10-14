@@ -56,6 +56,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|esac
     #|case "$*" in
     #|  *'orca-git-readiness'*)
+    #|    touch "$FAKE_HOME/git-probed"
     #|    test -f "$control"
     #|    test ! -f "$FAKE_HOME/git-unavailable" ;;
     #|  *'credential-socket'*'-O exit'*) rm -f "$control" ;;
@@ -732,6 +733,32 @@ async test "command diagnostics distinguish process failure and exit failure wit
     assert_eq(output, "")
     assert_false(errors.contains("private-argument-fixture"))
   }
+  for
+    pair in [
+      ("create microsandbox VM: network: permission denied", "vm_network"),
+      ("create microsandbox VM: mount: not found", "vm_mount"),
+      ("prepare microsandbox final image: not found", "vm_image"),
+    ] {
+    let document : Json = {
+      "devsy": {
+        "connection": "ssh",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "printf '%s\\n' " + quote(pair.0) + "; exit 7",
+        ],
+      },
+      "environmentRecipes": [{ "id": "test" }],
+    }
+    @fs.write_file(fixture_dir + "/orca.yaml", document.stringify())
+    let (status, _, _) = invoke("create", env, fixture_dir)
+    assert_true(status != 0)
+    assert_true(
+      @fs.read_file(fixture_dir + "/.local/state/orca-env-devsy/events.jsonl")
+      .text()
+      .contains("\"errorType\":\"" + pair.1 + "\""),
+    )
+  }
   let records = @fs.read_file(
     fixture_dir + "/.local/state/orca-env-devsy/events.jsonl",
   ).text()
@@ -1119,7 +1146,7 @@ async test "Git relay loss recovers without replacing the Orca master and cleans
 }
 
 ///|
-async test "unrecoverable Git readiness warns and retries while Orca remains available" {
+async test "unrecoverable established Git relay retries while Orca remains available" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
@@ -1127,13 +1154,10 @@ async test "unrecoverable Git readiness warns and retries while Orca remains ava
       directory + "/orca.yaml",
       "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
     )
-    @fs.write_file(directory + "/git-unavailable", "")
-    @fs.write_file(directory + "/git-unrecoverable", "")
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
-    assert_true(
-      errors.contains("Git credential relay readiness is unavailable"),
-    )
+    @fs.write_file(directory + "/git-unavailable", "")
+    @fs.write_file(directory + "/git-unrecoverable", "")
     let result = @json.parse(output)
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
@@ -1177,7 +1201,10 @@ async test "delayed primary Git readiness does not start a competing services ow
     )
     let (status, output, errors) = @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() {
-        @async.sleep(500)
+        while !@fs.exists(directory + "/git-probed") {
+          @async.sleep(10)
+        }
+        @async.sleep(3000)
         if @fs.exists(directory + "/git-unavailable") {
           @fs.remove(directory + "/git-unavailable")
         }
@@ -2462,5 +2489,90 @@ async test "adoption publishes connected independently of pending Git options" {
     })
     @fs.remove(worker + "/enabled")
     assert_eq(child.wait(), 0)
+  })
+}
+
+///|
+async test "adopted primary is stopped before reconnecting after a failed health check" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  @fs.remove(worker + "/enabled")
+  @async.with_timeout(5000, async fn() {
+    while worker_alive(worker) {
+      @async.sleep(10)
+    }
+  })
+  let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
+  let socket = required(saved, "socketDirectory")
+  @fs.mkdir(socket, recursive=true, allow_exist=true)
+  @fs.write_file(socket + "/socket", "")
+  @fs.write_file(worker + "/enabled", "")
+  @fs.write_file(worker + "/status.json", "{}")
+  @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|set -eu
+    #|control=
+    #|previous=
+    #|for arg in "$@"; do
+    #|  if test "$previous" = -S; then control="$arg"; fi
+    #|  previous="$arg"
+    #|done
+    #|case "$*" in
+    #|  *'credential-socket'*) : ;;
+    #|  *'-O check'*)
+    #|    if test -f "$FAKE_HOME/fail-next-check"; then rm "$FAKE_HOME/fail-next-check"; exit 1; fi ;;
+    #|  *'-N'*)
+    #|    if test -f "$control"; then touch "$FAKE_HOME/master-conflict"; exit 1; fi
+    #|    touch "$FAKE_HOME/master-recreated" ;;
+    #|esac
+    #|exec "$FAKE_HOME/bin/ssh-original" "$@"
+  @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
+  @async.with_timeout(5000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let sink = @process.redirect_to_file("/dev/null", shared=true)
+      defer sink.close()
+      let child = @process.spawn(
+        group,
+        integration_binary(),
+        ["--tunnel-worker", worker],
+        extra_env=env,
+        stdout=sink,
+        stderr=sink,
+      )
+      defer (@fs.remove(worker + "/enabled") catch { _ => () })
+      while field(
+              @json.parse(@fs.read_file(worker + "/status.json").text()),
+              "status",
+            ) !=
+            Some(Json::string("connected")) {
+        @async.sleep(10)
+      }
+      // The primary's earlier readiness survives supervisor replacement.
+      @fs.write_file(directory + "/git-unavailable", "")
+      while !@fs.exists(directory + "/git-management") {
+        @async.sleep(10)
+      }
+      @fs.write_file(directory + "/fail-next-check", "")
+      while !@fs.exists(directory + "/master-recreated") &&
+            !@fs.exists(directory + "/master-conflict") {
+        @async.sleep(10)
+      }
+      assert_false(@fs.exists(directory + "/master-conflict"))
+      assert_true(@fs.exists(directory + "/master-recreated"))
+      @fs.remove(worker + "/enabled")
+      assert_eq(child.wait(), 0)
+    })
   })
 }

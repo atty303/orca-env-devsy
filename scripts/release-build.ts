@@ -14,8 +14,8 @@ const interrupt = () => {
   interrupted = true;
   for (const child of children) stop(child, "SIGTERM");
 };
-process.once("SIGINT", interrupt);
-process.once("SIGTERM", interrupt);
+const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+for (const signal of signals) process.on(signal, interrupt);
 try {
   await writeFile("src/version.mbt", `///|\npub let version : String = "${version}"\n`);
   await mkdir(output, { recursive: true });
@@ -38,6 +38,5 @@ try {
 } finally {
   await writeFile("src/version.mbt", original);
   await rm(work, { recursive: true, force: true });
-  process.removeListener("SIGINT", interrupt);
-  process.removeListener("SIGTERM", interrupt);
+  for (const signal of signals) process.removeListener(signal, interrupt);
 }

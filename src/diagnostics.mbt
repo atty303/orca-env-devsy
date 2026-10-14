@@ -87,16 +87,6 @@ fn process_error_type(output : String) -> String {
     "name_resolution"
   } else if text.contains("controlsocket") || text.contains("control socket") {
     "control_socket"
-  } else if text.contains("no such file or directory") ||
-    text.contains("not found") {
-    "missing_resource"
-  } else if text.contains("permission denied") {
-    "permission_denied"
-  } else if text.contains("database is locked") ||
-    text.contains("database locked") {
-    "database_locked"
-  } else if text.contains("too many open files") {
-    "file_limit"
   } else if text.contains("build_vm:") {
     "vm_boot"
   } else if text.contains("create microsandbox vm") && text.contains("network:") {
@@ -110,6 +100,16 @@ fn process_error_type(output : String) -> String {
     "vm_create"
   } else if text.contains("start microsandbox vm") {
     "vm_start"
+  } else if text.contains("no such file or directory") ||
+    text.contains("not found") {
+    "missing_resource"
+  } else if text.contains("permission denied") {
+    "permission_denied"
+  } else if text.contains("database is locked") ||
+    text.contains("database locked") {
+    "database_locked"
+  } else if text.contains("too many open files") {
+    "file_limit"
   } else {
     "process_exit"
   }
