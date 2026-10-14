@@ -176,7 +176,12 @@ fn saved_command(state : Json) -> Array[String] raise ConfigError {
 }
 
 ///|
-fn proxy(state : Json, services~ : Bool = true) -> String raise {
+fn proxy(
+  state : Json,
+  executable : String,
+  services~ : Bool = true,
+  lease~ : String = "",
+) -> String raise {
   let args = ["env"]
   for name in location_variables {
     args.push("-u")
@@ -188,13 +193,8 @@ fn proxy(state : Json, services~ : Bool = true) -> String raise {
       args.push(name + "=" + value)
     }
   }
-  // bash accepts exec --, while dash treats -- as an executable. Probe the
-  // builtin in a subshell to preserve leading-dash command names on both.
   (args +
-  [
-    "/bin/sh", "-c", "if (exec --) 2>/dev/null; then exec -- \"$@\"; else exec \"$@\"; fi",
-    "sh",
-  ] +
+  [executable, "--ssh-proxy", lease] +
   saved_command(state) +
   devsy_args(state) +
   [
@@ -212,14 +212,18 @@ fn proxy(state : Json, services~ : Bool = true) -> String raise {
 }
 
 ///|
-fn ssh_args(state : Json, services~ : Bool = true) -> Array[String] raise {
+async fn ssh_args(
+  state : Json,
+  services~ : Bool = true,
+  lease~ : String = "",
+) -> Array[String] {
   [
     "-o",
     "BatchMode=yes",
     "-o",
     "ConnectTimeout=15",
     "-o",
-    "ProxyCommand=" + proxy(state, services~),
+    "ProxyCommand=" + proxy(state, adapter_executable(), services~, lease~),
     "-o",
     "StrictHostKeyChecking=no",
     "-o",
@@ -633,7 +637,7 @@ async fn emit_connection(
       "host": required(state, "workspaceId") + ".devsy",
       "port": 22,
       "username": required(state, "user"),
-      "proxyCommand": proxy(state, services=false),
+      "proxyCommand": proxy(state, adapter_executable(), services=false),
     }
     let output : Json = {
       "type": "ssh",

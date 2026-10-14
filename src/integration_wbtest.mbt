@@ -1,4 +1,12 @@
 ///|
+fn integration_binary() -> String {
+  @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
+    @env.current_dir().unwrap() +
+    "/_build/native/release/build/cmd/main/main.exe",
+  )
+}
+
+///|
 async fn fixture() -> (String, Map[String, String]) {
   let directory = @fs.tmpdir(prefix="orca-env-devsy-test")
   @fs.mkdir(directory + "/bin")
@@ -121,10 +129,7 @@ async fn invoke(
   directory : String,
   payload? : Json,
 ) -> (Int32, String, String) {
-  let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
-    @env.current_dir().unwrap() +
-    "/_build/native/release/build/cmd/main/main.exe",
-  )
+  let executable = integration_binary()
   let input = if payload is Some(value) {
     @fs.write_file(directory + "/stdin.json", value.stringify())
     Some(@process.redirect_from_file(directory + "/stdin.json"))
@@ -264,7 +269,7 @@ async test "server CLI emits pairing separately and reconnect does not install o
     assert_true(
       @fs.read_file(directory + "/ssh-args")
       .text()
-      .contains("ProxyCommand=" + proxy(state)),
+      .contains("ProxyCommand=" + proxy(state, integration_binary())),
     )
     @fs.write_file(directory + "/orca.yaml", "invalid: [")
     @fs.write_file(directory + "/ssh-args", "")
@@ -275,7 +280,11 @@ async test "server CLI emits pairing separately and reconnect does not install o
       field(result, "connection"),
     )
     let commands = @fs.read_file(directory + "/ssh-args")
-    assert_true(commands.text().contains("ProxyCommand=" + proxy(state)))
+    assert_true(
+      commands
+      .text()
+      .contains("ProxyCommand=" + proxy(state, integration_binary())),
+    )
     assert_false(commands.text().contains("--recipe-json"))
     assert_false(commands.text().contains("releases/latest"))
   })
@@ -628,7 +637,7 @@ async test "configured command survives YAML and environment changes and real Op
       "-o",
       "ConnectTimeout=2",
       "-o",
-      "ProxyCommand=" + proxy(state),
+      "ProxyCommand=" + proxy(state, integration_binary()),
       "developer@devsy-workspace",
     ],
     extra_env=proxy_env,
@@ -750,7 +759,7 @@ async test "proxy preserves binary streams and the configured command exit statu
   for expected in [0, 37] {
     let (status, output, errors) = @process.collect_output(
       "/bin/sh",
-      ["-c", "exec " + proxy(state)],
+      ["-c", "exec " + proxy(state, integration_binary())],
       extra_env={ "PATH": "/usr/bin:/bin", "PROXY_EXIT": expected.to_string() },
       inherit_env=false,
       cwd="/",
@@ -794,7 +803,7 @@ async test "PATH executable beginning with a dash stays unchanged in direct and 
       "-o",
       "ConnectTimeout=2",
       "-o",
-      "ProxyCommand=" + proxy(state),
+      "ProxyCommand=" + proxy(state, integration_binary()),
       "developer@devsy-workspace",
     ],
     extra_env=external_env,
@@ -1819,10 +1828,7 @@ async test "lifecycle progress reaches stderr and diagnostics before workspace u
     #|esac
     #|exec "$FAKE_HOME/bin/devsy-original" "$@"
   @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
-  let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
-    @env.current_dir().unwrap() +
-    "/_build/native/release/build/cmd/main/main.exe",
-  )
+  let executable = integration_binary()
   let stdout = @process.redirect_to_file(
     directory + "/progress-stdout",
     shared=true,
@@ -1959,10 +1965,7 @@ async test "unavailable progress stderr preserves lifecycle result with recordin
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
   )
-  let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
-    @env.current_dir().unwrap() +
-    "/_build/native/release/build/cmd/main/main.exe",
-  )
+  let executable = integration_binary()
   for recording in ["1", "0"] {
     env.set("ORCA_ENV_DEVSY_RECORDING", recording)
     let (status, output, _) = @process.collect_output(
@@ -2104,10 +2107,7 @@ async test "adoption rejects stopped replaced or unqueryable workspaces and reap
           permission=0o700,
         )
     }
-    let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
-      @env.current_dir().unwrap() +
-      "/_build/native/release/build/cmd/main/main.exe",
-    )
+    let executable = integration_binary()
     ignore(
       @process.collect_output(
         executable,
@@ -2128,4 +2128,135 @@ async test "adoption rejects stopped replaced or unqueryable workspaces and reap
       )
     }
   }
+}
+
+///|
+async test "SSH proxy preserves binary input and reaps its child on EOF or signals" {
+  for termination in ["eof", "HUP", "TERM"] {
+    let (directory, _) = fixture()
+    defer cleanup_fixture(directory)
+    @fs.write_file(
+      directory + "/transport",
+      "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\ncat\nwhile :; do :; done\n",
+      permission=0o700,
+    )
+    @async.with_timeout(3000, async fn() {
+      @async.with_task_group(async fn(group) {
+        let (input, writer) = @process.write_to_process()
+        defer writer.close()
+        let (reader, output) = @process.read_from_process()
+        defer reader.close()
+        let sink = @process.redirect_to_file("/dev/null", shared=true)
+        defer sink.close()
+        let proxy = @process.spawn(
+          group,
+          integration_binary(),
+          [
+            "--ssh-proxy",
+            "",
+            directory + "/transport",
+            directory + "/child-pid",
+          ],
+          stdin=input,
+          stdout=output,
+          stderr=sink,
+        )
+        let payload = b"\x00\x80\xff\r\nSSH"
+        writer.write(payload)
+        assert_eq(reader.read_exactly(payload.length()), payload)
+        let pid = @fs.read_file(directory + "/child-pid")
+          .text()
+          .trim()
+          .to_owned()
+        assert_true(@string.parse_int(pid) > 1)
+        if termination == "eof" {
+          writer.close()
+        } else {
+          ignore(
+            @process.collect_output("kill", [
+              "-" + termination,
+              proxy.pid.to_string(),
+            ]),
+          )
+        }
+        let code = proxy.wait()
+        if termination == "eof" {
+          assert_eq(code, 0)
+        }
+        let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
+        assert_true(alive != 0, msg="Proxy child must be reaped before exit")
+      })
+    })
+  }
+}
+
+///|
+async test "SSH proxy retains early and drained exit codes and closes launcher descendants" {
+  let (directory, _) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(directory + "/input", "x".repeat(1000000))
+  for script in ["exit 37", "cat >/dev/null; sleep 0.3; printf tail; exit 37"] {
+    let (code, output, _) = @process.collect_output(
+      integration_binary(),
+      ["--ssh-proxy", "", "/bin/sh", "-c", script],
+      stdin=@process.redirect_from_file(directory + "/input"),
+    )
+    assert_eq(code, 37)
+    assert_eq(output.text(), if script == "exit 37" { "" } else { "tail" })
+  }
+  @async.with_timeout(2500, async fn() {
+    let (code, output, _) = @process.collect_output(
+      integration_binary(),
+      [
+        "--ssh-proxy", "", "/bin/sh", "-c", "sleep 30 & printf '%s' \"$!\"; wait",
+      ],
+      stdin=@process.redirect_from_file("/dev/null"),
+    )
+    assert_eq(code, 0)
+    assert_true(@string.parse_int(output.text().trim().to_owned()) > 1)
+    let (alive, _, _) = @process.collect_output("kill", ["-0", output.text()])
+    assert_true(
+      alive != 0,
+      msg="Launcher descendants must not survive proxy cleanup",
+    )
+  })
+}
+
+///|
+async test "SSH transport retains default signals and launcher termination traps" {
+  let (directory, _) = fixture()
+  defer cleanup_fixture(directory)
+  let (code, _, _) = @process.collect_output(
+    integration_binary(),
+    ["--ssh-proxy", "", "/bin/sh", "-c", "kill -TERM $$; exit 37"],
+    stdin=@process.redirect_from_file("/dev/null"),
+  )
+  assert_eq(code, 143)
+  @async.with_timeout(2500, async fn() {
+    @async.with_task_group(async fn(group) {
+      let (input, writer) = @process.write_to_process()
+      defer writer.close()
+      let child = @process.spawn(
+        group,
+        integration_binary(),
+        [
+          "--ssh-proxy",
+          "",
+          "/bin/sh",
+          "-c",
+          "trap 'printf stopped > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do :; done",
+          "sh",
+          directory + "/terminated",
+          directory + "/ready",
+        ],
+        stdin=input,
+      )
+      while !@fs.exists(directory + "/ready") {
+        @async.sleep(10)
+      }
+      ignore(@process.collect_output("kill", ["-TERM", child.pid.to_string()]))
+      ignore(child.wait())
+      assert_eq(@fs.read_file(directory + "/terminated").text(), "stopped")
+    })
+  })
 }

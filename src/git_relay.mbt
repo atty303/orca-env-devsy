@@ -87,6 +87,7 @@ async fn stop_git_management(state : Json) -> Unit {
     }) catch {
       _ => ()
     }
+    wait_ssh_proxy(state, "management")
     save_diagnostic("git-relay-management", "stopped")
   })
 }
@@ -138,7 +139,10 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
       let child = @process.spawn(
         group,
         "ssh",
-        ssh_args(state) +
+        ssh_args(
+          state,
+          lease=required(state, "socketDirectory") + "/management-proxy.lock",
+        ) +
         [
           "-M",
           "-S",

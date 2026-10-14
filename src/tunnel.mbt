@@ -77,6 +77,13 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
     if @fs.exists(socket_directory + "/socket") {
       @fs.remove(socket_directory + "/socket")
     }
+    wait_ssh_proxy(state, "primary")
+    for role in ["primary", "management"] {
+      let lease = socket_directory + "/" + role + "-proxy.lock"
+      if @fs.exists(lease) {
+        @fs.remove(lease)
+      }
+    }
     @fs.rmdir(socket_directory) catch {
       _ => ()
     }
@@ -516,7 +523,10 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       let child = @process.spawn(
         group,
         "ssh",
-        ssh_args(state) +
+        ssh_args(
+          state,
+          lease=required(state, "socketDirectory") + "/primary-proxy.lock",
+        ) +
         [
           "-M",
           "-S",
