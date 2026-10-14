@@ -66,7 +66,19 @@ let recording_run_id : String = @env.now().to_string()
 ///|
 fn process_error_type(output : String) -> String {
   let text = output.to_lower()
-  if text.contains("address already in use") || text.contains("addrinuse") {
+  if text.contains("out of memory") || text.contains("cannot allocate memory") {
+    "memory_exhausted"
+  } else if text.contains("no space left on device") {
+    "disk_exhausted"
+  } else if text.contains("ensure microsandbox final image") ||
+    text.contains("prepare microsandbox final image") {
+    "vm_image"
+  } else if text.contains("create microsandbox vm") {
+    "vm_create"
+  } else if text.contains("start microsandbox vm") {
+    "vm_start"
+  } else if text.contains("address already in use") ||
+    text.contains("addrinuse") {
     "address_in_use"
   } else if text.contains("permission denied (publickey") ||
     text.contains("authentication failed") {

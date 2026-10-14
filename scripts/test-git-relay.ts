@@ -42,10 +42,10 @@ try {
       const output = await guest('printf "protocol=https\\nhost=relay.example.invalid\\n\\n" | GIT_TERMINAL_PROMPT=0 git credential fill');
       assert(output.split("\n").includes("password=relay-test-dummy"));
     };
-    const eventually = (check: () => Promise<boolean>) => until(check, 5000);
-    const ready = () => eventually(() => succeeds(() => guest(`curl --noproxy '*' -fsS --max-time 2 http://localhost:${scenario.port}/`)));
-    const filled = () => eventually(() => succeeds(fill));
-    const status = async (expected: string) => eventually(async () => (await readFile(worker + "/git-status", "utf8").catch(() => "")).trim() === expected);
+    const eventually = (check: () => Promise<boolean>, stage = "relay-recovery") => { console.log(`Relay assertion ${stage}: started`); return until(check, 5000).catch(() => { throw new Error(`${stage} exceeded 5000 ms`); }); };
+    const ready = () => eventually(() => succeeds(() => guest(`curl --noproxy '*' -fsS --max-time 2 http://localhost:${scenario.port}/`)), "relay-http-ready");
+    const filled = () => eventually(() => succeeds(fill), "authenticated-credential-fill");
+    const status = async (expected: string) => eventually(async () => (await readFile(worker + "/git-status", "utf8").catch(() => "")).trim() === expected, "relay-status-" + expected);
     const master = () => ssh(sockets + "/orca/socket", ["-O", "check", "root@devsy-workspace"]);
     let owner: ReturnType<typeof start> | undefined, second: ReturnType<typeof start> | undefined;
     try {

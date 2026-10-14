@@ -47,6 +47,27 @@ export async function terminate(child: ChildProcess) {
   });
 }
 
+export function processFailureCategory(output: string) {
+  const text = output.toLowerCase();
+  for (const [category, phrases] of Object.entries({
+    memory: ["out of memory", "cannot allocate memory", "memory allocation"],
+    disk: ["no space left on device"],
+    git_credentials: ["could not read username", "could not read password", "authentication failed", "invalid credentials", "terminal prompts disabled"],
+    git_objects: ["bad object", "bad tree", "not a valid object", "invalid object"],
+    ssh_auth: ["permission denied (publickey", "host key verification failed"],
+    ssh_mux: ["control socket", "controlsocket", "master is not running", "mux_client"],
+    ssh_channel: ["administratively prohibited", "open failed", "connect failed"],
+    vm_image: ["ensure microsandbox final image", "prepare microsandbox final image"],
+    vm_create: ["create microsandbox vm"],
+    vm_start: ["start microsandbox vm", "failed to start vm"],
+    connection: ["connection refused", "connection closed", "connection reset", "broken pipe"],
+    timeout: ["timed out", "timeout"],
+    permission: ["permission denied"],
+    cli_option: ["unknown flag", "unknown option", "unrecognized option"],
+  })) if (phrases.some(phrase => text.includes(phrase))) return category;
+  return "process_exit";
+}
+
 export async function run(argv: string[], options: { cwd?: string; env?: Environment; input?: string; timeout?: number; output?: "stdout" | "stderr"; inherit?: boolean } = {}) {
   const child = start(argv, options);
   let stdout = "", stderr = "";
@@ -65,8 +86,8 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
     });
     if (code !== 0) {
       // Subprocess streams can contain pairing/authentication data. Callers
-      // consume successful results; failures expose only command kind and code.
-      throw new Error(`${argv[0].split("/").at(-1)} failed (${code ?? child.signalCode})`);
+      // consume successful results; failures expose only a fixed category and code.
+      throw new Error(`${argv[0].split("/").at(-1)} failed (${code ?? child.signalCode}, ${processFailureCategory(stdout + "\n" + stderr)})`);
     }
     return options.output === "stderr" ? stderr : stdout;
   } finally { clearTimeout(timer); }

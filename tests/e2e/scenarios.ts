@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { run, start, terminate, until, quote, type Environment } from "../../scripts/process.ts";
+import { run, start, terminate, until, quote, type Environment, processFailureCategory } from "../../scripts/process.ts";
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
 import { budgets, measure } from "./timing.ts";
@@ -33,6 +33,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
   const base = ["ssh", "-F", env.HOME + "/.ssh/config", "-o", "BatchMode=yes", "-o", "ProxyCommand=" + proxy];
   const target = user + "@" + id + ".devsy";
   const sessions: ReturnType<typeof start>[] = [];
+  const sessionErrors: string[] = [];
   const exec = (session: number, script: string) => measure("ssh-operation", budgets.operation, () => run(["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", socketRoot + "/" + session, target, script], { env, timeout: budgets.operation }), index);
   const poll = (script: string) => until(async () => { try { await exec(0, script); return true; } catch { return false; } }, budgets.firstUse);
   async function close() {
@@ -44,10 +45,13 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     for (let i = 0; i < 3; i++) {
       const child = start([...base, "-M", "-S", socketRoot + "/" + i, "-o", "ExitOnForwardFailure=yes", ...(i === 0 ? ["-R", `18080:127.0.0.1:${service.port}`] : []), "-N", target], { env });
       child.stdout?.resume();
-      child.stderr?.resume();
+      child.stderr?.on("data", data => { sessionErrors[i] = ((sessionErrors[i] ?? "") + data.toString()).slice(-8192); });
       sessions.push(child);
     }
-    await measure("parallel-ssh-ready", budgets.sshConnections, () => Promise.all([0, 1, 2].map(async session => until(async () => { try { await run([...base, "-S", socketRoot + "/" + session, "-O", "check", target], { env }); return true; } catch { return false; } }, budgets.sshConnections))), index);
+    await measure("parallel-ssh-ready", budgets.sshConnections, () => Promise.all([0, 1, 2].map(async session => until(async () => { try { await run([...base, "-S", socketRoot + "/" + session, "-O", "check", target], { env }); return true; } catch { return false; } }, budgets.sshConnections))), index).catch(error => {
+      console.error("SSH connection failure:", JSON.stringify({ workspace: index, sessions: sessions.map((child, i) => ({ exitCode: child.exitCode, category: processFailureCategory(sessionErrors[i] ?? "") })) }));
+      throw error;
+    });
     assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse HEAD")).trim(), index === 1 ? expected.task : expected.build);
     assert.equal((await exec(0, "cat " + quote(path + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : "fixture-build");
     if (!restarting) {
