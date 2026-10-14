@@ -91,7 +91,11 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
 }
 
 ///|
-async fn ensure_ssh_worker(state : Json, port : Int32?) -> Unit {
+async fn ensure_ssh_worker(
+  state : Json,
+  port : Int32?,
+  git_required~ : Bool = false,
+) -> Unit {
   let base = adapter_state_home() + "/tunnels"
   @fs.mkdir(base, recursive=true, permission=0o700, allow_exist=true)
   let directory = match field(state, "tunnelDirectory") {
@@ -128,7 +132,7 @@ async fn ensure_ssh_worker(state : Json, port : Int32?) -> Unit {
       raise AdapterError("Tunnel ownership changed")
     }
     if worker_alive(directory) {
-      wait_tunnel(directory)
+      wait_tunnel(directory, git_required~)
       return
     }
     // A dead supervisor does not invalidate its still-live SSH transport.
@@ -146,7 +150,7 @@ async fn ensure_ssh_worker(state : Json, port : Int32?) -> Unit {
         }
       }
       spawn_tunnel_worker(directory)
-      wait_tunnel(directory)
+      wait_tunnel(directory, git_required~)
       return
     }
     stop_tunnel_master(saved, directory)
@@ -173,7 +177,7 @@ async fn ensure_ssh_worker(state : Json, port : Int32?) -> Unit {
     @fs.remove(directory + "/status.json")
   }
   spawn_tunnel_worker(directory)
-  wait_tunnel(directory)
+  wait_tunnel(directory, git_required~)
 }
 
 ///|
@@ -308,7 +312,7 @@ async fn workspace_running(state : Json) -> Bool {
 }
 
 ///|
-async fn wait_tunnel(directory : String) -> Unit {
+async fn wait_tunnel(directory : String, git_required~ : Bool = false) -> Unit {
   let started = @env.now()
   progress_message("ssh-tunnel: connecting…")
   errdefer progress_message(
@@ -343,7 +347,7 @@ async fn wait_tunnel(directory : String) -> Unit {
     }
   })
   progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
-  @async.with_timeout(5000, async fn() {
+  @async.with_timeout(if git_required { 30000 } else { 5000 }, async fn() {
     while true {
       if @fs.exists(directory + "/git-status") {
         let status = @fs.read_file(directory + "/git-status").text()
@@ -354,7 +358,13 @@ async fn wait_tunnel(directory : String) -> Unit {
       @async.sleep(100)
     }
   }) catch {
-    _ => ()
+    _ =>
+      if git_required {
+        save_diagnostic("git-relay", "timeout", error_type="readiness_timeout")
+        raise AdapterError(
+          "Git credential relay did not become ready for task checkout",
+        )
+      }
   }
   let git_status = if @fs.exists(directory + "/git-status") {
     @fs.read_file(directory + "/git-status").text()
