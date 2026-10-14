@@ -83,6 +83,10 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      if test -f "$FAKE_HOME/drop-tunnel"; then rm "$FAKE_HOME/drop-tunnel"; printf "Permission denied (publickey). private-stderr-secret\n" >&2; exit 1; fi
     #|      sleep 0.01
     #|    done ;;
+    #|  *'-N'* )
+    #|    trap 'rm -f "$control"' EXIT HUP INT TERM
+    #|    touch "$control"
+    #|    while test -f "$control" && test -f "$FAKE_HOME/created"; do sleep 0.01; done ;;
     #|  *) : ;;
     #|esac
   for pair in [("devsy", devsy), ("git", git), ("ssh", ssh)] {
@@ -139,7 +143,7 @@ async fn invoke(
 ///|
 async test "native CLI preserves creation settings across lifecycle and emits only recipe JSON" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let yaml =
     #|devsy:
     #|  connection: ssh
@@ -184,7 +188,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
 ///|
 async test "required environment errors identify their setting and never invoke Devsy" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let yaml =
     #|devsy:
     #|  connection: ssh
@@ -226,7 +230,7 @@ async test "YAML anchors and recipe profiles parse without shell evaluation" {
 ///|
 async test "server CLI emits pairing separately and reconnect does not install or start a server" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     let yaml =
       #|devsy:
@@ -276,7 +280,7 @@ async test "server CLI emits pairing separately and reconnect does not install o
 ///|
 async test "provisioned-root uses schema 2 and checks out the supplied task commit independently" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
   env.set("ORCA_REPO_BRANCH", "task-branch")
   let yaml =
@@ -302,7 +306,7 @@ async test "provisioned-root uses schema 2 and checks out the supplied task comm
 ///|
 async test "task checkout works offline for present commits and fetches only missing commits" {
   let directory = @fs.tmpdir(prefix="orca-env-devsy-checkout")
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let env = {
     "PATH": "/usr/bin:/bin",
     "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -375,7 +379,7 @@ async test "task checkout works offline for present commits and fetches only mis
 ///|
 async test "Codex addon delivers synthetic access data only and excludes secrets from output and diagnostics" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.mkdir(directory + "/.codex")
   let claims : Json = { "exp": 4102444800 }
   let token = "fixture." +
@@ -449,7 +453,7 @@ async test "Codex addon delivers synthetic access data only and excludes secrets
 ///|
 async test "failed create removes its UID-owned workspace and permits retry" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy:\n  connection: ssh\nenvironmentRecipes:\n  - id: test\n",
@@ -467,7 +471,7 @@ async test "failed create removes its UID-owned workspace and permits retry" {
 ///|
 async test "failed provisioning cleans the requested UID before a recipe receipt exists" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy:\n  connection: ssh\nenvironmentRecipes:\n  - id: test\n",
@@ -517,7 +521,7 @@ async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
 ///|
 async test "remote server launch returns JSON while the detached server remains alive" {
   let directory = @fs.tmpdir(prefix="orca-env-devsy-pipe-test")
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let install = directory + "/.local/share/orca-env-devsy/orca/current"
   @fs.mkdir(install + "/resources/app.asar/out/cli", recursive=true)
   let executable =
@@ -577,7 +581,7 @@ async fn configured_launcher(directory : String) -> Array[String] {
 ///|
 async test "configured command survives YAML and environment changes and real OpenSSH proxy expansion" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let invocation = configured_launcher(directory)
   env.set("LAUNCHER", invocation[0])
   let document : Json = {
@@ -642,7 +646,7 @@ async test "configured command survives YAML and environment changes and real Op
 async test "invalid command is rejected before Devsy and errors retain only setting location" {
   for invalid in [Json::null(), [], [""], ["devsy", 1], ["${MISSING}"]] {
     let (directory, env) = fixture()
-    defer @fs.rmdir(directory, recursive=true)
+    defer cleanup_fixture(directory)
     let document : Json = {
       "devsy": { "connection": "ssh" },
       "environmentRecipes": [{ "id": "test", "devsy": { "command": invalid } }],
@@ -659,7 +663,7 @@ async test "invalid command is rejected before Devsy and errors retain only sett
 ///|
 async test "legacy saved state defaults to devsy and invalid saved commands fail before execution" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
@@ -726,7 +730,7 @@ async test "command diagnostics distinguish process failure and exit failure wit
 ///|
 async test "proxy preserves binary streams and the configured command exit status" {
   let directory = @fs.tmpdir(prefix="orca-env-devsy-proxy-test")
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let input = b"\x00SSH\n\xff"
   @fs.write_file(directory + "/input", input)
   let state : Json = {
@@ -752,7 +756,7 @@ async test "proxy preserves binary streams and the configured command exit statu
 ///|
 async test "PATH executable beginning with a dash stays unchanged in direct and proxy calls" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let invocation = configured_launcher(directory)
   @fs.symlink(directory + "/bin/-launcher", target=invocation[0])
   invocation[0] = "-launcher"
@@ -803,7 +807,7 @@ async test "PATH executable beginning with a dash stays unchanged in direct and 
 ///|
 async test "destroy succeeds repeatedly after external deletion" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
@@ -825,7 +829,7 @@ async test "destroy succeeds repeatedly after external deletion" {
 ///|
 async test "existing Orca installation is validated and reused without downloading or replacing it" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let install = directory + "/.local/share/orca-env-devsy/orca/current"
   @fs.mkdir(install, recursive=true)
   @fs.write_file(
@@ -863,7 +867,7 @@ async test "existing Orca installation is validated and reused without downloadi
 async test "branch builds try shallow and retry only a missing pinned commit with full clone" {
   for failure in ["missing", "other", "none"] {
     let (directory, env) = fixture()
-    defer @fs.rmdir(directory, recursive=true)
+    defer cleanup_fixture(directory)
     @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
     let wrapper =
       #|#!/bin/sh
@@ -922,7 +926,7 @@ test "checkout input validation preserves supported user names and rejects contr
 ///|
 async test "invalid provisioned branch is rejected before Devsy" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   // Exercise Git's own reference grammar, not a permissive fixture.
   @fs.write_file(
     directory + "/bin/git",
@@ -1038,7 +1042,7 @@ async test "near-expiry Codex auth refreshes once across concurrent creates and 
 async test "failed refresh forwards an unexpired short token but never an expired one" {
   for expired in [false, true] {
     let (directory, env) = fixture()
-    defer @fs.rmdir(directory, recursive=true)
+    defer cleanup_fixture(directory)
     @fs.mkdir(directory + "/.codex")
     let auth = synthetic_auth(
       @env.now().to_double() / 1000 + (if expired { -60 } else { 60 }),
@@ -1060,7 +1064,7 @@ async test "failed refresh forwards an unexpired short token but never an expire
 ///|
 async test "Git relay loss recovers without replacing the Orca master and cleans up management" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1100,7 +1104,7 @@ async test "Git relay loss recovers without replacing the Orca master and cleans
 ///|
 async test "unrecoverable Git readiness warns and retries while Orca remains available" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1147,7 +1151,7 @@ async test "unrecoverable Git readiness warns and retries while Orca remains ava
 ///|
 async test "disabled Git forwarding creates neither readiness probes nor management connections" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   env.set("FAKE_GIT_FORWARDING", "false")
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
@@ -1171,7 +1175,7 @@ async test "disabled Git forwarding creates neither readiness probes nor managem
 ///|
 async test "tunnel worker reconnects on the same port and remains running when stop or delete fails" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1231,7 +1235,7 @@ async test "tunnel worker reconnects on the same port and remains running when s
 async test "short tag build refs use full clones including annotated tag peeling" {
   for annotated in [false, true] {
     let (directory, env) = fixture()
-    defer @fs.rmdir(directory, recursive=true)
+    defer cleanup_fixture(directory)
     let script = if annotated {
       "#!/bin/sh\nprintf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\trefs/tags/v1.0.0\\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/tags/v1.0.0^{}\\n'\n"
     } else {
@@ -1259,7 +1263,7 @@ async test "short tag build refs use full clones including annotated tag peeling
 ///|
 async test "automatic tunnel recovery refuses a replacement workspace UID" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1307,7 +1311,7 @@ async test "remote user and workspace folder validation rejects malformed metada
       ("developer$", Json::string("/workspace/repo")),
     ] {
     let (directory, env) = fixture()
-    defer @fs.rmdir(directory, recursive=true)
+    defer cleanup_fixture(directory)
     let (user, folder) = pair
     let result : Json = {
       "kind": "result",
@@ -1338,7 +1342,7 @@ async test "remote user and workspace folder validation rejects malformed metada
 ///|
 async test "server create returns recipe JSON while the tunnel child retains stderr" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(directory + "/keep-proxy-stderr", "")
     @fs.write_file(
@@ -1399,7 +1403,7 @@ async test "server create returns recipe JSON while the tunnel child retains std
 ///|
 async test "destroy cancels and reaps a blocked worker UID query" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1437,7 +1441,7 @@ async test "destroy cancels and reaps a blocked worker UID query" {
 ///|
 async test "resume reuses a Server that survives suspension instead of starting a duplicate" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(directory + "/reuse-running-server", "")
   @fs.write_file(
     directory + "/orca.yaml",
@@ -1470,7 +1474,7 @@ async test "resume reuses a Server that survives suspension instead of starting 
 ///|
 async test "Server loopback health probe ignores ambient curl proxy configuration" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let curl =
     #|#!/bin/sh
     #|test "$1" = --disable || exit 1
@@ -1494,7 +1498,7 @@ async test "Server loopback health probe ignores ambient curl proxy configuratio
 ///|
 async test "failed create still deletes workspace when tunnel state cleanup fails" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1539,7 +1543,7 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
 ///|
 async test "diagnostics retain only known backend phases and fixed failure classes" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
@@ -1576,7 +1580,7 @@ async test "diagnostics retain only known backend phases and fixed failure class
 ///|
 async test "binary stderr never changes command failure with recording enabled or disabled" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let document : Json = {
     "devsy": {
       "connection": "ssh",
@@ -1607,7 +1611,7 @@ async test "binary stderr never changes command failure with recording enabled o
 ///|
 async test "bulk reconnect restores persistent XDG state without a receipt or current YAML" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   env.set("XDG_STATE_HOME", directory + "/xdg-state")
   with_fake_tunnel(directory, async fn() {
     let document : Json = {
@@ -1665,7 +1669,7 @@ async test "bulk reconnect restores persistent XDG state without a receipt or cu
 ///|
 async test "bulk recovery skips disabled stopped and replaced workspaces and continues past corrupt entries" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
@@ -1726,7 +1730,7 @@ async test "bulk recovery skips disabled stopped and replaced workspaces and con
 ///|
 async test "lifecycle progress reaches stderr and diagnostics before workspace up completes" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
@@ -1868,7 +1872,7 @@ async test "lifecycle progress reaches stderr and diagnostics before workspace u
 ///|
 async test "failed streamed workspace up preserves exit failure and owned cleanup" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
@@ -1905,7 +1909,7 @@ async test "failed streamed workspace up preserves exit failure and owned cleanu
 ///|
 async test "unavailable progress stderr preserves lifecycle result with recording on and off" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
@@ -1937,7 +1941,7 @@ async test "unavailable progress stderr preserves lifecycle result with recordin
 ///|
 async test "filesystem failure reports safe timestamped elapsed time before any subprocess" {
   let (directory, env) = fixture()
-  defer @fs.rmdir(directory, recursive=true)
+  defer cleanup_fixture(directory)
   let (status, output, errors) = invoke("create", env, directory)
   assert_true(status != 0)
   assert_eq(output, "")
@@ -1945,4 +1949,73 @@ async test "filesystem failure reports safe timestamped elapsed time before any 
   assert_true(errors.contains(", elapsed "))
   assert_false(errors.contains(directory))
   assert_false(@fs.exists(directory + "/args"))
+}
+
+///|
+async fn cleanup_fixture(directory : String) -> Unit {
+  let base = directory + "/.local/state/orca-env-devsy/tunnels"
+  if @fs.exists(base) {
+    for name in @fs.readdir(base) {
+      let worker = base + "/" + name
+      if @fs.exists(worker + "/enabled") {
+        @fs.remove(worker + "/enabled")
+      }
+      @async.with_timeout(15000, async fn() {
+        while worker_alive(worker) {
+          @async.sleep(100)
+        }
+      })
+      if @fs.exists(worker + "/state.json") {
+        try {
+          let state = @json.parse(@fs.read_file(worker + "/state.json").text())
+          if field(state, "socketDirectory") is Some(Json::String(socket)) &&
+            @fs.exists(socket) {
+            @fs.rmdir(socket, recursive=true)
+          }
+        } catch {
+          _ => ()
+        }
+      }
+    }
+  }
+  @fs.rmdir(directory, recursive=true)
+}
+
+///|
+async test "SSH recipes retain a recovery worker without a server port and reap it on lifecycle changes" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let result = @json.parse(output)
+  let target = field(field(result, "connection").unwrap(), "target").unwrap()
+  assert_true(
+    required(target, "proxyCommand").contains("--start-services=false"),
+  )
+  let state = field(result, "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
+  assert_eq(field(saved, "localPort"), None)
+  assert_eq(field(saved, "connection"), Some(Json::string("ssh")))
+  assert_true(worker_alive(worker))
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  let (status, _, errors) = invoke("suspend", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
+  assert_false(@fs.exists(worker))
+  let (status, output, errors) = invoke("resume", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
+  let resumed = @json.parse(output)
+  let resumed_worker = required(
+    field(resumed, "userData").unwrap(),
+    "tunnelDirectory",
+  )
+  assert_true(worker_alive(resumed_worker))
+  let payload : Json = { "schemaVersion": 1, "recipeResult": resumed }
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
+  assert_false(@fs.exists(resumed_worker))
 }

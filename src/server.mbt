@@ -5,18 +5,7 @@ async fn server_connection(state : Json, install : Bool) -> Json {
     let script = server_install_script()
     ignore(remote(state, script, "orca-install"))
   }
-  let port = match field(state, "localPort") {
-    Some(Json::Number(value, ..)) => value.to_int()
-    _ => {
-      let listener = @socket.TcpServer::TcpServer(
-        @socket.Addr::parse("127.0.0.1:0"),
-      )
-      let port = listener.addr.port()
-      listener.close()
-      set_field(state, "localPort", Json::number(port.to_double()))
-      port
-    }
-  }
+  let port = reserve_server_port(state)
   let script = server_launch_script(root, port)
   let result = @json.parse(remote(state, script, "orca-serve"))
   let connection = match field(result, "connection") {
@@ -26,7 +15,7 @@ async fn server_connection(state : Json, install : Bool) -> Json {
   guard required(connection, "pairingCode") != "" else {
     raise AdapterError("Orca returned no pairing code")
   }
-  ensure_tunnel(state, port)
+  ensure_ssh_worker(state, Some(port))
   let output : Json = {
     "type": "orca-server",
     "pairingCode": required(connection, "pairingCode"),
@@ -102,4 +91,20 @@ fn server_probe_script() -> String {
     #|  --header 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
     #|  http://127.0.0.1:47121/ || true
   script
+}
+
+///|
+async fn reserve_server_port(state : Json) -> Int32 {
+  match field(state, "localPort") {
+    Some(Json::Number(value, ..)) => value.to_int()
+    _ => {
+      let listener = @socket.TcpServer::TcpServer(
+        @socket.Addr::parse("127.0.0.1:0"),
+      )
+      let port = listener.addr.port()
+      listener.close()
+      set_field(state, "localPort", Json::number(port.to_double()))
+      port
+    }
+  }
 }

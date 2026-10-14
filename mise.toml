@@ -4,6 +4,10 @@ include = [
 ]
 
 [vars]
+e2e_docker_version = "29.9.0"
+e2e_containerd_package = "2.4.1-2~ubuntu.24.04~noble"
+e2e_buildx_package = "0.38.0-1~ubuntu.24.04~noble"
+e2e_podman_package = "4.9.3+ds1-1ubuntu0.2"
 moonbit_version = "0.10.15+943464bfa"
 moonbit_sha256_macos_arm64 = "563109ff02c6dc77fdc74acd0be423964ef678dfea4d9b948c19d245dc8b0e83"
 moonbit_sha256_linux_x64 = "24b93a5409d2a4fb8e3d1b84b473f27b63476cef4418094764df96cb26b03c09"
@@ -16,6 +20,7 @@ actionlint = "1.7.12"
 hk = "1.55.0"
 taplo = "0.10.0"
 container = { version = "1.5.0", os = ["macos/arm64"] }
+bun = "1.4.3"
 
 [env]
 HK_MISE = 1
@@ -59,17 +64,30 @@ run = "moon build --target native --release --deny-warn"
 description = "Test credential recovery using real Devsy, Docker and an isolated Git helper"
 depends = ["build"]
 tools = { "github:devsy-org/devsy" = "1.23.0" }
-run = [
-  './scripts/test-git-relay.sh "$(command -v devsy)" _build/native/release/build/cmd/main/main.exe',
-  'RELAY_CREDENTIAL_PORT=13449 ./scripts/test-git-relay.sh "$(command -v devsy)" _build/native/release/build/cmd/main/main.exe',
-  'RELAY_DISABLE_GIT=1 ./scripts/test-git-relay.sh "$(command -v devsy)" _build/native/release/build/cmd/main/main.exe',
-]
+run = "bun scripts/test-git-relay.ts"
 
 [tasks."cross:prepare"]
 description = "Prepare source runtime and checksum-pinned Darwin header"
-run = "./scripts/prepare-cross.sh"
+run = "bun scripts/prepare-cross.ts"
 
 [tasks."release:build"]
 description = "Cross build every standalone artifact for one SemVer release"
 depends = ["cross:prepare"]
-run = "./scripts/release-build.sh"
+run = "bun scripts/release-build.ts"
+
+[deps.tooling]
+auto = true
+sources = ["package.json", "bun.lock"]
+outputs = ["node_modules/.installed"]
+run = "bun install --frozen-lockfile && touch node_modules/.installed"
+
+[tasks."test:e2e"]
+description = "Run real Orca/provider integration scenarios (explicit --provider required)"
+depends = ["build"]
+tools = { "github:devsy-org/devsy" = "1.23.0" }
+run = "bun tests/e2e/main.ts"
+
+[tasks."test:e2e:prepare-ci"]
+description = "Prepare pinned runtimes and Electron libraries on the disposable Linux CI runner"
+run = "bun tests/e2e/prepare-ci.ts"
+env = { E2E_DOCKER_VERSION = "{{vars.e2e_docker_version}}", E2E_CONTAINERD_PACKAGE = "{{vars.e2e_containerd_package}}", E2E_BUILDX_PACKAGE = "{{vars.e2e_buildx_package}}", E2E_PODMAN_PACKAGE = "{{vars.e2e_podman_package}}" }

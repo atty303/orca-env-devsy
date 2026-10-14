@@ -84,7 +84,7 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
 }
 
 ///|
-async fn ensure_tunnel(state : Json, port : Int32) -> Unit {
+async fn ensure_ssh_worker(state : Json, port : Int32?) -> Unit {
   let base = adapter_state_home() + "/tunnels"
   @fs.mkdir(base, recursive=true, permission=0o700, allow_exist=true)
   let directory = match field(state, "tunnelDirectory") {
@@ -116,7 +116,8 @@ async fn ensure_tunnel(state : Json, port : Int32) -> Unit {
   if @fs.exists(directory + "/state.json") {
     let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
     guard field(saved, "workspaceUid") == field(state, "workspaceUid") &&
-      field(saved, "localPort") == Some(Json::number(port.to_double())) else {
+      field(saved, "localPort") ==
+      port.map(value => Json::number(value.to_double())) else {
       raise AdapterError("Tunnel ownership changed")
     }
     if worker_alive(directory) {
@@ -130,13 +131,16 @@ async fn ensure_tunnel(state : Json, port : Int32) -> Unit {
   for
     name in [
       "workspaceId", "workspaceUid", "user", "command", "devsyEnv", "home", "context",
+      "connection",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)
     }
   }
   set_field(saved, "socketDirectory", Json::string(socket_directory))
-  set_field(saved, "localPort", Json::number(port.to_double()))
+  if port is Some(value) {
+    set_field(saved, "localPort", Json::number(value.to_double()))
+  }
   @fs.write_file(directory + "/state.tmp", saved.stringify(), permission=0o600)
   @fs.rename(directory + "/state.tmp", directory + "/state.json", replace=true)
   @fs.write_file(directory + "/enabled", "", permission=0o600)
@@ -209,11 +213,12 @@ async fn reconnect_all_inner() -> Unit {
       let port = match field(state, "localPort") {
         Some(Json::Number(value, ..)) if value >= 1 &&
           value <= 65535 &&
-          value == value.to_int().to_double() => value.to_int()
+          value == value.to_int().to_double() => Some(value.to_int())
+        None if field(state, "connection") == Some(Json::string("ssh")) => None
         _ => raise AdapterError("Invalid saved tunnel port")
       }
       set_field(state, "tunnelDirectory", Json::string(directory))
-      ensure_tunnel(state, port)
+      ensure_ssh_worker(state, port)
       save_diagnostic("reconnect", "success")
     } catch {
       _ =>
@@ -286,9 +291,14 @@ async fn wait_tunnel(directory : String) -> Unit {
     }
   })
   progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
-  @async.with_timeout(2500, async fn() {
-    while !@fs.exists(directory + "/git-status") ||
-          @fs.read_file(directory + "/git-status").text() == "pending" {
+  @async.with_timeout(5000, async fn() {
+    while true {
+      if @fs.exists(directory + "/git-status") {
+        let status = @fs.read_file(directory + "/git-status").text()
+        if status == "ready" || status == "disabled" {
+          break
+        }
+      }
       @async.sleep(100)
     }
   }) catch {
@@ -375,8 +385,10 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   }
   let state = @json.parse(@fs.read_file(directory + "/state.json").text())
   validate_state(state)
-  let port = match field(state, "localPort") {
-    Some(Json::Number(value, ..)) => value.to_int()
+  let forwarding = match field(state, "localPort") {
+    Some(Json::Number(value, ..)) =>
+      ["-L", "127.0.0.1:\{value.to_int()}:127.0.0.1:47121"]
+    None if field(state, "connection") == Some(Json::string("ssh")) => []
     _ => raise AdapterError("Missing tunnel port")
   }
   let enabled = directory + "/enabled"
@@ -422,9 +434,8 @@ pub async fn tunnel_worker(directory : String) -> Unit {
           "ServerAliveInterval=10",
           "-o",
           "ServerAliveCountMax=3",
-          "-L",
-          "127.0.0.1:\{port}:127.0.0.1:47121",
-        ],
+        ] +
+        forwarding,
         stdin=@process.redirect_from_file("/dev/null"),
         stdout=sink,
         stderr~,
@@ -503,14 +514,16 @@ async fn check_tunnel(state : Json, directory : String) -> Unit {
       ssh_args(state) + ["-S", control_socket(state, directory), "-O", "check"],
     )
     guard status == 0 else { raise AdapterError("Tunnel not ready") }
-    let port = match field(state, "localPort") {
-      Some(Json::Number(value, ..)) => value.to_int()
+    match field(state, "localPort") {
+      Some(Json::Number(value, ..)) => {
+        let socket = @socket.Tcp::connect(
+          @socket.Addr::parse("127.0.0.1:" + value.to_int().to_string()),
+        )
+        socket.close()
+      }
+      None if field(state, "connection") == Some(Json::string("ssh")) => ()
       _ => raise AdapterError("Missing tunnel port")
     }
-    let socket = @socket.Tcp::connect(
-      @socket.Addr::parse("127.0.0.1:" + port.to_string()),
-    )
-    socket.close()
   })
 }
 
