@@ -43,6 +43,10 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  previous="$arg"
     #|done
     #|case "$*" in
+    #|  *'credential-socket'*) : ;;
+    #|  *'-N'*) case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
+    #|esac
+    #|case "$*" in
     #|  *'orca-git-readiness'*)
     #|    test -f "$control"
     #|    test ! -f "$FAKE_HOME/git-unavailable" ;;
@@ -84,7 +88,6 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      sleep 0.01
     #|    done ;;
     #|  *'-N'* )
-    #|    case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac
     #|    trap 'rm -f "$control"' EXIT HUP INT TERM
     #|    touch "$control"
     #|    while test -f "$control" && test -f "$FAKE_HOME/created"; do sleep 0.01; done ;;
@@ -1154,7 +1157,40 @@ async test "unrecoverable Git readiness warns and retries while Orca remains ava
 }
 
 ///|
-async test "disabled Git forwarding retains the services owner without Git readiness probes" {
+async test "delayed primary Git readiness does not start a competing services owner" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(directory + "/git-unavailable", "")
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = @async.with_task_group(async fn(group) {
+      group.spawn_bg(async fn() {
+        @async.sleep(500)
+        if @fs.exists(directory + "/git-unavailable") {
+          @fs.remove(directory + "/git-unavailable")
+        }
+      })
+      invoke("create", env, directory)
+    })
+    assert_eq(status, 0, msg=errors)
+    let result = @json.parse(output)
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    assert_false(@fs.exists(directory + "/git-management"))
+    assert_eq(@fs.read_file(directory + "/primary-services").text(), "enabled")
+    let state = field(result, "userData").unwrap()
+    assert_eq(
+      @fs.read_file(required(state, "tunnelDirectory") + "/git-status").text(),
+      "ready",
+    )
+  })
+}
+
+///|
+async test "disabled Git forwarding retains primary services without Git readiness probes" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   env.set("FAKE_GIT_FORWARDING", "false")
@@ -1168,12 +1204,8 @@ async test "disabled Git forwarding retains the services owner without Git readi
     let result = @json.parse(output)
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
-    @async.with_timeout(5000, async fn() {
-      while !@fs.exists(directory + "/git-management") {
-        @async.sleep(50)
-      }
-    })
-    assert_true(@fs.exists(directory + "/git-management"))
+    assert_false(@fs.exists(directory + "/git-management"))
+    assert_eq(@fs.read_file(directory + "/primary-services").text(), "enabled")
     assert_false(
       @fs.read_file(directory + "/ssh-args")
       .text()
@@ -2015,7 +2047,7 @@ async test "SSH recipes retain a recovery worker without a server port and reap 
   assert_eq(field(saved, "localPort"), None)
   assert_eq(field(saved, "connection"), Some(Json::string("ssh")))
   assert_true(worker_alive(worker))
-  assert_eq(@fs.read_file(directory + "/primary-services").text(), "disabled")
+  assert_eq(@fs.read_file(directory + "/primary-services").text(), "enabled")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   let (status, _, errors) = invoke("suspend", env, directory, payload~)
   assert_eq(status, 0, msg=errors)

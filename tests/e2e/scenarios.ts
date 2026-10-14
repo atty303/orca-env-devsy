@@ -73,7 +73,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse HEAD")).trim(), index === 1 ? expected.task : expected.build);
     assert.equal((await exec(0, "cat " + quote(path + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : "fixture-build");
     if (!restarting) {
-    await exec(0, `set -eu; cd ${quote(path)}; test -w .; test -w "$HOME"; git config --global credential.useHttpPath true; printf %s ${quote("workspace-" + index)} > isolation.txt; mkdir -p "$HOME/e2e"; printf '%s\\n' ${quote(service.publicKey)} > "$HOME/e2e/authorized_keys"; printf '%s\\n' ${quote("e2e " + service.publicKey)} > "$HOME/e2e/allowed_signers"; ssh-keygen -q -t ed25519 -N '' -f "$HOME/e2e/hostkey"; printf '%s\\n' 'Port 2222' 'ListenAddress 127.0.0.1' 'PasswordAuthentication no' 'UsePAM yes' 'StrictModes no' "HostKey $HOME/e2e/hostkey" "AuthorizedKeysFile $HOME/e2e/authorized_keys" "PidFile $HOME/e2e/sshd.pid" > "$HOME/e2e/sshd_config"; sudo mkdir -p /run/sshd; sudo /usr/sbin/sshd -f "$HOME/e2e/sshd_config"`);
+    await exec(0, `set -eu; cd ${quote(path)}; test -w .; test -w "$HOME"; git config --global credential.useHttpPath true; printf %s ${quote("workspace-" + index)} > isolation.txt; cp isolation.txt isolation-${index}.txt; mkdir -p "$HOME/e2e"; printf '%s\\n' ${quote(service.publicKey)} > "$HOME/e2e/authorized_keys"; printf '%s\\n' ${quote("e2e " + service.publicKey)} > "$HOME/e2e/allowed_signers"; ssh-keygen -q -t ed25519 -N '' -f "$HOME/e2e/hostkey"; printf '%s\\n' 'Port 2222' 'ListenAddress 127.0.0.1' 'PasswordAuthentication no' 'UsePAM yes' 'StrictModes no' "HostKey $HOME/e2e/hostkey" "AuthorizedKeysFile $HOME/e2e/authorized_keys" "PidFile $HOME/e2e/sshd.pid" > "$HOME/e2e/sshd_config"; sudo mkdir -p /run/sshd; sudo /usr/sbin/sshd -f "$HOME/e2e/sshd_config"`);
     const operations = await Promise.allSettled([0, 1, 2].map(async session => {
       const directory = `dev-${session}`;
       assert.equal(await exec(session, `cat ${quote(path + "/isolation.txt")}`), "workspace-" + index);
@@ -140,15 +140,17 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     listener.stop(true);
     await run([...base, "-S", socketRoot + "/0", "-O", "forward", "-L", `${port}:127.0.0.1:8080`, target], { env });
     const checkClient = async () => {
+      assert(runtime.runtimeEnvironmentId, "Orca must register a managed environment for each recipe");
       if (runtime.sshTargetId) {
-        const marker = await orca.call<{ content: string }>("fs", "readFile", { connectionId: runtime.sshTargetId, filePath: path + "/isolation.txt" });
-        assert.equal(marker.content, "workspace-" + index);
-      } else {
-        const browsing = await orca.call<{ ok: boolean; result: { resolvedPath: string; entries: { name: string }[] } }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method: "files.browseServerDir", params: { path }, timeoutMs: budgets.operation });
-        assert(browsing.ok);
-        assert.equal(browsing.result.resolvedPath, path);
-        assert(browsing.result.entries.some(entry => entry.name === "isolation.txt"));
+        const connected = await orca.call<{ status: string; managedServer?: { kind: string; environmentId?: string } }>("ssh", "getState", { targetId: runtime.sshTargetId });
+        assert.equal(connected.status, "connected");
+        assert.equal(connected.managedServer?.kind, "managed");
+        assert.equal(connected.managedServer.environmentId, runtime.runtimeEnvironmentId);
       }
+      const browsing = await orca.call<{ ok: boolean; result: { resolvedPath: string; entries: { name: string }[] } }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method: "files.browseServerDir", params: { path }, timeoutMs: budgets.operation });
+      assert(browsing.ok);
+      assert.equal(browsing.result.resolvedPath, path);
+      for (let peer = 0; peer < 4; peer++) assert.equal(browsing.result.entries.some(entry => entry.name === `isolation-${peer}.txt`), peer === index, "Orca must route to the workspace's unique marker");
     };
     const check = () => measure("workspace-check", budgets.operation, async () => {
       assert.equal(await (await fetch(`http://127.0.0.1:${port}/isolation.txt`, { signal: AbortSignal.timeout(budgets.operation) })).text(), "workspace-" + index);
@@ -197,24 +199,13 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     };
     await check();
     let serverVersion: string | undefined;
-    if (runtime.sshTargetId) {
-      const browsing = await orca.call<{ entries: { name: string }[] }>("ssh", "browseDir", { targetId: runtime.sshTargetId, dirPath: path });
-      assert(browsing.entries.some(entry => entry.name === "isolation.txt"));
-      const marker = await orca.call<{ content: string }>("fs", "readFile", { connectionId: runtime.sshTargetId, filePath: path + "/isolation.txt" });
-      assert.equal(marker.content, "workspace-" + index);
-      await orca.call("git", "status", { worktreePath: path, connectionId: runtime.sshTargetId });
-    } else {
-      assert(runtime.runtimeEnvironmentId);
+    if (runtime.recipeResult.connection.type === "orca-server") {
       const version = await exec(0, 'ELECTRON_RUN_AS_NODE=1 "$HOME/.local/share/orca-env-devsy/orca/current/orca-ide" "$HOME/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js" --version');
       serverVersion = /\d+\.\d+\.\d+/.exec(version)?.[0];
       assert(serverVersion, "Installed Orca server must report its version");
-      const connected = await orca.call<{ ok: boolean }>("runtimeEnvironments", "getStatus", { selector: runtime.runtimeEnvironmentId, timeoutMs: budgets.operation });
-      assert(connected.ok);
-      const marker = await orca.call<{ ok: boolean; result: { resolvedPath: string; entries: { name: string }[] } }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method: "files.browseServerDir", params: { path }, timeoutMs: budgets.operation });
-      assert(marker.ok);
-      assert.equal(marker.result.resolvedPath, path);
-      assert(marker.result.entries.some(entry => entry.name === "isolation.txt"));
     }
+    const connected = await orca.call<{ ok: boolean }>("runtimeEnvironments", "getStatus", { selector: runtime.runtimeEnvironmentId, timeoutMs: budgets.operation });
+    assert(connected.ok);
     console.log(`PASS workspace ${index}: three SSH sessions, signed Git push/fetch, agent, auth, files and HTTP isolation`);
     return { runtime, index, exec, check, checkClient, serve, close, recoverRelay, crashWorker, path, id, serverVersion };
   } catch (error) {

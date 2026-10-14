@@ -125,6 +125,8 @@ try {
   }).map(operation => operation.catch(error => { connected.reject(error); throw error; })));
   for (const result of connectedWorkspaces) if (result.status === "rejected") throw result.reason;
   assert.equal(new Set(runtimes.map(r => r.recipeResult.userData.workspaceId)).size, 4);
+  assert(runtimes.every(runtime => runtime.runtimeEnvironmentId));
+  assert.equal(new Set(runtimes.map(runtime => runtime.runtimeEnvironmentId)).size, 4);
   if (interrupted) throw new Error("E2E interrupted");
   const saved = await orca.call<Runtime[]>("ephemeralVm", "listRuntimes");
   for (const runtime of runtimes) assert(saved.some(r => r.id === runtime.id && r.workspaceId === runtime.workspaceId && r.sshTargetId === runtime.sshTargetId && r.runtimeEnvironmentId === runtime.runtimeEnvironmentId));
@@ -137,7 +139,7 @@ try {
   for (const current of workspaces) {
     await Promise.all([current.recoverRelay(), ...workspaces.filter(w => w !== current).map(w => w.check())]);
   }
-  const crashed = workspaces.find(w => w.runtime.runtimeEnvironmentId)!;
+  const crashed = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
   await measure("worker-recovery", budgets.recovery, async () => {
     await crashed.crashWorker();
     await run([resolve("_build/native/release/build/cmd/main/main.exe"), "reconnect"], { env, timeout: budgets.recovery });
