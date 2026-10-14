@@ -22,7 +22,7 @@ export async function launch(binary: string, home: string, report: string) {
     }
   };
   const [code] = await Promise.all([child.exited, forward(child.stdout, process.stdout), forward(child.stderr, process.stderr)]);
-  if (code !== 0) try {
+  if (code !== 0 && ["run", "load"].includes(process.argv[2])) try {
     const boot: { stage: string; errno?: number }[] = [];
     const stages = new Set(["mount", "build_vm", "config", "network", "image", "other"]);
     const logs = home + "/logs";
@@ -34,7 +34,7 @@ export async function launch(binary: string, home: string, report: string) {
       const record = await file.json();
       if (stages.has(record.stage)) boot.push({ stage: record.stage, ...(Number.isInteger(record.errno) && Math.abs(record.errno) <= 4096 ? { errno: record.errno } : {}) });
     }
-    await appendFile(report, JSON.stringify({ category: processFailureCategory(tail), boot }) + "\n", { mode: 0o600 });
+    await appendFile(report, JSON.stringify({ operation: process.argv[2], exitCode: code, category: processFailureCategory(tail), boot }) + "\n", { mode: 0o600 });
   } catch { /* Diagnostics must not replace the runtime's result. */ }
   process.exit(code);
 }
