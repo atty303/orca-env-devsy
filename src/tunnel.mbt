@@ -236,16 +236,14 @@ async fn reconnect_all_inner() -> Unit {
           )
           validate_state(state)
           if worker_alive(directory) {
-            match @async.with_timeout(10000, async fn() { workspace(state) }) {
-              Some(current) if field(current, "uid") ==
-                field(state, "workspaceUid") => ()
-              _ => {
-                @fs.remove(directory + "/enabled")
-                save_diagnostic("reconnect", "ownership-error")
-                return
-              }
+            let current = worker_workspace(state, directory)
+            guard current is Some(current) &&
+              field(current, "uid") == field(state, "workspaceUid") else {
+              @fs.remove(directory + "/enabled")
+              save_diagnostic("reconnect", "ownership-error")
+              return
             }
-            if !workspace_running(state) {
+            if field(current, "running") != Some(Json::boolean(true)) {
               save_diagnostic("reconnect", "workspace-stopped")
               return
             }
@@ -454,25 +452,42 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   }
   if adopted {
     errdefer stop_tunnel_master(state, directory)
-    guard worker_workspace(state, directory) is Some(current) &&
-      field(current, "uid") == field(state, "workspaceUid") else {
-      if @fs.exists(enabled) {
-        @fs.remove(enabled)
-      }
-      stop_tunnel_master(state, directory)
-      tunnel_status(directory, "ownership-error")
-      return
-    }
-    if field(current, "running") != Some(Json::boolean(true)) {
-      stop_tunnel_master(state, directory)
-      tunnel_status(directory, "workspace-stopped")
-      return
-    }
-    save_diagnostic("orca-tunnel", "adopted")
-    tunnel_status(directory, "connected")
+    let mut terminal = false
     @async.with_task_group(async fn(group) {
+      // Both reads use the saved context; neither changes transport ownership.
+      let options = group.spawn(
+        async fn() {
+          Some(
+            @async.with_timeout(10000, async fn() {
+              git_forwarding_enabled(state)
+            }),
+          )
+        },
+        allow_failure=true,
+        no_wait=true,
+      )
+      let current = worker_workspace(state, directory)
+      guard current is Some(current) &&
+        field(current, "uid") == field(state, "workspaceUid") else {
+        if @fs.exists(enabled) {
+          @fs.remove(enabled)
+        }
+        stop_tunnel_master(state, directory)
+        terminal = true
+        tunnel_status(directory, "ownership-error")
+        return
+      }
+      if field(current, "running") != Some(Json::boolean(true)) {
+        stop_tunnel_master(state, directory)
+        terminal = true
+        tunnel_status(directory, "workspace-stopped")
+        return
+      }
+      save_diagnostic("orca-tunnel", "adopted")
+      tunnel_status(directory, "connected")
       group.spawn_bg(no_wait=true, async fn() {
-        monitor_git_relay(state, directory) catch {
+        let initial_enabled = options.wait() catch { _ => None }
+        monitor_git_relay(state, directory, initial_enabled~) catch {
           _ => git_relay_status(directory, "unavailable")
         }
       })
@@ -483,6 +498,9 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         @async.sleep(1000)
       }
     })
+    if terminal {
+      return
+    }
     if !@fs.exists(enabled) {
       stop_tunnel_master(state, directory)
       tunnel_status(directory, "stopped")
