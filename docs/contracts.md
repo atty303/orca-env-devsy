@@ -86,14 +86,16 @@ Pairing data belongs to the connection result; it is never duplicated in
 `userData`. Local SSH control sockets belong to the adapter's tunnels and are
 closed at suspend/destroy. `reconnect` restores every enabled tunnel in the current
 adapter state directory, retaining each saved command, location environment, UID
-and local port. It emits no recipe JSON. `reconnect --receipt` accepts the saved
+and the Server forwarding port, where applicable. It emits no recipe JSON. `reconnect --receipt` accepts the saved
 lifecycle payload and re-emits its connection offer after restoring that tunnel.
 Neither path rereads YAML or installs/starts a Server. Workspace status is checked
 before worker connections; stopped or busy workspaces are skipped by bulk recovery.
 Devsy's SSH path can itself start a workspace, so a stop racing that status check
 is not guaranteed to remain stopped.
 A detached adapter worker owns the SSH master and reconnects after transient
-transport failures using the same local port with bounded exponential backoff.
+transport failures with bounded exponential backoff. Server forwarding retains
+the same local port. Transient adapter commands do not start credential services;
+the persistent connection is established before checkout and addon commands.
 It does not run workspace-up or register a boot service. Suspend/destroy
 stop the workspace first; on failure the worker remains enabled. Successful
 stop/delete disables and reaps the worker. Destroy also cleans up when the
@@ -102,15 +104,14 @@ follows Devsy's workspace/container lifecycle.
 
 ## Diagnostics and authentication
 
-Server connections monitor Devsy's Git credential relay without requesting
+Both connection modes monitor Devsy's Git credential relay without requesting
 credentials. If readiness is lost, one separately owned SSH management connection
-tries to restore it while the Orca tunnel stays connected. Failed recovery warns
+tries to restore it while the primary SSH connection stays connected. Failed recovery warns
 and retries with a delay; it does not fail create/resume. Suspend/destroy and
 transport reconnect reap the management connection. `SSH_INJECT_GIT_CREDENTIALS=false`
 disables this monitoring and recovery. The `git-relay` diagnostic status describes
 readiness, separately from the `orca-tunnel` connection status; neither verifies
-credential retrieval. The Docker regression test uses an isolated host helper and
-guest `git credential fill` to verify the complete forwarding path.
+credential retrieval.
 
 Lifecycle stderr streams timestamped (UTC) stages and Devsy phase transitions,
 with stage duration and total elapsed time on completion or failure. It also

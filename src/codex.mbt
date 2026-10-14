@@ -67,7 +67,7 @@ async fn codex_addon(state : Json) -> Unit {
         let process = @process.spawn(
           group,
           "ssh",
-          ssh_args(state) + [script],
+          ssh_args(state, services=false) + [script],
           stdin=input,
           stdout=sink,
           stderr=sink,

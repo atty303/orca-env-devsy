@@ -6,3 +6,5 @@ _build/
 .release/
 dist/
 *.mbti
+node_modules/
+.e2e/

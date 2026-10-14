@@ -25,7 +25,8 @@ on x86_64/arm64.
 
 Prepare your Devsy provider and context before using the recipe. The adapter
 installs Orca on the Server target; it does not install system packages or
-register providers.
+register providers. SSH connections use the Devsy-generated SSH configuration
+for host-key and agent-forwarding options.
 
 ## Configure
 
@@ -72,8 +73,8 @@ HEAD. The resulting `userData.buildRef` and `userData.buildCommit` identify its
 source. Orca's later worktree can use a different commit. Lifecycle operations
 use saved settings; editing YAML affects new workspaces only.
 
-After a host reboot, run `orca-env-devsy reconnect` to restore all enabled Server
-tunnels saved by this adapter under `${XDG_STATE_HOME:-$HOME/.local/state}`.
+After a host reboot, run `orca-env-devsy reconnect` to restore enabled SSH
+connections and Server tunnels saved by this adapter under `${XDG_STATE_HOME:-$HOME/.local/state}`.
 No workspace selection or receipt is required. Stopped workspaces are skipped;
 the adapter does not run workspace-up or start the remote Server. To restore one
 connection and emit recipe JSON, use `orca-env-devsy reconnect --receipt` with

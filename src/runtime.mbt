@@ -176,7 +176,7 @@ fn saved_command(state : Json) -> Array[String] raise ConfigError {
 }
 
 ///|
-fn proxy(state : Json) -> String raise {
+fn proxy(state : Json, services~ : Bool = true) -> String raise {
   let args = ["env"]
   for name in location_variables {
     args.push("-u")
@@ -204,34 +204,35 @@ fn proxy(state : Json) -> String raise {
     "--stdio",
     "--user",
     required(state, "user"),
-  ])
+  ] +
+  (if services { [] } else { ["--start-services=false"] }))
   .map(quote)
   .join(" ")
   .replace_all(old="%", new="%%")
 }
 
 ///|
-fn ssh_args(state : Json) -> Array[String] raise {
+fn ssh_args(state : Json, services~ : Bool = true) -> Array[String] raise {
   [
     "-o",
     "BatchMode=yes",
     "-o",
     "ConnectTimeout=15",
     "-o",
-    "ProxyCommand=" + proxy(state),
+    "ProxyCommand=" + proxy(state, services~),
     "-o",
     "StrictHostKeyChecking=no",
     "-o",
     "UserKnownHostsFile=/dev/null",
     "-o",
     "LogLevel=ERROR",
-    required(state, "user") + "@devsy-workspace",
+    required(state, "user") + "@" + required(state, "workspaceId") + ".devsy",
   ]
 }
 
 ///|
 async fn remote(state : Json, script : String, stage : String) -> String {
-  command("ssh", ssh_args(state) + [script], stage)
+  command("ssh", ssh_args(state, services=false) + [script], stage)
 }
 
 ///|
@@ -532,6 +533,14 @@ async fn create_state() -> Json {
     None => ""
     _ => raise AdapterError("Invalid remote workspace folder")
   }
+  // Transient probes must not own the shared credential relay. Establish the
+  // persistent owner before checkout commands can need private Git access.
+  let port = if required(state, "connection") == "orca-server" {
+    Some(reserve_server_port(state))
+  } else {
+    None
+  }
+  ensure_ssh_worker(state, port)
   let root = remote(
       state,
       root_script +
@@ -618,12 +627,13 @@ async fn emit_connection(
   existing? : Json,
 ) -> Unit {
   let connection = if required(state, "connection") == "ssh" {
+    ensure_ssh_worker(state, None)
     let target : Json = {
       "label": "Devsy",
-      "host": "devsy-workspace",
+      "host": required(state, "workspaceId") + ".devsy",
       "port": 22,
       "username": required(state, "user"),
-      "proxyCommand": proxy(state),
+      "proxyCommand": proxy(state, services=false),
     }
     let output : Json = {
       "type": "ssh",
@@ -636,7 +646,7 @@ async fn emit_connection(
       Some(Json::Number(port, ..)) => port.to_int()
       _ => raise AdapterError("Missing saved tunnel port")
     }
-    ensure_tunnel(state, port)
+    ensure_ssh_worker(state, Some(port))
     match field(result, "connection") {
       Some(value) => value
       None => raise AdapterError("Missing saved connection")

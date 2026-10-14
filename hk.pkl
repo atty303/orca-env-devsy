@@ -11,6 +11,10 @@ local linters = new Mapping<String, Step> {
   ["mise"] = Builtins.mise
   ["private-key"] = Builtins.detect_private_key
   ["taplo"] = Builtins.taplo
+  ["typescript"] = new Step {
+    glob = List("**/*.ts", "tsconfig.json", "package.json", "bun.lock")
+    check = new Command { argv = List("bun", "x", "--no-install", "tsc", "--noEmit") }
+  }
   ["moonbit-check"] = new Step {
     glob = List("**/*.mbt", "**/moon.pkg", "moon.mod")
     check = new Command { argv = List("moon", "check", "--target", "native", "--deny-warn") }
