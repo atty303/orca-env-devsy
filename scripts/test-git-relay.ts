@@ -21,7 +21,7 @@ try {
     const root = await mkdtemp(tmpdir() + "/cr-");
     const sockets = await mkdtemp("/tmp/cs-");
     const id = "relay-" + root.split("/").at(-1)!.toLowerCase();
-    const home = root + "/home", worker = root + "/worker";
+    const home = root + "/home", worker = home + "/state/orca-env-devsy/tunnels/" + id;
     const env: Environment = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home + "/config", XDG_STATE_HOME: home + "/state", XDG_DATA_HOME: home + "/data", XDG_CACHE_HOME: home + "/cache", XDG_RUNTIME_DIR: home + "/run", DEVSY_HOME: root + "/devsy", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: home + "/.gitconfig", GIT_TERMINAL_PROMPT: "0" };
     const d = (args: string[]) => run([devsy, "--home", root + "/devsy", ...args], { env, timeout: 600_000 });
     const guest = (command: string) => run(["docker", "exec", id, "sh", "-c", command], { env, timeout: 5000 });

@@ -70,13 +70,6 @@ fn process_error_type(output : String) -> String {
     "memory_exhausted"
   } else if text.contains("no space left on device") {
     "disk_exhausted"
-  } else if text.contains("ensure microsandbox final image") ||
-    text.contains("prepare microsandbox final image") {
-    "vm_image"
-  } else if text.contains("create microsandbox vm") {
-    "vm_create"
-  } else if text.contains("start microsandbox vm") {
-    "vm_start"
   } else if text.contains("address already in use") ||
     text.contains("addrinuse") {
     "address_in_use"
@@ -99,6 +92,24 @@ fn process_error_type(output : String) -> String {
     "missing_resource"
   } else if text.contains("permission denied") {
     "permission_denied"
+  } else if text.contains("database is locked") ||
+    text.contains("database locked") {
+    "database_locked"
+  } else if text.contains("too many open files") {
+    "file_limit"
+  } else if text.contains("build_vm:") {
+    "vm_boot"
+  } else if text.contains("create microsandbox vm") && text.contains("network:") {
+    "vm_network"
+  } else if text.contains("create microsandbox vm") && text.contains("mount:") {
+    "vm_mount"
+  } else if text.contains("ensure microsandbox final image") ||
+    text.contains("prepare microsandbox final image") {
+    "vm_image"
+  } else if text.contains("create microsandbox vm") {
+    "vm_create"
+  } else if text.contains("start microsandbox vm") {
+    "vm_start"
   } else {
     "process_exit"
   }
