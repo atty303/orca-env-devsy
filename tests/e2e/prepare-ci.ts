@@ -7,9 +7,26 @@ const provider = process.argv[2];
 assert(["docker", "podman", "microsandbox"].includes(provider));
 assert.equal(process.platform, "linux");
 assert.equal(process.env.GITHUB_ACTIONS, "true", "Runtime installation is restricted to the disposable CI runner");
+assert((await Bun.file("/etc/os-release").text()).includes("VERSION_CODENAME=noble"));
+if (provider === "docker") {
+  const architecture = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : undefined;
+  assert(architecture, "Unsupported Docker CI architecture");
+  const response = await fetch("https://download.docker.com/linux/ubuntu/gpg", { signal: AbortSignal.timeout(30_000) });
+  assert(response.ok, "Docker signing key download failed");
+  const key = await response.bytes();
+  assert.equal(new Bun.CryptoHasher("sha256").update(key).digest("hex"), "1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570");
+  const directory = resolve(".tools/e2e/docker");
+  await mkdir(directory, { recursive: true });
+  await Bun.write(directory + "/docker.asc", key);
+  await run(["sudo", "install", "-D", "-m", "0644", directory + "/docker.asc", "/etc/apt/keyrings/docker.asc"]);
+  await run(["sudo", "tee", "/etc/apt/sources.list.d/docker.sources"], { input: `Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: ${architecture}\nSigned-By: /etc/apt/keyrings/docker.asc\n` });
+}
 await run(["sudo", "apt-get", "update"], { inherit: true });
 await run(["sudo", "apt-get", "install", "-y", "xvfb", "acl", "libasound2t64", "libatk-bridge2.0-0", "libatspi2.0-0", "libdrm2", "libgbm1", "libgtk-3-0", "libnss3", "libxcomposite1", "libxdamage1", "libxfixes3", "libxkbcommon0", "libxrandr2", ...(provider === "podman" ? ["podman=" + process.env.E2E_PODMAN_PACKAGE, "uidmap", "slirp4netns", "fuse-overlayfs"] : [])], { inherit: true, timeout: 180_000 });
 if (provider === "docker") {
+  const installed = new Set((await run(["dpkg-query", "-W", "-f=${Package}\n"])).trim().split("\n"));
+  const conflicts = ["docker.io", "docker-compose", "docker-compose-v2", "docker-doc", "docker-buildx", "podman-docker", "containerd", "runc", "moby-engine", "moby-cli", "moby-buildx", "moby-containerd", "moby-runc"].filter(name => installed.has(name));
+  if (conflicts.length) await run(["sudo", "apt-get", "remove", "-y", ...conflicts], { inherit: true, timeout: 180_000 });
   const version = `5:${process.env.E2E_DOCKER_VERSION}-1~ubuntu.24.04~noble`;
   await run(["sudo", "apt-get", "install", "-y", "--allow-downgrades", "docker-ce=" + version, "docker-ce-cli=" + version, "containerd.io=" + process.env.E2E_CONTAINERD_PACKAGE, "docker-buildx-plugin=" + process.env.E2E_BUILDX_PACKAGE], { inherit: true, timeout: 180_000 });
   await run(["sudo", "systemctl", "restart", "docker"], { inherit: true });
