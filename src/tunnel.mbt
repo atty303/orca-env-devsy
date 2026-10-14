@@ -59,6 +59,7 @@ fn control_socket(state : Json, directory : String) -> String {
 
 ///|
 async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
+  stop_git_management(state)
   @async.with_timeout(2000, async fn() {
     ignore(
       @process.collect_output(
@@ -70,6 +71,9 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
     _ => ()
   }
   if field(state, "socketDirectory") is Some(Json::String(socket_directory)) {
+    if @fs.exists(socket_directory + "/credential-socket") {
+      @fs.remove(socket_directory + "/credential-socket")
+    }
     if @fs.exists(socket_directory + "/socket") {
       @fs.remove(socket_directory + "/socket")
     }
@@ -282,6 +286,27 @@ async fn wait_tunnel(directory : String) -> Unit {
     }
   })
   progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
+  @async.with_timeout(2500, async fn() {
+    while !@fs.exists(directory + "/git-status") ||
+          @fs.read_file(directory + "/git-status").text() == "pending" {
+      @async.sleep(100)
+    }
+  }) catch {
+    _ => ()
+  }
+  let git_status = if @fs.exists(directory + "/git-status") {
+    @fs.read_file(directory + "/git-status").text()
+  } else {
+    "pending"
+  }
+  if git_status != "ready" && git_status != "disabled" {
+    @stdio.stderr.write(
+      "orca-env-devsy: Git credential relay readiness is unavailable; Orca remains connected. Recovery will retry; inspect local git-relay diagnostics.\n",
+    ) catch {
+      _ => ()
+    }
+    save_diagnostic("git-relay", "warning", error_type="readiness_unavailable")
+  }
 }
 
 ///|
@@ -315,7 +340,7 @@ async fn close_tunnel(state : Json) -> Unit {
     for
       name in [
         "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-        "socket",
+        "socket", "git-status",
       ] {
       if @fs.exists(directory + "/" + name) {
         @fs.remove(directory + "/" + name)
@@ -357,6 +382,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   let enabled = directory + "/enabled"
   let mut attempt = 0
   while @fs.exists(enabled) {
+    git_relay_status(directory, "pending")
     tunnel_status(directory, "connecting")
     @async.with_task_group(async fn(group) {
       let sink = @process.redirect_to_file("/dev/null", shared=true)
@@ -405,6 +431,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         no_wait=true,
       )
       let mut connected = false
+      let mut monitoring_git = false
       while @fs.exists(enabled) && child.try_wait() is None {
         if !connected {
           try {
@@ -415,6 +442,14 @@ pub async fn tunnel_worker(directory : String) -> Unit {
           } catch {
             _ => ()
           }
+        }
+        if connected && !monitoring_git {
+          monitoring_git = true
+          group.spawn_bg(no_wait=true, async fn() {
+            monitor_git_relay(state, directory) catch {
+              _ => git_relay_status(directory, "unavailable")
+            }
+          })
         }
         @async.sleep(100)
       }

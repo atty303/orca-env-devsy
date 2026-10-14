@@ -54,6 +54,16 @@ run = [
 description = "Build the standalone native executable"
 run = "moon build --target native --release --deny-warn"
 
+[tasks."test:git-relay"]
+description = "Test credential recovery using real Devsy, Docker and an isolated Git helper"
+depends = ["build"]
+tools = { "github:devsy-org/devsy" = "1.23.0" }
+run = [
+  './scripts/test-git-relay.sh "$(command -v devsy)" _build/native/release/build/cmd/main/main.exe',
+  'RELAY_CREDENTIAL_PORT=13449 ./scripts/test-git-relay.sh "$(command -v devsy)" _build/native/release/build/cmd/main/main.exe',
+  'RELAY_DISABLE_GIT=1 ./scripts/test-git-relay.sh "$(command -v devsy)" _build/native/release/build/cmd/main/main.exe',
+]
+
 [tasks."cross:prepare"]
 description = "Prepare source runtime and checksum-pinned Darwin header"
 run = "./scripts/prepare-cross.sh"

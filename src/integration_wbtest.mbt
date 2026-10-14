@@ -13,6 +13,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|done
     #|case "$*" in
     #|  *'context list'*) printf '[{"name":"fixture-context","default":true}]\n' ;;
+    #|  *'context get'*) printf '{"SSH_INJECT_GIT_CREDENTIALS":{"default":"true","value":"%s"}}\n' "${FAKE_GIT_FORWARDING:-true}" ;;
     #|  *'workspace list'*)
     #|    if test -f "$FAKE_HOME/block-list"; then
     #|      printf '%s\n' "$$" > "$FAKE_HOME/blocked-list-pid"
@@ -42,6 +43,16 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  previous="$arg"
     #|done
     #|case "$*" in
+    #|  *'orca-git-readiness'*)
+    #|    test -f "$control"
+    #|    test ! -f "$FAKE_HOME/git-unavailable" ;;
+    #|  *'credential-socket'*'-O exit'*) rm -f "$control" ;;
+    #|  *'credential-socket'*'-N'*)
+    #|    trap 'rm -f "$control"' EXIT HUP INT TERM
+    #|    touch "$control"
+    #|    printf 'start\n' >> "$FAKE_HOME/git-management"
+    #|    if test ! -f "$FAKE_HOME/git-unrecoverable"; then rm -f "$FAKE_HOME/git-unavailable"; fi
+    #|    while test -f "$control"; do sleep 0.01; done ;;
     #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
     #|  *'pwd -P'*) printf '/workspace/repo\n' ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/reuse-running-server" && test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
@@ -1044,6 +1055,117 @@ async test "failed refresh forwards an unexpired short token but never an expire
     assert_true(errors.contains("refresh failed"))
     assert_eq(@fs.exists(directory + "/delivered-auth"), !expired)
   }
+}
+
+///|
+async test "Git relay loss recovers without replacing the Orca master and cleans up management" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let result = @json.parse(output)
+    let state = field(result, "userData").unwrap()
+    let worker = required(state, "tunnelDirectory")
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    let starts = @fs.read_file(directory + "/ssh-args")
+      .text()
+      .split("-L\n")
+      .count()
+    @fs.write_file(directory + "/git-unavailable", "")
+    @async.with_timeout(15000, async fn() {
+      while @fs.exists(directory + "/git-unavailable") {
+        @async.sleep(100)
+      }
+    })
+    assert_true(@fs.exists(directory + "/git-management"))
+    assert_eq(
+      @fs.read_file(directory + "/ssh-args").text().split("-L\n").count(),
+      starts,
+    )
+    assert_true(worker_alive(worker))
+    let (status, _, errors) = invoke("suspend", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_false(@fs.exists(worker))
+    let sockets = @fs.read_file(directory + "/ssh-args").text()
+    assert_true(sockets.contains("credential-socket"))
+  })
+}
+
+///|
+async test "unrecoverable Git readiness warns and retries while Orca remains available" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    @fs.write_file(directory + "/git-unavailable", "")
+    @fs.write_file(directory + "/git-unrecoverable", "")
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    assert_true(
+      errors.contains("Git credential relay readiness is unavailable"),
+    )
+    let result = @json.parse(output)
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    let worker = required(field(result, "userData").unwrap(), "tunnelDirectory")
+    let starts = @fs.read_file(directory + "/ssh-args")
+      .text()
+      .split("-L\n")
+      .count()
+    @async.with_timeout(20000, async fn() {
+      while !@fs.exists(directory + "/git-management") ||
+            @fs.read_file(directory + "/git-management")
+            .text()
+            .split("start")
+            .count() <
+            3 {
+        @async.sleep(100)
+      }
+    })
+    assert_true(worker_alive(worker))
+    assert_eq(
+      @fs.read_file(directory + "/ssh-args").text().split("-L\n").count(),
+      starts,
+    )
+    let events = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(events.contains("readiness_unavailable"))
+    assert_true(events.contains("retryDelayMs"))
+  })
+}
+
+///|
+async test "disabled Git forwarding creates neither readiness probes nor management connections" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  env.set("FAKE_GIT_FORWARDING", "false")
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let result = @json.parse(output)
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    assert_false(@fs.exists(directory + "/git-management"))
+    assert_false(
+      @fs.read_file(directory + "/ssh-args")
+      .text()
+      .contains("orca-git-readiness"),
+    )
+  })
 }
 
 ///|
