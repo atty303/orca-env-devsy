@@ -1,5 +1,7 @@
 name = "atty303/orca-env-devsy"
 
+source = "src"
+
 version = "0.1.0"
 
 readme = "README.md"

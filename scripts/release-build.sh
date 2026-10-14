@@ -8,9 +8,9 @@ output=${2:?absolute artifact directory required}
 [[ "${RELEASE_VERSION:-$version}" == "$version" ]]
 [[ "${RELEASE_ARTIFACT_DIR:-$output}" == "$output" ]]
 work=$(mktemp -d)
-cp version.mbt "$work/version.mbt"
-trap 'cp "$work/version.mbt" version.mbt; rm -rf "$work"' EXIT
-printf '///|\npub let version : String = "%s"\n' "$version" > version.mbt
+cp src/version.mbt "$work/version.mbt"
+trap 'cp "$work/version.mbt" src/version.mbt; rm -rf "$work"' EXIT
+printf '///|\npub let version : String = "%s"\n' "$version" > src/version.mbt
 export MOON_TOOLCHAIN_ROOT="$PWD/.tools/cross/moon"
 export MOON_CC="$PWD/scripts/clang-cross.sh" MOON_AR="$PWD/scripts/llvm-ar"
 mkdir -p "$output"
