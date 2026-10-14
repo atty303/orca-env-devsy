@@ -25,6 +25,12 @@ try {
     const env: Environment = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home + "/config", XDG_STATE_HOME: home + "/state", XDG_DATA_HOME: home + "/data", XDG_CACHE_HOME: home + "/cache", XDG_RUNTIME_DIR: home + "/run", DEVSY_HOME: root + "/devsy", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: home + "/.gitconfig", GIT_TERMINAL_PROMPT: "0" };
     const d = (args: string[]) => run([devsy, "--home", root + "/devsy", ...args], { env, timeout: 600_000 });
     const guest = (command: string) => run(["docker", "exec", id, "sh", "-c", command], { env, timeout: 5000 });
+    const restoreOwnership = async () => {
+      // A disposable helper also works when the workspace container is stopped.
+      if (process.platform === "linux") try { await run(["docker", "run", "--name", id + "-cleanup", "--rm", "--network", "none", "--mount", `type=bind,source=${root}/workspace,target=/owned`, "--entrypoint", "chown", "mcr.microsoft.com/devcontainers/base:ubuntu", "-R", `${process.getuid!()}:${process.getgid!()}`, "/owned"], { env, timeout: 15_000 }); } finally {
+        await run(["docker", "rm", "-f", id + "-cleanup"], { env, timeout: 5000 }).catch(() => {});
+      }
+    };
     const base = ["ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"];
     const ssh = (socket: string, args: string[]) => run([...base, "-S", socket, ...args], { env, timeout: 5000 });
     const proxy = [devsy, "--home", root + "/devsy", "--log-level", "debug", "workspace", "ssh", id, "--stdio", "--user", "root"].map(quote).join(" ");
@@ -145,10 +151,13 @@ try {
       if (owner) stop(owner, "SIGKILL");
       if (second) stop(second, "SIGKILL");
       for (const socket of [sockets + "/a", sockets + "/orca/socket", sockets + "/orca/credential-socket"]) await ssh(socket, ["-O", "exit", "root@devsy-workspace"]).catch(() => {});
+      const cleanupErrors: string[] = [];
+      await restoreOwnership().catch(() => cleanupErrors.push("bind-ownership"));
       await d(["workspace", "delete", id, "--force", "--ignore-not-found"]).catch(() => {});
       await run(["docker", "rm", "-f", id], { env }).catch(() => {});
-      await rm(root, { recursive: true, force: true });
-      await rm(sockets, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true }).catch(() => cleanupErrors.push("fixture-directory"));
+      await rm(sockets, { recursive: true, force: true }).catch(() => cleanupErrors.push("socket-directory"));
+      assert.deepEqual(cleanupErrors, [], "Fixture cleanup must release owned resources");
     }
   }
 

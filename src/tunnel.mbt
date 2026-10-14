@@ -188,48 +188,59 @@ async fn reconnect_all_inner() -> Unit {
     return
   }
   let mut failures = 0
-  for name in @fs.readdir(base, sort=true) {
-    let directory = base + "/" + name
-    try {
-      if @fs.kind(directory, follow_symlink=false) != @fs.FileKind::Directory ||
-        !@fs.exists(directory + "/enabled") {
-        continue
-      }
-      let state = @json.parse(@fs.read_file(directory + "/state.json").text())
-      validate_state(state)
-      match @async.with_timeout(10000, async fn() { workspace(state) }) {
-        Some(current) if field(current, "uid") == field(state, "workspaceUid") =>
-          ()
-        _ => {
-          @fs.remove(directory + "/enabled")
-          save_diagnostic("reconnect", "ownership-error")
-          continue
+  let permits = @async.Semaphore(4)
+  @async.with_task_group(async fn(group) {
+    for name in @fs.readdir(base, sort=true) {
+      let directory = base + "/" + name
+      permits.acquire()
+      group.spawn_bg(async fn() {
+        defer permits.release()
+        try {
+          if @fs.kind(directory, follow_symlink=false) !=
+            @fs.FileKind::Directory ||
+            !@fs.exists(directory + "/enabled") {
+            return
+          }
+          let state = @json.parse(
+            @fs.read_file(directory + "/state.json").text(),
+          )
+          validate_state(state)
+          match @async.with_timeout(10000, async fn() { workspace(state) }) {
+            Some(current) if field(current, "uid") ==
+              field(state, "workspaceUid") => ()
+            _ => {
+              @fs.remove(directory + "/enabled")
+              save_diagnostic("reconnect", "ownership-error")
+              return
+            }
+          }
+          if !workspace_running(state) {
+            save_diagnostic("reconnect", "workspace-stopped")
+            return
+          }
+          let port = match field(state, "localPort") {
+            Some(Json::Number(value, ..)) if value >= 1 &&
+              value <= 65535 &&
+              value == value.to_int().to_double() => Some(value.to_int())
+            None if field(state, "connection") == Some(Json::string("ssh")) =>
+              None
+            _ => raise AdapterError("Invalid saved tunnel port")
+          }
+          set_field(state, "tunnelDirectory", Json::string(directory))
+          ensure_ssh_worker(state, port)
+          save_diagnostic("reconnect", "success")
+        } catch {
+          _ =>
+            if @fs.exists(directory) {
+              failures += 1
+              save_diagnostic("reconnect", "failed")
+            } else {
+              save_diagnostic("reconnect", "target-removed")
+            }
         }
-      }
-      if !workspace_running(state) {
-        save_diagnostic("reconnect", "workspace-stopped")
-        continue
-      }
-      let port = match field(state, "localPort") {
-        Some(Json::Number(value, ..)) if value >= 1 &&
-          value <= 65535 &&
-          value == value.to_int().to_double() => Some(value.to_int())
-        None if field(state, "connection") == Some(Json::string("ssh")) => None
-        _ => raise AdapterError("Invalid saved tunnel port")
-      }
-      set_field(state, "tunnelDirectory", Json::string(directory))
-      ensure_ssh_worker(state, port)
-      save_diagnostic("reconnect", "success")
-    } catch {
-      _ =>
-        if @fs.exists(directory) {
-          failures += 1
-          save_diagnostic("reconnect", "failed")
-        } else {
-          save_diagnostic("reconnect", "target-removed")
-        }
+      })
     }
-  }
+  })
   guard failures == 0 else {
     raise AdapterError(
       "Some tunnels could not be restored; other targets were attempted",
