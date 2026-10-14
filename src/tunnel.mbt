@@ -506,8 +506,6 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         tunnel_status(directory, "workspace-stopped")
         return
       }
-      // Only the dedicated management connection starts credential services.
-      // Starting them on this master as well races Devsy's asynchronous setup.
       // The worker owns this master and reaps it before reconnecting.
       let (errors, stderr) = @process.read_from_process()
       defer errors.close()
@@ -518,7 +516,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       let child = @process.spawn(
         group,
         "ssh",
-        ssh_args(state, services=false) +
+        ssh_args(state) +
         [
           "-M",
           "-S",
