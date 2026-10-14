@@ -1,4 +1,5 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { totalmem } from "node:os";
 import { resolve } from "node:path";
 import { processFailureCategory, type Environment } from "../../scripts/process.ts";
 
@@ -10,6 +11,12 @@ export async function installMicrosandboxDiagnostics(root: string, env: Environm
 }
 
 export async function launch(binary: string, home: string, report: string) {
+  const oomCount = async () => {
+    try { return Number(/^oom_kill (\d+)$/m.exec(await Bun.file("/proc/vmstat").text())?.[1]); }
+    catch { return NaN; }
+  };
+  const tracked = ["run", "load"].includes(process.argv[2]);
+  const before = tracked ? await oomCount() : NaN;
   const child = Bun.spawn([binary, ...process.argv.slice(2)], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const interrupt = () => child.kill("SIGTERM");
   process.once("SIGTERM", interrupt);
@@ -22,19 +29,20 @@ export async function launch(binary: string, home: string, report: string) {
     }
   };
   const [code] = await Promise.all([child.exited, forward(child.stdout, process.stdout), forward(child.stderr, process.stderr)]);
-  if (code !== 0 && ["run", "load"].includes(process.argv[2])) try {
+  if (code !== 0 && tracked) try {
     const boot: { stage: string; errno?: number }[] = [];
     const stages = new Set(["mount", "build_vm", "config", "network", "image", "other"]);
-    const logs = home + "/logs";
+    const logs = home + "/sandboxes";
     await mkdir(logs, { recursive: true });
-    for await (const path of new Bun.Glob("**/boot-error.json").scan({ cwd: logs, absolute: true, followSymlinks: false })) {
+    for await (const path of new Bun.Glob("*/logs/boot-error.json").scan({ cwd: logs, absolute: true, followSymlinks: false })) {
       if (boot.length >= 16) break;
       const file = Bun.file(path);
       if (file.size > 16_384) continue;
       const record = await file.json();
       if (stages.has(record.stage)) boot.push({ stage: record.stage, ...(Number.isInteger(record.errno) && Math.abs(record.errno) <= 4096 ? { errno: record.errno } : {}) });
     }
-    await appendFile(report, JSON.stringify({ operation: process.argv[2], exitCode: code, category: processFailureCategory(tail), boot }) + "\n", { mode: 0o600 });
+    const after = await oomCount();
+    await appendFile(report, JSON.stringify({ memoryMiB: Math.floor(totalmem() / 1048576), ...(Number.isFinite(before) && Number.isFinite(after) ? { oomKills: Math.max(0, after - before) } : {}), operation: process.argv[2], exitCode: code, category: processFailureCategory(tail), boot }) + "\n", { mode: 0o600 });
   } catch { /* Diagnostics must not replace the runtime's result. */ }
   process.exit(code);
 }
