@@ -93,53 +93,6 @@ fn process_error_type(output : String) -> String {
 }
 
 ///|
-async fn record_devsy_phases(output : String, stage : String) -> Unit {
-  if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
-    return
-  }
-  let mut count = 0
-  for line in output.split("\n") {
-    if line.length() > 65536 {
-      continue
-    }
-    let event = @json.parse(line.to_owned()) catch { _ => continue }
-    if field(event, "kind") != Some(Json::string("status")) {
-      continue
-    }
-    let phase = match field(event, "phase") {
-      Some(Json::String(value)) => value
-      _ => continue
-    }
-    let status = match field(event, "state") {
-      Some(Json::String(value)) => value
-      _ => continue
-    }
-    if ![
-        "cloning_repository", "resolving_config", "initialize_command", "preparing_devcontainer",
-        "building_image", "starting_container", "injecting_agent", "running_lifecycle_hook",
-        "waiting_for", "running_command", "configuring_workspace", "configuring_ssh",
-        "starting_ssh_tunnel", "launching_ide", "stopping_workspace", "deleting_workspace",
-        "rebuilding_workspace", "resetting_workspace", "importing_workspace", "ready",
-        "failed", "installing_provider", "resolving_options", "running_init",
-      ].contains(phase) ||
-      !["started", "succeeded", "failed", "skipped"].contains(status) {
-      continue
-    }
-    if count == 128 {
-      save_diagnostic(stage, "diagnostics-truncated", error_type="phase_limit")
-      break
-    }
-    count += 1
-    save_diagnostic(
-      stage,
-      status,
-      phase~,
-      error_type?=if status == "failed" { Some("backend_phase") } else { None },
-    )
-  }
-}
-
-///|
 async fn tunnel_errors(reader : @process.ReadFromProcess) -> String {
   defer reader.close()
   let mut tail = ""

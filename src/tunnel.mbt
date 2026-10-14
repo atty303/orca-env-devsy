@@ -255,6 +255,11 @@ async fn workspace_running(state : Json) -> Bool {
 
 ///|
 async fn wait_tunnel(directory : String) -> Unit {
+  let started = @env.now()
+  progress_message("ssh-tunnel: connecting…")
+  errdefer progress_message(
+    "ssh-tunnel: failed (" + progress_timing(started) + ")",
+  )
   @async.with_timeout(30000, async fn() {
     while true {
       if @fs.exists(directory + "/status.json") && worker_alive(directory) {
@@ -276,6 +281,7 @@ async fn wait_tunnel(directory : String) -> Unit {
       @async.sleep(100)
     }
   })
+  progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
 }
 
 ///|
@@ -286,6 +292,11 @@ async fn close_tunnel(state : Json) -> Unit {
   if !@fs.exists(directory) {
     return
   }
+  let started = @env.now()
+  progress_message("ssh-tunnel-close: running…")
+  errdefer progress_message(
+    "ssh-tunnel-close: failed (" + progress_timing(started) + ")",
+  )
   if @fs.exists(directory + "/state.json") {
     let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
     guard field(saved, "workspaceUid") == field(state, "workspaceUid") else {
@@ -322,6 +333,7 @@ async fn close_tunnel(state : Json) -> Unit {
   @fs.rmdir(directory) catch {
     _ => ()
   }
+  progress_message("ssh-tunnel-close: done (" + progress_timing(started) + ")")
 }
 
 ///|
