@@ -39,7 +39,11 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'pwd -P'*) printf '/workspace/repo\n' ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/reuse-running-server" && test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
     #|  *'--recipe-json'*) touch "$FAKE_HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
-    #|  *'-O check'*) test -f "$FAKE_HOME/listener-ready" ;;
+    #|  *'-O check'*)
+    #|    if test -f "$FAKE_HOME/fail-tunnel-cleanup"; then
+    #|      for arg in "$@"; do case "$arg" in */socket) printf '{invalid' > "${arg%/socket}/state.json" ;; esac; done
+    #|    fi
+    #|    test -f "$FAKE_HOME/listener-ready" ;;
     #|  *'-O exit'*) rm -f "$FAKE_HOME/listener-ready" ;;
     #|  *'cat >'* ) test ! -f "$FAKE_HOME/fail-addon"; cat > "$FAKE_HOME/delivered-auth" ;;
     #|  *'-L 127.0.0.1:'* )
@@ -54,7 +58,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      trap 'kill "$keeper" 2>/dev/null || true; wait "$keeper" 2>/dev/null || true' EXIT HUP INT TERM
     #|    fi
     #|    while test -f "$FAKE_HOME/listener-ready"; do
-    #|      if test -f "$FAKE_HOME/drop-tunnel"; then rm "$FAKE_HOME/drop-tunnel"; exit 1; fi
+    #|      if test -f "$FAKE_HOME/drop-tunnel"; then rm "$FAKE_HOME/drop-tunnel"; printf "Permission denied (publickey). private-stderr-secret\n" >&2; exit 1; fi
     #|      sleep 0.01
     #|    done ;;
     #|  *) : ;;
@@ -736,6 +740,7 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       #|   printf '%s\n' "$@" >> "$FAKE_HOME/shallow-args"
       #|   if test "$CLONE_FAILURE" = missing; then
       #|     printf '%s\n' "{\"kind\":\"status\",\"phase\":\"cloning_repository\",\"state\":\"failed\",\"error\":{\"message\":\"Could not parse object 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\"}}"
+      #|     printf '\377 non-UTF-8 private-stderr-secret\n' >&2
       #|     exit 1
       #|   fi
       #|   if test "$CLONE_FAILURE" = other; then exit 3; fi ;;
@@ -951,6 +956,13 @@ async test "tunnel worker reconnects on the same port and remains running when s
     let (status, _, errors) = invoke("reconnect", env, directory, payload~)
     assert_eq(status, 0, msg=errors)
     assert_eq(@fs.read_file(directory + "/listener-port").text(), port)
+    let records = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(records.contains("authentication_failed"))
+    assert_true(records.contains("retryDelayMs"))
+    assert_true(records.contains("attempt"))
+    assert_false(records.contains("private-stderr-secret"))
     for pair in [("suspend", "fail-stop"), ("destroy", "fail-delete")] {
       let (mode, marker) = pair
       @fs.write_file(directory + "/" + marker, "")
@@ -1203,4 +1215,113 @@ async test "Server loopback health probe ignores ambient curl proxy configuratio
   )
   assert_eq(status, 0)
   assert_eq(output.text(), "101")
+}
+
+///|
+async test "failed create still deletes workspace when tunnel state cleanup fails" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    @fs.write_file(directory + "/fail-tunnel-cleanup", "")
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_eq(output, "")
+    assert_true(errors.contains("continuing workspace deletion"))
+    assert_false(@fs.exists(directory + "/created"))
+    let args = @fs.read_file(directory + "/ssh-args")
+      .text()
+      .split("\n")
+      .to_array()
+    let sockets = args.filter(arg => arg.has_suffix("/socket"))
+    assert_true(sockets.length() > 0)
+    let worker = sockets[0].to_owned().replace_all(old="/socket", new="")
+    // Repair only this deliberately corrupted test state so the owned worker can stop.
+    @fs.remove(worker + "/state.json")
+    @fs.remove(worker + "/enabled")
+    @fs.remove(directory + "/listener-ready")
+    @async.with_timeout(5000, async fn() {
+      while worker_alive(worker) {
+        @async.sleep(100)
+      }
+    })
+    @fs.rmdir(worker, recursive=true)
+    let records = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(records.contains("create-cleanup-tunnel"))
+    assert_true(records.contains("tunnel_cleanup"))
+    assert_true(records.contains("create-cleanup"))
+  })
+}
+
+///|
+async test "diagnostics retain only known backend phases and fixed failure classes" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let result =
+    #|{"kind":"status","phase":"cloning_repository","state":"started","step":"private-step-secret"}
+    #|{"kind":"status","phase":"building_image","state":"failed","error":{"message":"private-error-secret","context":{"token":"private-context-secret"}}}
+    #|{"kind":"status","phase":"private-phase-secret","state":"failed"}
+    #|{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}
+  @fs.write_file(directory + "/up-result", result + "\n")
+  let (status, output, _) = invoke("create", env, directory)
+  assert_eq(status, 0)
+  let receipt = @json.parse(output)
+  let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  let path = directory + "/.local/state/orca-env-devsy/events.jsonl"
+  let records = @fs.read_file(path).text()
+  assert_true(records.contains("cloning_repository"))
+  assert_true(records.contains("building_image"))
+  assert_true(records.contains("backend_phase"))
+  assert_true(records.contains("durationMs"))
+  assert_false(records.contains("private-"))
+  env.set("ORCA_ENV_DEVSY_RECORDING", "0")
+  let (status, _, _) = invoke("resume", env, directory, payload~)
+  assert_eq(status, 0)
+  assert_eq(@fs.read_file(path).text(), records)
+  env.remove("ORCA_ENV_DEVSY_RECORDING")
+  @fs.remove(path)
+  @fs.mkdir(path)
+  let (status, _, _) = invoke("resume", env, directory, payload~)
+  assert_eq(status, 0)
+}
+
+///|
+async test "binary stderr never changes command failure with recording enabled or disabled" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  let document : Json = {
+    "devsy": {
+      "connection": "ssh",
+      "command": [
+        "/bin/sh", "-c", "printf '\\377 Permission denied (publickey). private-binary-secret\\n' >&2; exit 7",
+        "sh",
+      ],
+    },
+    "environmentRecipes": [{ "id": "test" }],
+  }
+  @fs.write_file(directory + "/orca.yaml", document.stringify())
+  for enabled in ["1", "0"] {
+    env.set("ORCA_ENV_DEVSY_RECORDING", enabled)
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_eq(output, "")
+    assert_true(errors.contains("resolve-context failed (exit 7)"))
+    assert_false(errors.contains("private-binary-secret"))
+  }
+  let records = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_true(records.contains("authentication_failed"))
+  assert_true(records.contains("\"exitCode\":7"))
+  assert_false(records.contains("private-binary-secret"))
 }

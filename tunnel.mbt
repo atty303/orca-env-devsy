@@ -184,6 +184,12 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         return
       }
       // The worker owns this master and reaps it before reconnecting.
+      let (errors, stderr) = @process.read_from_process()
+      defer errors.close()
+      let classified = group.spawn(
+        async fn() { tunnel_errors(errors) },
+        no_wait=true,
+      )
       let child = @process.spawn(
         group,
         "ssh",
@@ -204,7 +210,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         ],
         stdin=@process.redirect_from_file("/dev/null"),
         stdout=sink,
-        stderr=sink,
+        stderr~,
         no_wait=true,
       )
       let mut connected = false
@@ -235,7 +241,14 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         child.cancel()
       } else {
         let code = child.wait()
-        save_diagnostic("orca-tunnel", "disconnected", exit_code=code)
+        save_diagnostic(
+          "orca-tunnel",
+          "disconnected",
+          exit_code=code,
+          error_type=@async.with_timeout(1000, async fn() { classified.wait() }) catch {
+            _ => "process_exit"
+          },
+        )
       }
     }) catch {
       _ => save_diagnostic("orca-tunnel", "process-error")
@@ -244,6 +257,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       tunnel_status(directory, "disconnected")
       attempt = if attempt < 6 { attempt + 1 } else { 6 }
       let delay = if attempt < 6 { 500 * (1 << attempt) } else { 30000 }
+      save_diagnostic("orca-tunnel", "retry", attempt~, retry_delay_ms=delay)
       for elapsed = 0
           elapsed < delay && @fs.exists(enabled)
           elapsed = elapsed + 100 {

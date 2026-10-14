@@ -34,8 +34,9 @@ async fn command_result(
   environment? : Map[String, String],
 ) -> (Int32, String) {
   save_diagnostic(stage, "started")
-  let (status, output, _) = {
-    errdefer save_diagnostic(stage, "process-error")
+  let started = @env.now()
+  let (status, output, errors) = {
+    errdefer save_diagnostic(stage, "process-error", error_type="process_api")
     @process.collect_output(
       program,
       args,
@@ -51,6 +52,13 @@ async fn command_result(
       "exit-error"
     },
     exit_code=status,
+    duration_ms=(@env.now() - started).to_double(),
+    error_type?=if status == 0 ||
+      @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
+      None
+    } else {
+      Some(process_error_type(@utf8.decode_lossy(errors.binary())))
+    },
   )
   (status, output.text())
 }
@@ -97,12 +105,14 @@ async fn devsy_result(
     }
   }
   let invocation = saved_command(state)
-  command_result(
+  let result = command_result(
     invocation[0],
     invocation[1:].to_owned() + devsy_args(state) + args,
     stage,
     environment~,
   )
+  record_devsy_phases(result.1, stage)
+  result
 }
 
 ///|
@@ -209,52 +219,6 @@ async fn read_document(path : String) -> Json {
   }
   docs[0].to_json()
 }
-
-///|
-async fn save_diagnostic(
-  stage : String,
-  status : String,
-  exit_code? : Int32,
-) -> Unit {
-  if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
-    return
-  }
-  try {
-    let home = environment("HOME")
-    let dir = home + "/.local/state/orca-env-devsy"
-    @fs.mkdir(dir, permission=0o700, recursive=true, allow_exist=true)
-    @fs.chmod(dir, 0o700)
-    let path = dir + "/events.jsonl"
-    if @fs.exists(path) &&
-      @fs.kind(path, follow_symlink=false) != @fs.FileKind::Regular {
-      return
-    }
-    if @fs.exists(path) && @fs.file_size(path) > 262144L {
-      @fs.remove(path)
-    }
-    let event : Json = {
-      "stage": stage,
-      "status": status,
-      "time": @env.now().to_string(),
-      "runId": recording_run_id,
-    }
-    if exit_code is Some(code) {
-      set_field(event, "exitCode", Json::number(code.to_double()))
-    }
-    @fs.write_file(
-      path,
-      event.stringify() + "\n",
-      permission=0o600,
-      append=true,
-      create_mode=@fs.OpenOrCreate,
-    )
-  } catch {
-    _ => ()
-  }
-}
-
-///|
-let recording_run_id : String = @env.now().to_string()
 
 ///|
 async fn notify(stage : String) -> Unit {
@@ -805,7 +769,18 @@ async fn discard_created_workspace(state : Json) -> Unit {
           return
         }
         if field(state, "user") is Some(_) {
-          close_tunnel(state)
+          @async.with_timeout(15000, async fn() { close_tunnel(state) }) catch {
+            _ => {
+              save_diagnostic(
+                "create-cleanup-tunnel",
+                "warning",
+                error_type="tunnel_cleanup",
+              )
+              @stdio.stderr.write(
+                "orca-env-devsy: warning: tunnel cleanup failed; continuing workspace deletion\n",
+              )
+            }
+          }
         }
         ignore(
           devsy(

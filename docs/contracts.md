@@ -95,9 +95,13 @@ follows Devsy's workspace/container lifecycle.
 
 Stderr reports fixed operation stages and safe failure categories. Raw Devsy,
 SSH, Orca, authentication responses and arbitrary subprocess exceptions are not
-printed. Bounded local JSONL records contain only stage, status, subprocess exit code when available, run ID and timestamp in
+printed. Bounded local JSONL records contain stage, status, adapter version, run ID, timestamp,
+process duration and exit code, fixed failure classifications, known Devsy phase
+transitions, and tunnel retry attempt/delay in
 `$HOME/.local/state/orca-env-devsy/events.jsonl`, with private permissions.
 Process records distinguish start, success, process API failure and nonzero exit.
+Devsy phase records are observed after process output completes; they are not live
+backend timing measurements. Unknown phases and free-text errors are omitted.
 Command values are not recorded; inspect the saved `userData.command` locally
 when checking the effective invocation. Recording failures do not affect workspace actions. `ORCA_ENV_DEVSY_RECORDING=0`
 disables recording. The file is rotated at 256 KiB; remove it to delete records,
