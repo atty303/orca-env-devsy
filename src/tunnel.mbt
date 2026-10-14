@@ -226,18 +226,20 @@ async fn reconnect_all_inner() -> Unit {
             @fs.read_file(directory + "/state.json").text(),
           )
           validate_state(state)
-          match @async.with_timeout(10000, async fn() { workspace(state) }) {
-            Some(current) if field(current, "uid") ==
-              field(state, "workspaceUid") => ()
-            _ => {
-              @fs.remove(directory + "/enabled")
-              save_diagnostic("reconnect", "ownership-error")
+          if worker_alive(directory) {
+            match @async.with_timeout(10000, async fn() { workspace(state) }) {
+              Some(current) if field(current, "uid") ==
+                field(state, "workspaceUid") => ()
+              _ => {
+                @fs.remove(directory + "/enabled")
+                save_diagnostic("reconnect", "ownership-error")
+                return
+              }
+            }
+            if !workspace_running(state) {
+              save_diagnostic("reconnect", "workspace-stopped")
               return
             }
-          }
-          if !workspace_running(state) {
-            save_diagnostic("reconnect", "workspace-stopped")
-            return
           }
           let port = match field(state, "localPort") {
             Some(Json::Number(value, ..)) if value >= 1 &&
@@ -251,6 +253,10 @@ async fn reconnect_all_inner() -> Unit {
           ensure_ssh_worker(state, port)
           save_diagnostic("reconnect", "success")
         } catch {
+          AdapterError("Tunnel workspace ownership changed") =>
+            save_diagnostic("reconnect", "ownership-error")
+          AdapterError("Tunnel workspace stopped") =>
+            save_diagnostic("reconnect", "workspace-stopped")
           _ =>
             if @fs.exists(directory) {
               failures += 1
@@ -303,11 +309,18 @@ async fn wait_tunnel(directory : String) -> Unit {
   )
   @async.with_timeout(30000, async fn() {
     while true {
-      if @fs.exists(directory + "/status.json") && worker_alive(directory) {
+      if @fs.exists(directory + "/status.json") {
         let status = @json.parse(
           @fs.read_file(directory + "/status.json").text(),
         )
-        if field(status, "status") == Some(Json::string("connected")) {
+        if field(status, "status") == Some(Json::string("ownership-error")) {
+          raise AdapterError("Tunnel workspace ownership changed")
+        }
+        if field(status, "status") == Some(Json::string("workspace-stopped")) {
+          raise AdapterError("Tunnel workspace stopped")
+        }
+        if field(status, "status") == Some(Json::string("connected")) &&
+          worker_alive(directory) {
           let saved = @json.parse(
             @fs.read_file(directory + "/state.json").text(),
           )
@@ -472,6 +485,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   while @fs.exists(enabled) {
     git_relay_status(directory, "pending")
     tunnel_status(directory, "connecting")
+    let mut terminal = false
     @async.with_task_group(async fn(group) {
       let sink = @process.redirect_to_file("/dev/null", shared=true)
       defer sink.close()
@@ -481,10 +495,12 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         if @fs.exists(enabled) {
           @fs.remove(enabled)
         }
+        terminal = true
         tunnel_status(directory, "ownership-error")
         return
       }
       if field(current, "running") != Some(Json::boolean(true)) {
+        terminal = true
         tunnel_status(directory, "workspace-stopped")
         return
       }
@@ -566,6 +582,9 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       }
     }) catch {
       _ => save_diagnostic("orca-tunnel", "process-error")
+    }
+    if terminal {
+      return
     }
     if @fs.exists(enabled) {
       tunnel_status(directory, "disconnected")
