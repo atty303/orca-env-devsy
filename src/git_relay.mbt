@@ -169,14 +169,14 @@ async fn monitor_git_relay(state : Json, directory : String) -> Unit {
           ((!ready && recovered) || (!recovered && @env.now() >= deadline)) {
           break
         }
-        @async.sleep(1000)
+        @async.sleep(if recovered || !git_enabled { 1000 } else { 250 })
       }
     }) catch {
       _ => save_diagnostic("git-relay-management", "process-error")
     }
     if @fs.exists(enabled) {
       attempt = if attempt < 5 { attempt + 1 } else { 5 }
-      let delay = if attempt < 5 { 1000 * (1 << attempt) } else { 30000 }
+      let delay = if attempt < 5 { 250 * (1 << (attempt - 1)) } else { 30000 }
       if git_enabled {
         git_relay_status(directory, "unavailable")
         last = "unavailable"
