@@ -14,6 +14,8 @@ async fn codex_addon(state : Json) -> Unit {
   if field(state, "codexAuth") != Some(Json::boolean(true)) {
     return
   }
+  let started = @env.now()
+  progress_message("codex-auth: running…")
   let mut stage = "read"
   try {
     @async.with_timeout(45000, async fn() {
@@ -80,12 +82,15 @@ async fn codex_addon(state : Json) -> Unit {
       })
     })
     save_diagnostic("codex-auth", "success")
+    progress_message("codex-auth: done (" + progress_timing(started) + ")")
   } catch {
     _ => {
-      @stdio.stderr.write(
-        "orca-env-devsy: warning: Codex authentication addon failed at " +
+      progress_message(
+        "warning: Codex authentication addon failed at " +
         stage +
-        "; continuing\n",
+        "; continuing (" +
+        progress_timing(started) +
+        ")",
       )
       save_diagnostic("codex-auth", "warning")
     }

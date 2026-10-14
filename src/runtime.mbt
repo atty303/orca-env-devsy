@@ -35,15 +35,55 @@ async fn command_result(
 ) -> (Int32, String) {
   save_diagnostic(stage, "started")
   let started = @env.now()
+  let progress = Progress::new(stage)
+  progress_message(stage + ": running…")
   let (status, output, errors) = {
-    errdefer save_diagnostic(stage, "process-error", error_type="process_api")
-    @process.collect_output(
-      program,
-      args,
-      extra_env?=environment,
-      inherit_env=environment is None,
-    )
+    errdefer {
+      save_diagnostic(stage, "process-error", error_type="process_api")
+      progress_message(stage + ": failed (" + progress_timing(started) + ")")
+    }
+    let (out, stdout) = @process.read_from_process()
+    defer out.close()
+    let (err, stderr) = @process.read_from_process()
+    defer err.close()
+    @async.with_task_group(async fn(group) {
+      let child = @process.spawn(
+        group,
+        program,
+        args,
+        extra_env?=environment,
+        inherit_env=environment is None,
+        stdout~,
+        stderr~,
+      )
+      let output = group.spawn(async fn() {
+        progress.read_output(
+          out,
+          capture=true,
+          statuses=devsy_progress_stage(stage),
+          messages=stage == "orca-install" || stage == "checkout-workspace",
+        )
+      })
+      let errors = group.spawn(async fn() {
+        progress.read_output(
+          err,
+          capture=false,
+          messages=devsy_progress_stage(stage) ||
+            stage == "orca-install" ||
+            stage == "checkout-workspace",
+        )
+      })
+      (child.wait(), output.wait(), errors.wait())
+    })
   }
+  progress_message(
+    stage +
+    ": " +
+    (if status == 0 { "done" } else { "failed (exit \{status})" }) +
+    " (" +
+    progress_timing(started) +
+    ")",
+  )
   save_diagnostic(
     stage,
     if status == 0 {
@@ -57,10 +97,10 @@ async fn command_result(
       @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
       None
     } else {
-      Some(process_error_type(@utf8.decode_lossy(errors.binary())))
+      Some(process_error_type(errors))
     },
   )
-  (status, output.text())
+  (status, output)
 }
 
 ///|
@@ -105,13 +145,17 @@ async fn devsy_result(
     }
   }
   let invocation = saved_command(state)
+  let logging = if devsy_progress_stage(stage) {
+    ["--log-level", "debug", "--log-output", "json"]
+  } else {
+    []
+  }
   let result = command_result(
     invocation[0],
-    invocation[1:].to_owned() + devsy_args(state) + args,
+    invocation[1:].to_owned() + devsy_args(state) + logging + args,
     stage,
     environment~,
   )
-  record_devsy_phases(result.1, stage)
   result
 }
 
@@ -222,7 +266,7 @@ async fn read_document(path : String) -> Json {
 
 ///|
 async fn notify(stage : String) -> Unit {
-  @stdio.stderr.write("orca-env-devsy: " + stage + "\n")
+  progress_message(stage + ": running…")
   save_diagnostic(stage, "started")
 }
 
@@ -385,7 +429,6 @@ async fn create_state() -> Json {
   }
   set_field(state, "buildRef", Json::string(build_ref))
   set_field(state, "buildCommit", Json::string(hash))
-  notify("workspace-create")
   guard workspace(state) == None else {
     raise AdapterError("Workspace ID already exists")
   }
@@ -448,6 +491,9 @@ async fn create_state() -> Json {
     let (status, output) = devsy_result(state, shallow_args, "workspace-create")
     if status != 0 && missing_shallow_commit(output, hash) {
       save_diagnostic("clone-fallback", "started")
+      progress_message(
+        "Pinned commit unavailable in shallow clone; retrying with a full clone…",
+      )
       devsy(state, args, "workspace-create-full")
     } else {
       guard status == 0 else {
@@ -681,6 +727,7 @@ async fn execute_inner(mode : String) -> Unit {
     _ => raise AdapterError("Unknown command")
   }
   save_diagnostic(mode, "success")
+  progress_message(mode + ": done (" + progress_timing(progress_started) + ")")
 }
 
 ///|
@@ -697,16 +744,19 @@ pub extend AdapterError with @debug.Debug::{to_repr}
 pub async fn execute(mode : String) -> Unit {
   execute_inner(mode) catch {
     InvalidConfig(message) => {
-      @stdio.stderr.write("orca-env-devsy: " + message + "\n")
+      progress_message(message + " (" + progress_timing(progress_started) + ")")
       save_diagnostic(mode, "failed")
       raise InvalidConfig(message)
     }
     AdapterError(message) => {
-      @stdio.stderr.write("orca-env-devsy: " + message + "\n")
+      progress_message(message + " (" + progress_timing(progress_started) + ")")
       save_diagnostic(mode, "failed")
       raise AdapterError(message)
     }
     _ => {
+      progress_message(
+        mode + ": failed (" + progress_timing(progress_started) + ")",
+      )
       save_diagnostic(mode, "failed")
       raise AdapterError("Operation failed; private command output withheld")
     }

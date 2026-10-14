@@ -2,7 +2,6 @@
 async fn server_connection(state : Json, install : Bool) -> Json {
   let root = required(state, "projectRoot")
   if install {
-    notify("orca-install")
     let script = server_install_script()
     ignore(remote(state, script, "orca-install"))
   }
@@ -18,7 +17,6 @@ async fn server_connection(state : Json, install : Bool) -> Json {
       port
     }
   }
-  notify("orca-serve")
   let script = server_launch_script(root, port)
   let result = @json.parse(remote(state, script, "orca-serve"))
   let connection = match field(result, "connection") {

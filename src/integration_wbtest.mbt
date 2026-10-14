@@ -1600,3 +1600,220 @@ async test "bulk recovery skips disabled stopped and replaced workspaces and con
     assert_false(@fs.exists(base + "/replaced/enabled"))
   })
 }
+
+///|
+async test "lifecycle progress reaches stderr and diagnostics before workspace up completes" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  env.set("CUSTOM_SERVICE_TOKEN", "fixture-private-credential")
+  @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|set -eu
+    #|case "$*" in
+    #| *'workspace up'*)
+    #|   printf '%s\n' '{"kind":"status","operationId":"build-1","phase":"building_image","state":"started"}'
+    #|   printf '%s\n' '{"level":"debug","msg":"#7 [stage 2/3] RUN install dependencies"}' >&2
+    #|   printf '%s\n' '{"level":"debug","msg":"#7 [stage 2/3] RUN install dependencies"}' >&2
+    #|   printf '%s\n' '{"level":"debug","msg":"#7 0.13 hidden-run-output"}' '{"level":"debug","msg":"hidden-debug-output"}' '{"level":"trace","msg":"hidden-trace-output"}' >&2
+    #|   printf '%s\n' '{"level":"debug","msg":"#7 DONE 0.4s"}' '{"level":"debug","msg":"#8 CACHED"}' '{"level":"info","msg":"Step 3/4 : COPY . /app"}' >&2
+    #|   printf '%s\n' '{"kind":"status","operationId":"build-1","phase":"building_image","state":"succeeded","durationMs":1234}'
+    #|   sleep 0.05
+    #|   printf '%s\n' '{"level":"info","msg":"hidden-classic-run-output"}' '{"level":"info","msg":"Successfully built fixture-image"}' '{"level":"info","msg":"task-prepare completed"}' >&2
+    #|   printf '{"level":"info","msg":"lifecycle hook: ' >&2
+    #|   printf '\343' >&2
+    #|   sleep 0.02
+    #|   printf '\201\202 completed"}\r\n' >&2
+    #|   printf '%s\n' '{"level":"warn","msg":"fixture warning"}' '{"level":"error","msg":"fixture error"}' >&2
+    #|   printf 'known value %s\n' "$CUSTOM_SERVICE_TOKEN" >&2
+    #|   printf '%s\n' 'Authorization: Bearer fixture-private-header' 'X-API-Key: fixture-private-api-header' 'api-key=fixture-private-api-field' 'token = fixture-private-field' 'https://user:fixture-private-url@example.com/a' 'https://example.com/a?signature=fixture-private-signature' >&2
+    #|   printf '%s\n' 'key=sk-proj-fixture-private-assignment' 'key:sk-proj-fixture-private-colon' 'Cookie=fixture-private-cookie' 'credential: fixture-private-credential-field' >&2
+    #|   printf 'key\tsk-proj-fixture-private-tab\n' >&2
+    #|   printf '\033[31m%s\033[0m\n' "$CUSTOM_SERVICE_TOKEN" >&2
+    #|   printf '%s%s\n' '-----BEGIN ' 'PRIVATE KEY-----' >&2
+    #|   printf '%s\n' 'fixture-private-key-body' >&2
+    #|   printf '%s%s\n' '-----END ' 'PRIVATE KEY-----' >&2
+    #|   printf '\377 fixture-private-binary\n' >&2
+    #|   printf '%s\n' '{invalid JSON fixture-private-malformed' '{"kind":"result","message":"fixture-private-result"}' >&2
+    #|   awk 'BEGIN { for(i=0;i<70000;i++) printf "x"; print "fixture-private-oversized" }' >&2
+    #|   printf '%s\n' '{"level":"info","msg":"creating machine"}' >&2
+    #|   touch "$FAKE_HOME/up-waiting"
+    #|   while test ! -f "$FAKE_HOME/release-up"; do sleep 0.01; done
+    #|   : ;;
+    #| *'workspace stop'*|*'workspace delete'*) printf '%s\n' '{"level":"info","msg":"lifecycle action complete"}' >&2 ;;
+    #|esac
+    #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+  @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
+  let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
+    @env.current_dir().unwrap() +
+    "/_build/native/release/build/cmd/main/main.exe",
+  )
+  let stdout = @process.redirect_to_file(
+    directory + "/progress-stdout",
+    shared=true,
+  )
+  defer stdout.close()
+  let stderr = @process.redirect_to_file(
+    directory + "/progress-stderr",
+    shared=true,
+  )
+  defer stderr.close()
+  @async.with_task_group(async fn(group) {
+    let child = @process.spawn(
+      group,
+      executable,
+      ["create"],
+      extra_env=env,
+      inherit_env=false,
+      stdout~,
+      stderr~,
+    )
+    @async.with_timeout(5000, async fn() {
+      while !@fs.exists(directory + "/up-waiting") ||
+            !@fs.read_file(directory + "/progress-stderr")
+            .text()
+            .contains("creating machine") {
+        @async.sleep(10)
+      }
+    })
+    assert_eq(child.try_wait(), None)
+    assert_eq(@fs.read_file(directory + "/progress-stdout").text(), "")
+    let errors = @fs.read_file(directory + "/progress-stderr").text()
+    assert_true(errors.contains("Build image: running…"), msg=errors)
+    assert_eq(errors.split("Build #7: [stage 2/3]").count(), 2)
+    for
+      message in [
+        "Build #7: DONE", "Build #8: CACHED", "Build Step 3/4", "lifecycle hook: あ completed",
+        "fixture warning", "fixture error", "task-prepare completed", "[redacted]",
+      ] {
+      assert_true(errors.contains(message), msg=errors)
+    }
+    for
+      hidden in [
+        "hidden-run-output", "hidden-classic-run-output", "hidden-debug-output",
+        "hidden-trace-output", "fixture-private-",
+      ] {
+      assert_false(errors.contains(hidden), msg=errors)
+    }
+    let records = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(records.contains("building_image"))
+    assert_false(records.contains("creating machine"))
+    assert_false(records.contains("fixture-private-"))
+    @fs.write_file(directory + "/release-up", "")
+    assert_eq(child.wait(), 0)
+  })
+  let errors = @fs.read_file(directory + "/progress-stderr").text()
+  assert_true(errors.contains("Build image: done (1.2s, elapsed "), msg=errors)
+  assert_true(errors.contains("create: done ("))
+  for line in errors.split("\n") {
+    if line != "" {
+      assert_true(line.contains("Z orca-env-devsy:"), msg=line.to_owned())
+    }
+  }
+  let receipt = @json.parse(
+    @fs.read_file(directory + "/progress-stdout").text(),
+  )
+  let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
+  for mode in ["resume", "suspend", "destroy"] {
+    env.set("ORCA_ENV_DEVSY_RECORDING", "0")
+    let (status, output, errors) = invoke(mode, env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_true(errors.contains(mode + ": done ("), msg=errors)
+    if mode == "resume" {
+      ignore(@json.parse(output))
+      assert_true(errors.contains("Build #7: DONE"))
+    } else {
+      assert_eq(output, "")
+      assert_true(errors.contains("lifecycle action complete"))
+    }
+    assert_false(errors.contains("fixture-private-"))
+  }
+}
+
+///|
+async test "failed streamed workspace up preserves exit failure and owned cleanup" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|set -eu
+    #|case "$*" in
+    #| *'workspace up'*)
+    #|   "$FAKE_HOME/bin/devsy-original" "$@" >/dev/null
+    #|   printf '%s\n' '{"kind":"status","phase":"building_image","state":"started"}' '{"kind":"status","phase":"building_image","state":"failed","durationMs":2500}'
+    #|   printf '%s\n' '{"kind":"log","level":"info","message":"Step 1/1 : RUN install"}'
+    #|   printf '%s' '{"level":"error","msg":"build failed: fixture error"}' >&2
+    #|   printf '%s\n' '{"kind":"error","message":"workspace error envelope"}'
+    #|   exit 9 ;;
+    #|esac
+    #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+  @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_true(status != 0)
+  assert_eq(output, "")
+  assert_true(
+    errors.contains("Build image: failed (2.5s, elapsed "),
+    msg=errors,
+  )
+  assert_true(errors.contains("build failed: fixture error"))
+  assert_true(errors.contains("workspace error envelope"))
+  assert_true(errors.contains("workspace-create failed (exit 9)"))
+  assert_true(errors.contains("create-cleanup: done ("))
+  assert_false(@fs.exists(directory + "/created"))
+}
+
+///|
+async test "unavailable progress stderr preserves lifecycle result with recording on and off" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let executable = @env.get_env_var("ORCA_ENV_DEVSY_TEST_BINARY").unwrap_or(
+    @env.current_dir().unwrap() +
+    "/_build/native/release/build/cmd/main/main.exe",
+  )
+  for recording in ["1", "0"] {
+    env.set("ORCA_ENV_DEVSY_RECORDING", recording)
+    let (status, output, _) = @process.collect_output(
+      "/bin/sh",
+      ["-c", "exec \"$1\" create 2>&-", "sh", executable],
+      extra_env=env,
+      inherit_env=false,
+    )
+    assert_eq(status, 0)
+    let receipt = @json.parse(output.text())
+    let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
+    let (status, _, _) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0)
+  }
+  let records = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_true(records.contains("progress_io"))
+}
+
+///|
+async test "filesystem failure reports safe timestamped elapsed time before any subprocess" {
+  let (directory, env) = fixture()
+  defer @fs.rmdir(directory, recursive=true)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_true(status != 0)
+  assert_eq(output, "")
+  assert_true(errors.contains("Z orca-env-devsy: create: failed ("), msg=errors)
+  assert_true(errors.contains(", elapsed "))
+  assert_false(errors.contains(directory))
+  assert_false(@fs.exists(directory + "/args"))
+}
