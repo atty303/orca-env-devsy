@@ -2260,3 +2260,207 @@ async test "SSH transport retains default signals and launcher termination traps
     })
   })
 }
+
+///|
+async test "SSH proxy caller group death closes streams and reaps the transport" {
+  let (directory, _) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/transport",
+    "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\ncat\nwhile :; do :; done\n",
+    permission=0o700,
+  )
+  @async.with_timeout(3500, async fn() {
+    @async.with_task_group(async fn(group) {
+      let (input, writer) = @process.write_to_process()
+      defer writer.close()
+      let (reader, output) = @process.read_from_process()
+      defer reader.close()
+      let sink = @process.redirect_to_file("/dev/null", shared=true)
+      defer sink.close()
+      let proxy = @process.spawn(
+        group,
+        integration_binary(),
+        [
+          "--ssh-transport",
+          integration_binary(),
+          "--ssh-proxy",
+          "",
+          directory + "/transport",
+          directory + "/child-pid",
+        ],
+        stdin=input,
+        stdout=output,
+        stderr=sink,
+      )
+      writer.write(b"ready")
+      assert_eq(reader.read_exactly(5), b"ready")
+      let pid = @fs.read_file(directory + "/child-pid").text()
+      let (code, pgid, _) = @process.collect_output("ps", [
+        "-o",
+        "pgid=",
+        "-p",
+        proxy.pid.to_string(),
+      ])
+      assert_eq(code, 0)
+      assert_eq(pgid.text().trim(), proxy.pid.to_string())
+      let (killed, _, _) = @process.collect_output("kill", [
+        "-KILL",
+        "--",
+        "-" + proxy.pid.to_string(),
+      ])
+      assert_eq(killed, 0)
+      ignore(proxy.wait())
+      // The original caller still holds stdin open; termination must close
+      // inherited output streams without waiting for that caller's EOF.
+      assert_eq(reader.read_some(max_len=1), None)
+      let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
+      assert_true(
+        alive != 0,
+        msg="Transport must be reaped after caller group death",
+      )
+    })
+  })
+}
+
+///|
+async test "SSH proxy caller death reaps a transport with blocked stdin" {
+  let (directory, _) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/transport",
+    "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\nwhile :; do :; done\n",
+    permission=0o700,
+  )
+  @async.with_timeout(3500, async fn() {
+    @async.with_task_group(async fn(group) {
+      let (input, writer) = @process.write_to_process()
+      defer writer.close()
+      let (reader, output) = @process.read_from_process()
+      defer reader.close()
+      let sink = @process.redirect_to_file("/dev/null", shared=true)
+      defer sink.close()
+      let proxy = @process.spawn(
+        group,
+        integration_binary(),
+        [
+          "--ssh-transport",
+          "/bin/sh",
+          "-c",
+          "\"$1\" --ssh-proxy '' \"$2\" \"$3\" <&0 & wait",
+          "sh",
+          integration_binary(),
+          directory + "/transport",
+          directory + "/child-pid",
+        ],
+        stdin=input,
+        stdout=output,
+        stderr=sink,
+      )
+      while !@fs.exists(directory + "/child-pid") {
+        @async.sleep(10)
+      }
+      group.spawn_bg(no_wait=true, async fn() {
+        for _ in 0..<128 {
+          writer.write(Bytes::make(65536, 0)) catch {
+            _ => break
+          }
+        }
+      })
+      @async.sleep(100)
+      let pid = @fs.read_file(directory + "/child-pid").text()
+      let (code, pgid, _) = @process.collect_output("ps", [
+        "-o",
+        "pgid=",
+        "-p",
+        proxy.pid.to_string(),
+      ])
+      assert_eq(code, 0)
+      assert_eq(pgid.text().trim(), proxy.pid.to_string())
+      let (killed, _, _) = @process.collect_output("kill", [
+        "-KILL",
+        "--",
+        "-" + proxy.pid.to_string(),
+      ])
+      assert_eq(killed, 0)
+      ignore(proxy.wait())
+      // Data forwarding is blocked. Parent liveness must still reap the
+      // transport and close the inherited output streams.
+      assert_eq(reader.read_some(max_len=1), None)
+      let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
+      assert_true(
+        alive != 0,
+        msg="Transport must be reaped after caller group death",
+      )
+    })
+  })
+}
+
+///|
+async test "adoption publishes connected independently of pending Git options" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let state = field(@json.parse(output), "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  @fs.remove(worker + "/enabled")
+  @async.with_timeout(5000, async fn() {
+    while worker_alive(worker) {
+      @async.sleep(10)
+    }
+  })
+  let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
+  let socket = required(saved, "socketDirectory")
+  @fs.mkdir(socket, recursive=true, allow_exist=true)
+  @fs.write_file(socket + "/socket", "")
+  @fs.write_file(worker + "/enabled", "")
+  @fs.write_file(worker + "/status.json", "{}")
+  @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|case "$*" in
+    #|  *'context get'*)
+    #|    touch "$FAKE_HOME/options-blocked"
+    #|    while test ! -f "$FAKE_HOME/release-options"; do sleep 0.01; done ;;
+    #|esac
+    #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+  @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
+  env.set("FAKE_GIT_FORWARDING", "false")
+  @async.with_task_group(async fn(group) {
+    let sink = @process.redirect_to_file("/dev/null", shared=true)
+    defer sink.close()
+    let child = @process.spawn(
+      group,
+      integration_binary(),
+      ["--tunnel-worker", worker],
+      extra_env=env,
+      stdout=sink,
+      stderr=sink,
+    )
+    defer @fs.write_file(directory + "/release-options", "")
+    @async.with_timeout(2000, async fn() {
+      while field(
+              @json.parse(@fs.read_file(worker + "/status.json").text()),
+              "status",
+            ) !=
+            Some(Json::string("connected")) ||
+            !@fs.exists(directory + "/options-blocked") {
+        @async.sleep(10)
+      }
+    })
+    assert_false(@fs.exists(directory + "/release-options"))
+    @fs.write_file(directory + "/release-options", "")
+    @async.with_timeout(2000, async fn() {
+      while @fs.read_file(worker + "/git-status").text() != "disabled" {
+        @async.sleep(10)
+      }
+    })
+    @fs.remove(worker + "/enabled")
+    assert_eq(child.wait(), 0)
+  })
+}

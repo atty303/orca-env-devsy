@@ -93,24 +93,36 @@ async fn stop_git_management(state : Json) -> Unit {
 }
 
 ///|
-async fn monitor_git_relay(state : Json, directory : String) -> Unit {
+async fn monitor_git_relay(
+  state : Json,
+  directory : String,
+  initial_enabled~ : Bool? = None,
+) -> Unit {
   let enabled = directory + "/enabled"
-  while @fs.exists(enabled) {
-    try {
-      if !@async.with_timeout(10000, async fn() {
-          git_forwarding_enabled(state)
-        }) {
-        git_relay_status(directory, "disabled")
-        return
-      }
-      break
-    } catch {
-      _ => {
-        git_relay_status(directory, "unavailable")
-        save_diagnostic("git-relay-options", "retry", retry_delay_ms=10000)
-        @async.sleep(10000)
-      }
+  match initial_enabled {
+    Some(false) => {
+      git_relay_status(directory, "disabled")
+      return
     }
+    Some(true) => ()
+    None =>
+      while @fs.exists(enabled) {
+        try {
+          if !@async.with_timeout(10000, async fn() {
+              git_forwarding_enabled(state)
+            }) {
+            git_relay_status(directory, "disabled")
+            return
+          }
+          break
+        } catch {
+          _ => {
+            git_relay_status(directory, "unavailable")
+            save_diagnostic("git-relay-options", "retry", retry_delay_ms=10000)
+            @async.sleep(10000)
+          }
+        }
+      }
   }
   let mut last = ""
   let mut attempt = 0
