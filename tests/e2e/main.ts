@@ -143,7 +143,7 @@ try {
     await firstUse(resumed, current.index, env, shared);
     // Receipt-based resume must preserve guest modifications to auth.
     const state = resumed.recipeResult.userData;
-    const proxy = [...state.command as string[], "--home", state.home as string, "workspace", "ssh", state.workspaceId as string, "--stdio", "--user", state.user as string].map(quote).join(" ");
+    const proxy = [...state.command as string[], "--home", state.home as string, "workspace", "ssh", state.workspaceId as string, "--stdio", "--start-services=false", "--user", state.user as string].map(quote).join(" ");
     const output = await run(["ssh", "-o", "ProxyCommand=" + proxy, `${state.user}@${state.workspaceId}.devsy`, 'cat "$HOME/.codex/auth.json"'], { env });
     if (current.index === 0) assert.equal(output, "manual-change");
     else assert.equal(JSON.parse(output).tokens.access_token, JSON.parse(await Bun.file(env.CODEX_HOME + "/auth.json").text()).tokens.access_token);
@@ -169,6 +169,7 @@ try {
 } catch (error) {
   failure = error;
 } finally {
+  const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
   for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }).catch(() => cleanupErrors.push("cancel-provision"));
   if (shared) console.log("Authenticated Git requests:", JSON.stringify({ accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected) }));
   for (const active of workspaces) await active.close().catch(() => cleanupErrors.push("ssh-sessions"));
@@ -194,7 +195,7 @@ try {
   shared?.close();
   for (const child of children) stop(child, "SIGKILL");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, provisionFailures, adapterDiagnostics: await adapterDiagnostics(env.XDG_STATE_HOME!), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, provisionFailures, adapterDiagnostics: diagnostics, gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   process.removeListener("SIGINT", interrupt);

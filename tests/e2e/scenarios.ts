@@ -29,7 +29,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
   const id = state.workspaceId as string, user = state.user as string, path = runtime.recipeResult.connection.projectRoot;
   const socketRoot = await mkdtemp("/tmp/oe-ssh-");
   const command = state.command as string[];
-  const proxy = [...command, "--home", state.home as string, "--context", state.context as string, "workspace", "ssh", id, "--stdio", "--user", user].filter(v => v !== undefined).map(quote).join(" ");
+  const proxy = [...command, "--home", state.home as string, "--context", state.context as string, "workspace", "ssh", id, "--stdio", "--start-services=false", "--user", user].filter(v => v !== undefined).map(quote).join(" ");
   const base = ["ssh", "-F", env.HOME + "/.ssh/config", "-o", "BatchMode=yes", "-o", "ProxyCommand=" + proxy];
   const target = user + "@" + id + ".devsy";
   const sessions: ReturnType<typeof start>[] = [];

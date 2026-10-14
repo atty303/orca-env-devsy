@@ -987,9 +987,9 @@ async fn fake_codex(directory : String) -> Unit {
 ///|
 async test "near-expiry Codex auth refreshes once across concurrent creates and forwards only renewed access data" {
   let (first, env1) = fixture()
-  defer @fs.rmdir(first, recursive=true)
+  defer cleanup_fixture(first)
   let (second, env2) = fixture()
-  defer @fs.rmdir(second, recursive=true)
+  defer cleanup_fixture(second)
   @fs.mkdir(first + "/.codex")
   let initial = synthetic_auth(@env.now().to_double() / 1000 + 60)
   let renewed = synthetic_auth(@env.now().to_double() / 1000 + 1209600)
