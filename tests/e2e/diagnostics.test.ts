@@ -81,7 +81,7 @@ test("causal IPC error codes and post-recipe boundary survive wrapping without r
   expect(observation.error.exitCodes).toEqual([42]);
   expect(observation.error.signals).toEqual(["SIGTERM"]);
   expect(observation.error.fields).toContainEqual({ path: "cause.code", kind: "string" });
-  expect(observation.boundary).toBe("native_ssh_setup");
+  expect(observation.boundary).toBe("ssh_setup");
   expect(observation.recipe).toEqual({ valid: true, connection: "ssh" });
   expect(JSON.stringify(observation)).not.toContain(privateValue);
   expect(JSON.stringify(observation)).not.toContain("/private/path");
@@ -121,7 +121,7 @@ test("workspace progress and native console cause are retained across chunk boun
   expect(report.events.map(event => event.status)).toEqual(["running", "done", "failed", "failed"]);
   expect(report.events[2].activeWorkspaces).toEqual([0]);
   expect(report.events[2].error?.category).toBe("managed_preflight");
-  expect(report.events[3].error?.boundary).toBe("native_ssh_setup");
+  expect(report.events[3].error?.boundary).toBe("ssh_setup");
   expect(JSON.stringify(report)).not.toContain(privateValue);
 });
 
@@ -209,4 +209,16 @@ test("E2E accepts the five-second buffer while retaining the original target", a
       expect(timings.at(-1)).toMatchObject({ targetMs: targets.firstUse, budgetMs: budgets.firstUse, elapsedMs: elapsed, ok: elapsed <= budgets.firstUse });
     }
   } finally { clock.mockRestore(); timings.splice(first); }
+});
+
+
+test("missing resource observations retain only the failing operation and resource kind", () => {
+  const archive = provisionFailure(`ENOENT: no such file or directory, open '/private/${privateValue}.tar.gz'`);
+  expect(archive.missingResource).toEqual({ operation: "open", resource: "archive" });
+  const wrapped = new DiagnosticError(new Error(`ENOENT: no such file or directory, stat '/private/${privateValue}'`));
+  expect(provisionFailure(wrapped).missingResource).toEqual({ operation: "stat", resource: "other" });
+  expect(provisionFailure(`spawn /private/${privateValue} ENOENT`).missingResource).toEqual({ operation: "spawn", resource: "executable" });
+  expect(provisionFailure(privateValue).missingResource).toBeUndefined();
+  expect(JSON.stringify(archive)).not.toContain(privateValue);
+  expect(JSON.stringify(archive)).not.toContain("/private/");
 });

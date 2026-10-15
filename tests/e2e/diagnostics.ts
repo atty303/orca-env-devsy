@@ -92,9 +92,10 @@ export type FailureObservation = {
   markers: string[];
   error: ReturnType<typeof errorInformation>["shape"];
   signals: string[];
+  missingResource?: { operation: string; resource: "archive" | "executable" | "other" };
   adapterMarkers?: string[];
   recipe?: { valid: boolean; connection?: "ssh" | "orca-server" };
-  boundary?: "recipe" | "native_ssh_setup" | "server_registration";
+  boundary?: "recipe" | "ssh_setup" | "server_registration";
 };
 
 export function sshStartupPhases(stderr: string) {
@@ -157,11 +158,16 @@ export function provisionFailure(error: unknown, stderr?: string, stdout?: strin
       if ([1, 2].includes(result?.schemaVersion) && ["ssh", "orca-server"].includes(result?.connection?.type)) recipe = { valid: true, connection: result.connection.type };
     } catch { /* A failed recipe need not produce JSON. */ }
   }
+  const missing = /\bENOENT: no such file or directory, (open|stat|lstat|scandir|unlink|rename|access) ['"]([^'"\r\n]*)['"]/.exec(message);
+  const missingResource: FailureObservation["missingResource"] = missing ? {
+    operation: missing[1], resource: /\.(?:tar(?:\.(?:gz|xz|zst))?|zip)$/.test(missing[2]) ? "archive" : "other",
+  } : /^spawn [^\r\n]+ ENOENT$/m.test(message) ? { operation: "spawn", resource: "executable" } : undefined;
   const observation = error instanceof DiagnosticError ? error.observation : {
     category: failureCategory(error), markers: markers(message), error: information.shape,
+    ...(missingResource === undefined ? {} : { missingResource }),
     signals: Object.entries(errorPatterns).filter(([, phrases]) => phrases.some(phrase => message.toLowerCase().includes(phrase.toLowerCase()))).map(([signal]) => signal),
   };
-  return { ...observation, ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }), ...(recipe === undefined ? {} : { recipe, boundary: recipe.connection === "ssh" ? "native_ssh_setup" : recipe.connection === "orca-server" ? "server_registration" : "recipe" }) };
+  return { ...observation, ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }), ...(recipe === undefined ? {} : { recipe, boundary: recipe.connection === "ssh" ? "ssh_setup" : recipe.connection === "orca-server" ? "server_registration" : "recipe" }) };
 
 }
 
