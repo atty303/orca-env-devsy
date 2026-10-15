@@ -13,6 +13,15 @@ export type Runtime = {
 };
 export type Provision = { ok: boolean; error?: unknown; stderr?: string; stdout?: string; runtime: Runtime; sshTargetId?: string; environment?: { id: string } };
 
+export async function ensureOrcaInstallation(root: string, executable: string, install: () => Promise<void>) {
+  const marker = root + "/.extraction-complete";
+  if (await Bun.file(executable).exists() && await Bun.file(marker).text().catch(() => "") === "complete\n") return;
+  await rm(marker, { force: true });
+  await install();
+  if (!await Bun.file(executable).exists()) throw new Error("Orca extraction did not produce an executable");
+  await Bun.write(marker, "complete\n");
+}
+
 export async function latestOrca(signal?: AbortSignal) {
   const headers: Record<string, string> = { "Accept": "application/vnd.github+json" };
   if (process.env.GITHUB_TOKEN) headers.Authorization = "Bearer " + process.env.GITHUB_TOKEN;
@@ -25,7 +34,7 @@ export async function latestOrca(signal?: AbortSignal) {
   if (!asset) throw new Error("Latest Orca has no artifact for this host");
   const root = resolve(`.tools/e2e/orca/${release.tag_name}/${process.platform}-${process.arch}`);
   const executable = process.platform === "darwin" ? root + "/Orca.app/Contents/MacOS/Orca" : root + "/squashfs-root/orca-ide";
-  if (!await Bun.file(executable).exists()) {
+  await ensureOrcaInstallation(root, executable, async () => {
     await mkdir(root, { recursive: true });
     const archive = root + "/" + name;
     const download = await fetch(asset.browser_download_url, { signal: AbortSignal.any([AbortSignal.timeout(120_000), ...signal ? [signal] : []]) });
@@ -35,7 +44,7 @@ export async function latestOrca(signal?: AbortSignal) {
     if (process.platform === "darwin") await run(["ditto", "-xk", archive, root], { timeout: 180_000, signal });
     else { await chmod(archive, 0o755); await run([archive, "--appimage-extract"], { cwd: root, timeout: 180_000, signal }); }
     await rm(archive);
-  }
+  });
   return { version, executable };
 }
 

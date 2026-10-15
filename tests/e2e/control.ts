@@ -14,6 +14,7 @@ export function interruptibleRun() {
       try { stop(child); } catch { /* Final cleanup checks termination again. */ }
     }
   };
+  process.on("SIGHUP", interrupt);
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
   return {
@@ -24,6 +25,7 @@ export function interruptibleRun() {
       if (!phase.signal.aborted) phase.abort(new Error("E2E execution ended"));
     },
     close() {
+      process.off("SIGHUP", interrupt);
       process.off("SIGINT", interrupt);
       process.off("SIGTERM", interrupt);
     },

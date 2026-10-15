@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { children, processScope, run, start, terminate, until, waitForExit } from "../scripts/process.ts";
-import { Orca } from "./e2e/orca.ts";
+import { Orca, ensureOrcaInstallation } from "./e2e/orca.ts";
 import { OrcaObservations } from "./e2e/observations.ts";
 import { cleanupDeadline } from "./e2e/control.ts";
 import { budgets } from "./e2e/timing.ts";
@@ -219,10 +219,31 @@ test("Electron acquired after its measured deadline is closed before launch clea
   }
 });
 
+test("interrupted Orca extraction is retried before its executable becomes cache-ready", async () => {
+  const root = await mkdtemp(tmpdir() + "/oe-install-");
+  const executable = root + "/orca";
+  let installs = 0;
+  try {
+    await expect(ensureOrcaInstallation(root, executable, async () => {
+      installs++;
+      await writeFile(executable, "partial");
+      throw new Error("Extraction interrupted");
+    })).rejects.toThrow("Extraction interrupted");
+    await ensureOrcaInstallation(root, executable, async () => {
+      installs++;
+      await writeFile(executable, "complete");
+    });
+    expect(installs).toBe(2);
+    expect(await readFile(executable, "utf8")).toBe("complete");
+    await ensureOrcaInstallation(root, executable, async () => { installs++; });
+    expect(installs).toBe(2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("termination signals enter cleanup and repeated signals preserve the failed result", async () => {
   const root = await mkdtemp(tmpdir() + "/oe-control-");
   try {
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"] as const) {
       const report = root + "/" + signal + ".json";
       const script = `
 import { interruptibleRun, cleanupDeadline } from ${JSON.stringify(resolve("tests/e2e/control.ts"))};
