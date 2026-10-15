@@ -19,7 +19,7 @@ export function start(argv: string[], options: { cwd?: string; env?: Environment
 }
 
 export function stop(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
-  if (!child.pid || child.pid <= 1 || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid || child.pid <= 1 || !children.has(child)) return;
   try { process.kill(-child.pid!, signal); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EPERM") child.kill(signal);
     else if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
@@ -35,16 +35,37 @@ export async function waitForExit(child: ChildProcess, timeout = 5000) {
   });
 }
 
+function abandonStreams(child: ChildProcess) {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.unref();
+}
+
 export async function terminate(child: ChildProcess) {
-  if (!child.pid || child.pid <= 1 || child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      try { stop(child, "SIGKILL"); } catch (error) { reject(error); }
-    }, 3000);
-    child.once("close", () => { clearTimeout(timer); resolve(); });
-    child.once("error", error => { clearTimeout(timer); reject(error); });
-    try { stop(child); } catch (error) { clearTimeout(timer); reject(error); }
-  });
+  if (!child.pid || child.pid <= 1 || !children.has(child)) return;
+  // Retain this owned group through termination even if its leader closes first.
+  const group = child.pid;
+  const started = performance.now();
+  let killed = false;
+  try {
+    stop(child);
+    for (;;) {
+      try { process.kill(-group, 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        throw error;
+      }
+      const elapsed = performance.now() - started;
+      if (elapsed >= 5000) throw new Error("Child termination deadline exceeded");
+      if (!killed && elapsed >= 3000) {
+        try { process.kill(-group, "SIGKILL"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+        killed = true;
+      }
+      await Bun.sleep(20);
+    }
+  } finally { abandonStreams(child); }
 }
 
 export function processFailureCategory(output: string) {
@@ -88,9 +109,14 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
   };
   child.stdout?.on("data", (data) => collect("stdout", data));
   child.stderr?.on("data", (data) => collect("stderr", data));
-  const timer = setTimeout(() => stop(child, "SIGKILL"), options.timeout ?? 120_000);
+  let timer: ReturnType<typeof setTimeout>;
   try {
     const code = await new Promise<number | null>((resolve, reject) => {
+      timer = setTimeout(() => {
+        try { stop(child, "SIGKILL"); } catch { /* Report the deadline failure below. */ }
+        abandonStreams(child);
+        reject(new Error("Child command deadline exceeded (timeout)"));
+      }, options.timeout ?? 120_000);
       child.once("error", reject);
       child.once("close", resolve);
     });
@@ -100,7 +126,7 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
       throw new Error(`${argv[0].split("/").at(-1)} failed (${code ?? child.signalCode}, ${processFailureCategory(stdout + "\n" + stderr)})`);
     }
     return options.output === "stderr" ? stderr : stdout;
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer!); }
 }
 
 export async function until(check: () => Promise<boolean>, timeout = 30_000) {
