@@ -1,5 +1,5 @@
-// Export only source-owned labels. IPC errors and process streams can contain
-// credentials, so unrecognized values never cross the CI artifact boundary.
+// IPC errors and process streams may contain credentials. Export classified
+// fields, including filesystem paths needed to locate a missing resource.
 export class DiagnosticError extends Error {
   readonly category: string;
   readonly markers: string[];
@@ -92,7 +92,7 @@ export type FailureObservation = {
   markers: string[];
   error: ReturnType<typeof errorInformation>["shape"];
   signals: string[];
-  missingResource?: { operation: string; resource: "archive" | "executable" | "other" };
+  missingResource?: { operation: string; path: string; resource: "archive" | "executable" | "other" };
   adapterMarkers?: string[];
   recipe?: { valid: boolean; connection?: "ssh" | "orca-server" };
   boundary?: "recipe" | "ssh_setup" | "server_registration";
@@ -158,10 +158,14 @@ export function provisionFailure(error: unknown, stderr?: string, stdout?: strin
       if ([1, 2].includes(result?.schemaVersion) && ["ssh", "orca-server"].includes(result?.connection?.type)) recipe = { valid: true, connection: result.connection.type };
     } catch { /* A failed recipe need not produce JSON. */ }
   }
-  const missing = /\bENOENT: no such file or directory, (open|stat|lstat|scandir|unlink|rename|access) ['"]([^'"\r\n]*)['"]/.exec(message);
-  const missingResource: FailureObservation["missingResource"] = missing ? {
-    operation: missing[1], resource: /\.(?:tar(?:\.(?:gz|xz|zst))?|zip)$/.test(missing[2]) ? "archive" : "other",
-  } : /^spawn [^\r\n]+ ENOENT$/m.test(message) ? { operation: "spawn", resource: "executable" } : undefined;
+  const missing = /\bENOENT: no such file or directory, (open|stat|lstat|scandir|unlink|rename|access) (['"])([^\r\n]*)\2$/m.exec(message);
+  const spawn = /^spawn ([^\r\n]+) ENOENT$/m.exec(message);
+  const missingPath = missing?.[3] ?? spawn?.[1];
+  const path = missingPath?.replace(/\/(?:Users|home)\/[^/]+(?=\/|$)/g, "~").replace(/[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/gi, "~");
+  const diagnosticPath = path === undefined ? undefined : /^[a-z][a-z0-9+.-]*:\/\//i.test(path) ? "[url]" : path.slice(-4096);
+  const missingResource: FailureObservation["missingResource"] = missing && diagnosticPath !== undefined ? {
+    operation: missing[1], path: diagnosticPath, resource: /\.(?:tar(?:\.(?:gz|xz|zst))?|zip)$/.test(missing[3]) ? "archive" : "other",
+  } : spawn && diagnosticPath !== undefined ? { operation: "spawn", path: diagnosticPath, resource: "executable" } : undefined;
   const observation = error instanceof DiagnosticError ? error.observation : {
     category: failureCategory(error), markers: markers(message), error: information.shape,
     ...(missingResource === undefined ? {} : { missingResource }),

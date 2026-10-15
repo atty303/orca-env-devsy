@@ -212,13 +212,29 @@ test("E2E accepts the five-second buffer while retaining the original target", a
 });
 
 
-test("missing resource observations retain only the failing operation and resource kind", () => {
-  const archive = provisionFailure(`ENOENT: no such file or directory, open '/private/${privateValue}.tar.gz'`);
-  expect(archive.missingResource).toEqual({ operation: "open", resource: "archive" });
-  const wrapped = new DiagnosticError(new Error(`ENOENT: no such file or directory, stat '/private/${privateValue}'`));
-  expect(provisionFailure(wrapped).missingResource).toEqual({ operation: "stat", resource: "other" });
-  expect(provisionFailure(`spawn /private/${privateValue} ENOENT`).missingResource).toEqual({ operation: "spawn", resource: "executable" });
+test("missing resource diagnostics retain filenames and paths without unrelated identity or URL credentials", () => {
+  const archive = provisionFailure("ENOENT: no such file or directory, open '/tmp/orca/cache/node-linux-arm64.tar.gz'");
+  expect(archive.missingResource).toEqual({ operation: "open", path: "/tmp/orca/cache/node-linux-arm64.tar.gz", resource: "archive" });
+  const wrapped = new DiagnosticError(new Error("ENOENT: no such file or directory, stat '/home/fixture-user/cache/relay.js'"));
+  expect(provisionFailure(wrapped).missingResource).toEqual({ operation: "stat", path: "~/cache/relay.js", resource: "other" });
+  expect(provisionFailure("spawn /usr/bin/ssh ENOENT").missingResource).toEqual({ operation: "spawn", path: "/usr/bin/ssh", resource: "executable" });
+  expect(provisionFailure("spawn C:\\Users\\fixture-user\\bin\\ssh.exe ENOENT").missingResource?.path).toBe("~\\bin\\ssh.exe");
+  const credential = provisionFailure(`ENOENT: no such file or directory, open 'https://user:${privateValue}@fixture.invalid/file?token=${privateValue}'`);
+  expect(credential.missingResource?.path).toBe("[url]");
+  expect(JSON.stringify(credential)).not.toContain(privateValue);
+  expect(JSON.stringify(provisionFailure(wrapped))).not.toContain("fixture-user");
   expect(provisionFailure(privateValue).missingResource).toBeUndefined();
-  expect(JSON.stringify(archive)).not.toContain(privateValue);
-  expect(JSON.stringify(archive)).not.toContain("/private/");
+});
+
+
+test("missing resource paths preserve embedded quotes from filesystem errors", async () => {
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const root = await mkdtemp("/tmp/orca-resource-path-");
+  try {
+    for (const name of ["owner's-relay.js", 'a"b.js']) {
+      const path = root + "/" + name;
+      const error = await readFile(path).then(() => { throw new Error("Expected missing fixture file"); }, error => error);
+      expect(provisionFailure(error).missingResource).toMatchObject({ operation: "open", path });
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
