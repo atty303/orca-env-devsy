@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
 import { mkdtemp, rm, readFile, lstat } from "node:fs/promises";
 import { run, start, terminate, until, quote, type Environment, processFailureCategory } from "../../scripts/process.ts";
 import { type Orca, type Runtime } from "./orca.ts";
@@ -162,7 +161,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       await checkClient();
     }, index);
     const crashWorker = async () => {
-      const expected = resolve("_build/native/release/build/cmd/main/main.exe") + " --tunnel-worker " + state.tunnelDirectory;
+      const expected = env.XDG_STATE_HOME + "/orca-env-devsy/ssh-proxy-adapter --tunnel-worker " + state.tunnelDirectory;
       const processes = await run(["ps", "-ww", "-axo", "pid=,command="], { env, timeout: budgets.operation });
       const matches = processes.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match?.[2] === expected);
       assert.equal(matches.length, 1, "Crash only the worker with this exact executable and owned directory");
