@@ -968,8 +968,12 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       directory + "/orca.yaml",
       "devsy: {connection: ssh, buildRef: 'refs/heads/main'}\nenvironmentRecipes: [{id: test}]\n",
     )
-    let (status, output, _) = invoke("create", env, directory)
-    assert_eq(status == 0, failure != "other")
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(
+      status == 0,
+      failure != "other",
+      msg="clone scenario \{failure}: \{errors}",
+    )
     let shallow = @fs.read_file(directory + "/shallow-args").text()
     assert_true(
       shallow.contains(
