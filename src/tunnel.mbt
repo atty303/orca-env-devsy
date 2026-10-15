@@ -388,24 +388,13 @@ async fn wait_tunnel(directory : String, git_required~ : Bool = false) -> Unit {
     }
   })
   progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
-  @async.with_timeout(if git_required { 30000 } else { 5000 }, async fn() {
-    while true {
-      if @fs.exists(directory + "/git-status") {
-        let status = @fs.read_file(directory + "/git-status").text()
-        if status == "ready" || status == "disabled" {
-          break
-        }
-      }
-      @async.sleep(100)
+  if git_required {
+    // Checkout shares the caller's provisioning deadline and cancellation.
+    wait_git_relay(directory)
+  } else {
+    @async.with_timeout(5000, async fn() { wait_git_relay(directory) }) catch {
+      _ => ()
     }
-  }) catch {
-    _ =>
-      if git_required {
-        save_diagnostic("git-relay", "timeout", error_type="readiness_timeout")
-        raise AdapterError(
-          "Git credential relay did not become ready for task checkout",
-        )
-      }
   }
   let git_status = if @fs.exists(directory + "/git-status") {
     @fs.read_file(directory + "/git-status").text()
@@ -419,6 +408,25 @@ async fn wait_tunnel(directory : String, git_required~ : Bool = false) -> Unit {
       _ => ()
     }
     save_diagnostic("git-relay", "warning", error_type="readiness_unavailable")
+  }
+}
+
+///|
+async fn wait_git_relay(directory : String) -> Unit {
+  while true {
+    guard @fs.exists(directory + "/enabled") && worker_alive(directory) else {
+      save_diagnostic("git-relay", "failed", error_type="worker_stopped")
+      raise AdapterError(
+        "Tunnel worker stopped before Git credential relay readiness",
+      )
+    }
+    if @fs.exists(directory + "/git-status") {
+      let status = @fs.read_file(directory + "/git-status").text()
+      if status == "ready" || status == "disabled" {
+        return
+      }
+    }
+    @async.sleep(100)
   }
 }
 
@@ -507,17 +515,6 @@ pub async fn tunnel_worker(directory : String) -> Unit {
     let mut terminal = false
     @async.with_task_group(async fn(group) {
       // Both reads use the saved context; neither changes transport ownership.
-      let options = group.spawn(
-        async fn() {
-          Some(
-            @async.with_timeout(10000, async fn() {
-              git_forwarding_enabled(state)
-            }),
-          )
-        },
-        allow_failure=true,
-        no_wait=true,
-      )
       let current = worker_workspace(state, directory)
       guard current is Some(current) &&
         field(current, "uid") == field(state, "workspaceUid") else {
@@ -537,6 +534,17 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       }
       save_diagnostic("orca-tunnel", "adopted")
       tunnel_status(directory, "connected")
+      let options = group.spawn(
+        async fn() {
+          Some(
+            @async.with_timeout(10000, async fn() {
+              git_forwarding_enabled(state)
+            }),
+          )
+        },
+        allow_failure=true,
+        no_wait=true,
+      )
       group.spawn_bg(no_wait=true, async fn() {
         let initial_enabled = options.wait() catch { _ => None }
         monitor_git_relay(state, directory, initial_enabled~) catch {
