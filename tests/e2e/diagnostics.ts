@@ -97,6 +97,21 @@ export type FailureObservation = {
   boundary?: "recipe" | "native_ssh_setup" | "server_registration";
 };
 
+export function sshStartupPhases(stderr: string) {
+  const phases = {
+    proxy_start: "debug1: Executing proxy command:",
+    local_identification: "debug1: Local version string ",
+    remote_identification: "debug1: Remote protocol version ",
+    kex_sent: "debug1: SSH2_MSG_KEXINIT sent",
+    kex_received: "debug1: SSH2_MSG_KEXINIT received",
+    keys_received: "debug1: SSH2_MSG_NEWKEYS received",
+    key_offered: "debug1: Offering public key:",
+    authenticated: "Authenticated to ",
+    session_entered: "debug1: Entering interactive session.",
+  };
+  return Object.entries(phases).filter(([, marker]) => stderr.includes(marker)).map(([phase]) => phase);
+}
+
 export function failureCategory(error: unknown): string {
   if (error instanceof DiagnosticError) return error.category;
   const information = errorInformation(error);
