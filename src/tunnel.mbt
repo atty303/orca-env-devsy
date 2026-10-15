@@ -134,7 +134,7 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
 async fn ensure_ssh_worker(
   state : Json,
   port : Int32?,
-  git_required~ : Bool = false,
+  wait_for_git~ : Bool = true,
 ) -> Unit {
   let base = adapter_state_home() + "/tunnels"
   @fs.mkdir(base, recursive=true, permission=0o700, allow_exist=true)
@@ -172,7 +172,7 @@ async fn ensure_ssh_worker(
       raise AdapterError("Tunnel ownership changed")
     }
     if worker_alive(directory) {
-      wait_tunnel(directory, git_required~)
+      wait_tunnel(directory, wait_for_git~)
       return
     }
     // A dead supervisor does not invalidate its still-live SSH transport.
@@ -190,7 +190,7 @@ async fn ensure_ssh_worker(
         }
       }
       spawn_tunnel_worker(directory)
-      wait_tunnel(directory, git_required~)
+      wait_tunnel(directory, wait_for_git~)
       return
     }
     stop_tunnel_master(saved, directory)
@@ -217,7 +217,7 @@ async fn ensure_ssh_worker(
     @fs.remove(directory + "/status.json")
   }
   spawn_tunnel_worker(directory)
-  wait_tunnel(directory, git_required~)
+  wait_tunnel(directory, wait_for_git~)
 }
 
 ///|
@@ -353,7 +353,7 @@ async fn workspace_running(state : Json) -> Bool {
 }
 
 ///|
-async fn wait_tunnel(directory : String, git_required~ : Bool = false) -> Unit {
+async fn wait_tunnel(directory : String, wait_for_git~ : Bool = true) -> Unit {
   let started = @env.now()
   progress_message("ssh-tunnel: connecting…")
   errdefer progress_message(
@@ -388,13 +388,9 @@ async fn wait_tunnel(directory : String, git_required~ : Bool = false) -> Unit {
     }
   })
   progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
-  if git_required {
-    // Checkout shares the caller's provisioning deadline and cancellation.
-    wait_git_relay(directory)
-  } else {
-    @async.with_timeout(5000, async fn() { wait_git_relay(directory) }) catch {
-      _ => ()
-    }
+  guard wait_for_git else { return }
+  @async.with_timeout(5000, async fn() { wait_git_relay(directory) }) catch {
+    _ => ()
   }
   let git_status = if @fs.exists(directory + "/git-status") {
     @fs.read_file(directory + "/git-status").text()
