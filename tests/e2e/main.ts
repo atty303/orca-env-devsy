@@ -59,6 +59,7 @@ try {
   };
   versions.devsy = await version([devsy, "--version"]);
   versions[provider] = await version(provider === "docker" ? ["docker", "version", "--format", "{{.Server.Version}}"] : [provider === "apple" ? "container" : provider === "microsandbox" ? "msb" : "podman", "--version"]);
+  if (provider === "podman") versions.crun = await version(["podman", "info", "--format", "{{.Host.OCIRuntime.Version}}"]);
   if (provider === "podman") assert.equal((await run(["podman", "info", "--format", "{{.Host.Security.Rootless}}"], { env, timeout: budgets.operation })).trim(), "true");
   shared = await services(root, env);
   if (provider === "microsandbox") await installMicrosandboxDiagnostics(root, env);
