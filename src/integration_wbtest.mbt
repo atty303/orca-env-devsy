@@ -2792,7 +2792,7 @@ async test "Git readiness follows caller cancellation and rejects a stopped work
       false
     } catch {
       @async.TimeoutError => true
-      _ => false
+      error => raise error
     }
     assert_true(cancelled)
     assert_true(worker_alive(directory))
@@ -2807,9 +2807,13 @@ async test "Git readiness follows caller cancellation and rejects a stopped work
   } catch {
     AdapterError("Tunnel worker stopped before Git credential relay readiness") =>
       true
-    _ => false
+    error => raise error
   }
-  assert_true(stopped)
+  if !stopped {
+    fail(
+      "Stopped worker returned readiness; workerAlive=\{worker_alive(directory)}, enabled=\{@fs.exists(directory + "/enabled")}, status=\{@fs.read_file(directory + "/git-status").text()}",
+    )
+  }
 }
 
 ///|
