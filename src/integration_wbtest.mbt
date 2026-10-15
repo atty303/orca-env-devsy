@@ -207,8 +207,8 @@ async test "native CLI preserves creation settings across lifecycle and emits on
     #|    devsy:
     #|      upArgs: ["--provider-option", "VALUE=two words; $(ignored)"]
   @fs.write_file(directory + "/orca.yaml", yaml)
-  let (status, stdout, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, stdout, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let result = @json.parse(stdout)
   assert_eq(field(result, "schemaVersion"), Some(Json::number(1)))
   let state = field(result, "userData").unwrap()
@@ -225,8 +225,8 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   @fs.write_file(directory + "/orca.yaml", "deliberately invalid yaml: [")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   for mode in ["resume", "suspend", "destroy"] {
-    let (status, output, _) = invoke(mode, env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, output, errors) = invoke(mode, env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
     if mode == "resume" {
       assert_eq(field(@json.parse(output), "userData"), Some(state))
     } else {
@@ -314,8 +314,8 @@ async test "server CLI emits pairing separately and reconnect does not install o
     )
     @fs.write_file(directory + "/orca.yaml", "invalid: [")
     @fs.write_file(directory + "/ssh-args", "")
-    let (status, output, _) = invoke("reconnect", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, output, errors) = invoke("reconnect", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
     assert_eq(
       field(@json.parse(output), "connection"),
       field(result, "connection"),
@@ -344,8 +344,8 @@ async test "provisioned-root uses schema 2 and checks out the supplied task comm
     #|  - id: test
     #|    checkoutMode: provisioned-root
   @fs.write_file(directory + "/orca.yaml", yaml)
-  let (status, output, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let result = @json.parse(output)
   assert_eq(field(result, "schemaVersion"), Some(Json::number(2)))
   assert_eq(
@@ -454,7 +454,7 @@ async test "Codex addon delivers synthetic access data only and excludes secrets
   let before = @env.now().reinterpret_as_int64()
   let (status, output, errors) = invoke("create", env, directory)
   let after = @env.now().reinterpret_as_int64()
-  assert_eq(status, 0)
+  assert_eq(status, 0, msg=errors)
   assert_false(errors.contains("addon failed"), msg=errors)
   let delivered = @json.parse(
     @fs.read_file(directory + "/delivered-auth").text(),
@@ -499,8 +499,8 @@ async test "Codex addon delivers synthetic access data only and excludes secrets
   )
   env.set("HOME", directory + "/changed-home")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
-  let (status, output, _) = invoke("resume", env, directory, payload~)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("resume", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
   assert_eq(field(@json.parse(output), "userData"), Some(state))
 }
 
@@ -518,8 +518,8 @@ async test "failed create removes its UID-owned workspace and permits retry" {
   assert_eq(output, "")
   assert_false(@fs.exists(directory + "/created"))
   @fs.remove(directory + "/fail-root")
-  let (status, _, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
 }
 
 ///|
@@ -536,8 +536,8 @@ async test "failed provisioning cleans the requested UID before a recipe receipt
   assert_eq(output, "")
   assert_false(@fs.exists(directory + "/created"))
   @fs.remove(directory + "/fail-up")
-  let (status, _, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
 }
 
 ///|
@@ -683,8 +683,8 @@ async test "configured command survives YAML and environment changes and real Op
     "environmentRecipes": [{ "id": "test" }],
   }
   @fs.write_file(directory + "/orca.yaml", document.stringify())
-  let (status, output, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let result = @json.parse(output)
   let state = field(result, "userData").unwrap()
   assert_eq(saved_command(state), invocation)
@@ -692,8 +692,8 @@ async test "configured command survives YAML and environment changes and real Op
   env.set("LAUNCHER", "missing")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   for mode in ["resume", "reconnect", "suspend"] {
-    let (status, output, _) = invoke(mode, env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, output, errors) = invoke(mode, env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
     if mode != "suspend" {
       assert_eq(field(@json.parse(output), "userData"), Some(state))
     }
@@ -726,8 +726,8 @@ async test "configured command survives YAML and environment changes and real Op
     before + "ok\n",
     msg=errors.text(),
   )
-  let (status, _, _) = invoke("destroy", env, directory, payload~)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
   assert_false(@fs.exists(directory + "/created"))
 }
 
@@ -757,8 +757,8 @@ async test "legacy saved state defaults to devsy and invalid saved commands fail
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
   )
-  let (status, output, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let result = @json.parse(output)
   let state = field(result, "userData").unwrap()
   if state is Json::Object(map) {
@@ -766,8 +766,8 @@ async test "legacy saved state defaults to devsy and invalid saved commands fail
   }
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   for mode in ["resume", "reconnect", "suspend"] {
-    let (status, _, _) = invoke(mode, env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke(mode, env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   }
   let before = @fs.read_file(directory + "/args").text()
   set_field(state, "command", [])
@@ -778,8 +778,8 @@ async test "legacy saved state defaults to devsy and invalid saved commands fail
   if state is Json::Object(map) {
     map.remove("command")
   }
-  let (status, _, _) = invoke("destroy", env, directory, payload~)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
 }
 
 ///|
@@ -887,8 +887,8 @@ async test "PATH executable beginning with a dash stays unchanged in direct and 
     "environmentRecipes": [{ "id": "test" }],
   }
   @fs.write_file(directory + "/orca.yaml", document.stringify())
-  let (status, output, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let result = @json.parse(output)
   let state = field(result, "userData").unwrap()
   assert_eq(saved_command(state)[0], "-launcher")
@@ -919,8 +919,8 @@ async test "PATH executable beginning with a dash stays unchanged in direct and 
     msg=errors.text(),
   )
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
-  let (status, _, _) = invoke("destroy", env, directory, payload~)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
 }
 
 ///|
@@ -931,14 +931,14 @@ async test "destroy succeeds repeatedly after external deletion" {
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
   )
-  let (status, output, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let result = @json.parse(output)
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   @fs.remove(directory + "/created")
   for _ in 0..<2 {
-    let (status, output, _) = invoke("destroy", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, output, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
     assert_eq(output, "")
   }
   let (status, _, _) = invoke("resume", env, directory, payload~)
@@ -1028,8 +1028,8 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
         "schemaVersion": 1,
         "recipeResult": @json.parse(output),
       }
-      let (status, _, _) = invoke("destroy", env, directory, payload~)
-      assert_eq(status, 0)
+      let (status, _, errors) = invoke("destroy", env, directory, payload~)
+      assert_eq(status, 0, msg=errors)
     }
   }
 }
@@ -1178,7 +1178,7 @@ async test "failed refresh forwards an unexpired short token but never an expire
       "devsy: {connection: ssh, addons: {codexAuth: true}}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, _, errors) = invoke("create", env, directory)
-    assert_eq(status, 0)
+    assert_eq(status, 0, msg=errors)
     assert_true(errors.contains("refresh failed"))
     assert_eq(@fs.exists(directory + "/delivered-auth"), !expired)
   }
@@ -1383,8 +1383,8 @@ async test "tunnel worker reconnects on the same port and remains running when s
     let (status, _, errors) = invoke("destroy", env, directory, payload~)
     assert_eq(status, 0, msg=errors)
     assert_false(@fs.exists(worker))
-    let (status, _, _) = invoke("destroy", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   })
 }
 
@@ -1412,8 +1412,8 @@ async test "short tag build refs use full clones including annotated tag peeling
       "schemaVersion": 1,
       "recipeResult": @json.parse(output),
     }
-    let (status, _, _) = invoke("destroy", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   }
 }
 
@@ -1451,8 +1451,8 @@ async test "automatic tunnel recovery refuses a replacement workspace UID" {
       before,
     )
     @fs.write_file(directory + "/uid", uid)
-    let (status, _, _) = invoke("destroy", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   })
 }
 
@@ -1488,8 +1488,8 @@ async test "remote user and workspace folder validation rejects malformed metada
         "schemaVersion": 1,
         "recipeResult": @json.parse(output),
       }
-      let (status, _, _) = invoke("destroy", env, directory, payload~)
-      assert_eq(status, 0)
+      let (status, _, errors) = invoke("destroy", env, directory, payload~)
+      assert_eq(status, 0, msg=errors)
     } else {
       assert_false(@fs.exists(directory + "/created"))
     }
@@ -1550,8 +1550,8 @@ async test "server create returns recipe JSON while the tunnel child retains std
     assert_true(worker_alive(required(state, "tunnelDirectory")))
     let pid = @fs.read_file(directory + "/keeper-pid").text().trim().to_owned()
     assert_eq(@process.run("kill", ["-0", pid]), 0)
-    let (status, _, _) = invoke("suspend", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("suspend", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
     let (status, _, _) = @process.collect_output("kill", ["-0", pid])
     assert_true(status != 0)
   })
@@ -1610,8 +1610,8 @@ async test "resume reuses a Server that survives suspension instead of starting 
     assert_eq(status, 0, msg=errors)
     recipe = @json.parse(output)
     let payload : Json = { "schemaVersion": 1, "recipeResult": recipe }
-    let (status, _, _) = invoke("suspend", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("suspend", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   })
   @fs.write_file(directory + "/ssh-args", "")
   with_fake_tunnel(directory, async fn() {
@@ -1623,8 +1623,8 @@ async test "resume reuses a Server that survives suspension instead of starting 
     let args = @fs.read_file(directory + "/ssh-args").text()
     assert_false(args.contains("--recipe-json"))
     let payload : Json = { "schemaVersion": 1, "recipeResult": resumed }
-    let (status, _, _) = invoke("destroy", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   })
 }
 
@@ -1711,8 +1711,8 @@ async test "diagnostics retain only known backend phases and fixed failure class
     #|{"kind":"status","phase":"private-phase-secret","state":"failed"}
     #|{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}
   @fs.write_file(directory + "/up-result", result + "\n")
-  let (status, output, _) = invoke("create", env, directory)
-  assert_eq(status, 0)
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
   let receipt = @json.parse(output)
   let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
   defer ignore(invoke("destroy", env, directory, payload~))
@@ -1724,14 +1724,14 @@ async test "diagnostics retain only known backend phases and fixed failure class
   assert_true(records.contains("durationMs"))
   assert_false(records.contains("private-"))
   env.set("ORCA_ENV_DEVSY_RECORDING", "0")
-  let (status, _, _) = invoke("resume", env, directory, payload~)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("resume", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
   assert_eq(@fs.read_file(path).text(), records)
   env.remove("ORCA_ENV_DEVSY_RECORDING")
   @fs.remove(path)
   @fs.mkdir(path)
-  let (status, _, _) = invoke("resume", env, directory, payload~)
-  assert_eq(status, 0)
+  let (status, _, errors) = invoke("resume", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
 }
 
 ///|
@@ -1810,15 +1810,15 @@ async test "bulk reconnect restores persistent XDG state without a receipt or cu
       field(after, "socketDirectory") != field(before, "socketDirectory"),
     )
     assert_true(worker_alive(worker))
-    let (status, output, _) = invoke("reconnect", env, directory)
-    assert_eq(status, 0)
+    let (status, output, errors) = invoke("reconnect", env, directory)
+    assert_eq(status, 0, msg=errors)
     assert_eq(output, "")
     assert_eq(@json.parse(@fs.read_file(worker + "/state.json").text()), after)
-    let (status, _, _) = invoke("suspend", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("suspend", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
     assert_false(@fs.exists(worker))
-    let (status, output, _) = invoke("reconnect", env, directory)
-    assert_eq(status, 0)
+    let (status, output, errors) = invoke("reconnect", env, directory)
+    assert_eq(status, 0, msg=errors)
     assert_eq(output, "")
   })
 }
@@ -1848,14 +1848,14 @@ async test "bulk recovery skips disabled stopped and replaced workspaces and con
     let base = directory + "/.local/state/orca-env-devsy/tunnels"
     @fs.mkdir(base + "/disabled")
     @fs.write_file(base + "/disabled/state.json", "{invalid")
-    let (status, _, _) = invoke("reconnect", env, directory)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("reconnect", env, directory)
+    assert_eq(status, 0, msg=errors)
     assert_false(worker_alive(worker))
     @fs.write_file(worker + "/enabled", "")
     @fs.write_file(directory + "/stopped", "")
     let args = @fs.read_file(directory + "/ssh-args").text()
-    let (status, _, _) = invoke("reconnect", env, directory)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("reconnect", env, directory)
+    assert_eq(status, 0, msg=errors)
     let after = @fs.read_file(directory + "/ssh-args").text()
     assert_eq(after.split("-M\n").count(), args.split("-M\n").count())
     assert_true(@fs.exists(directory + "/stopped"))
@@ -1881,8 +1881,8 @@ async test "bulk recovery skips disabled stopped and replaced workspaces and con
     @fs.mkdir(base + "/replaced")
     @fs.write_file(base + "/replaced/state.json", saved.stringify())
     @fs.write_file(base + "/replaced/enabled", "")
-    let (status, _, _) = invoke("reconnect", env, directory)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("reconnect", env, directory)
+    assert_eq(status, 0, msg=errors)
     assert_false(@fs.exists(base + "/replaced/enabled"))
   })
 }
@@ -2083,8 +2083,8 @@ async test "unavailable progress stderr preserves lifecycle result with recordin
     assert_eq(status, 0)
     let receipt = @json.parse(output.text())
     let payload : Json = { "schemaVersion": 1, "recipeResult": receipt }
-    let (status, _, _) = invoke("destroy", env, directory, payload~)
-    assert_eq(status, 0)
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   }
   let records = @fs.read_file(
     directory + "/.local/state/orca-env-devsy/events.jsonl",
