@@ -2479,7 +2479,10 @@ async test "adoption publishes connected independently of pending Git options" {
     while worker_alive(worker) {
       @async.sleep(10)
     }
-  })
+  }) catch {
+    _ =>
+      assert_true(false, msg="adoption fixture: previous worker did not stop")
+  }
   let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
   let socket = required(saved, "socketDirectory")
   @fs.mkdir(socket, recursive=true, allow_exist=true)
@@ -2492,6 +2495,7 @@ async test "adoption publishes connected independently of pending Git options" {
     #|#!/bin/sh
     #|case "$*" in
     #|  *'context get'*)
+    #|    while test ! -f "$FAKE_HOME/allow-options-query"; do sleep 0.01; done
     #|    touch "$FAKE_HOME/options-blocked"
     #|    while test ! -f "$FAKE_HOME/release-options"; do sleep 0.01; done ;;
     #|esac
@@ -2509,25 +2513,52 @@ async test "adoption publishes connected independently of pending Git options" {
       stdout=sink,
       stderr=sink,
     )
-    defer @fs.write_file(directory + "/release-options", "")
-    @async.with_timeout(2000, async fn() {
+    defer {
+      @fs.write_file(directory + "/allow-options-query", "")
+      @fs.write_file(directory + "/release-options", "")
+    }
+    @async.with_timeout(5000, async fn() {
       while field(
               @json.parse(@fs.read_file(worker + "/status.json").text()),
               "status",
             ) !=
-            Some(Json::string("connected")) ||
-            !@fs.exists(directory + "/options-blocked") {
+            Some(Json::string("connected")) {
         @async.sleep(10)
       }
-    })
+    }) catch {
+      _ =>
+        assert_true(
+          false,
+          msg="adoption fixture: primary did not connect while options were gated",
+        )
+    }
     assert_false(@fs.exists(socket + "/credential-socket"))
+    assert_false(@fs.exists(directory + "/options-blocked"))
+    @fs.write_file(directory + "/allow-options-query", "")
+    @async.with_timeout(5000, async fn() {
+      while !@fs.exists(directory + "/options-blocked") {
+        @async.sleep(10)
+      }
+    }) catch {
+      _ =>
+        assert_true(
+          false,
+          msg="adoption fixture: options request did not reach the gate",
+        )
+    }
     assert_false(@fs.exists(directory + "/release-options"))
     @fs.write_file(directory + "/release-options", "")
-    @async.with_timeout(2000, async fn() {
+    @async.with_timeout(5000, async fn() {
       while @fs.read_file(worker + "/git-status").text() != "disabled" {
         @async.sleep(10)
       }
-    })
+    }) catch {
+      _ =>
+        assert_true(
+          false,
+          msg="adoption fixture: released Git options were not applied",
+        )
+    }
     @fs.remove(worker + "/enabled")
     assert_eq(child.wait(), 0)
   })
