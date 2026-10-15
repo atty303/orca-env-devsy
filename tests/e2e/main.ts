@@ -15,7 +15,7 @@ const index = process.argv.indexOf("--provider");
 const provider = index < 0 ? undefined : process.argv[index + 1];
 if (!provider || !["docker", "podman", "microsandbox", "apple"].includes(provider)) throw new Error("Usage: mise run test:e2e -- --provider docker|podman|microsandbox|apple");
 const root = await realpath(await mkdtemp("/tmp/oe-e2e-"));
-const env: Environment = { PATH: process.env.PATH, HOME: root + "/home", XDG_STATE_HOME: root + "/state", XDG_CONFIG_HOME: root + "/config", XDG_DATA_HOME: root + "/data", XDG_CACHE_HOME: root + "/cache", XDG_RUNTIME_DIR: root + "/run", CODEX_HOME: root + "/codex", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: root + "/home/.gitconfig", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "E2E", GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "E2E", GIT_COMMITTER_EMAIL: "e2e@example.invalid", SHELL: "/bin/sh" };
+const env: Environment = { PATH: process.env.PATH, HOME: root + "/home", XDG_STATE_HOME: root + "/state", XDG_CONFIG_HOME: root + "/config", XDG_DATA_HOME: root + "/data", XDG_CACHE_HOME: root + "/cache", XDG_RUNTIME_DIR: root + "/run", CODEX_HOME: root + "/codex", ORCA_ENV_DEVSY_RECORDING: process.env.ORCA_ENV_DEVSY_RECORDING === "0" ? "0" : "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: root + "/home/.gitconfig", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "E2E", GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "E2E", GIT_COMMITTER_EMAIL: "e2e@example.invalid", SHELL: "/bin/sh" };
 const devsy = Bun.which("devsy") ?? "";
 const dhome = root + "/devsy";
 if (provider === "podman") env.CONTAINER_HOST = `unix:///run/user/${process.getuid!()}/podman/podman.sock`;
@@ -103,7 +103,7 @@ try {
       });
       if (!result.ok) {
         const category = failureCategory(result.error);
-        provisionFailures.push({ workspace: index, ...provisionFailure(result.error, result.stderr) });
+        provisionFailures.push({ workspace: index, ...provisionFailure(result.error, result.stderr, result.stdout) });
         throw new Error(`Orca recipe provisioning failed (${definition.id}, ${category})`);
       }
       return result;
@@ -190,6 +190,7 @@ try {
 } catch (error) {
   failure = error;
 } finally {
+  const orcaObservations = await orca?.observations.snapshot();
   const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
   for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }).catch(() => cleanupErrors.push("cancel-provision"));
   if (shared) console.log("Authenticated Git requests:", JSON.stringify({ accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected) }));
@@ -216,7 +217,7 @@ try {
   shared?.close();
   for (const child of children) stop(child, "SIGKILL");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, provisionFailures, adapterDiagnostics: diagnostics, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   process.removeListener("SIGINT", interrupt);
