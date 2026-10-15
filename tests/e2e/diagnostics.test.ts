@@ -2,9 +2,25 @@ import { expect, test } from "bun:test";
 import { DiagnosticError, failureCategory, provisionFailure } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
 import { classifyPodman } from "./podman.ts";
+import { processFailureCategory } from "../../scripts/process.ts";
 
 const privateValue = "private-credential-fixture";
 const receipt = JSON.stringify({ schemaVersion: 1, connection: { type: "ssh", pairingCode: privateValue, projectRoot: "/private/path" }, userData: { token: privateValue } });
+
+test("specific VM start failures take precedence over generic boot failures", () => {
+  expect(processFailureCategory("failed to start vm")).toBe("vm_start");
+  expect(processFailureCategory("start microsandbox vm")).toBe("vm_start");
+  expect(processFailureCategory("failed to start the process")).toBe("vm_boot");
+});
+
+test("native tar upload failures retain the source-owned stage and exit code", () => {
+  const observed = provisionFailure(new Error(`local tar relay upload failed (exit 1): tar: ${privateValue}: file changed as we read it`));
+  expect(observed.category).toBe("tar_source_changed");
+  expect(observed.signals).toContain("local_tar_upload_failed");
+  expect(observed.error.exitCodes).toEqual([1]);
+  expect(JSON.stringify(observed)).not.toContain(privateValue);
+  expect(provisionFailure("local tar relay upload failed (exit 999): " + privateValue).error.exitCodes).toEqual([]);
+});
 
 test("OCI failure classification retains only fixed operation and errno labels", () => {
   const observed = classifyPodman(`Error: OCI runtime error: crun: sethostname ${privateValue}: Invalid argument`);

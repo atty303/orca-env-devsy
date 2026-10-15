@@ -26,6 +26,8 @@ const errorNames = new Set(["Error", "TypeError", "RangeError", "OrcadInstanceLo
 const errorFields = ["message", "name", "code", "exitCode", "signal", "reason", "error", "cause"] as const;
 const errorSignals = new Set(["SIGHUP", "SIGINT", "SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGPIPE"]);
 const errorPatterns = {
+  tar_source_changed: ["file changed as we read it", "file removed before we read it", "file shrank by"],
+  local_tar_upload_failed: ["local tar relay upload failed"],
   managed_setup_failed: ["Orca couldn’t start its server on this host", "Managed Orca server setup failed"],
   managed_setup_deferred: ["Managed Orca server setup deferred"],
   managed_unavailable: ["This SSH host isn’t supported by this version of Orca"],
@@ -71,6 +73,10 @@ function errorInformation(error: unknown) {
   };
   visit(error, "", 0);
   const message = text.join("\n");
+  for (const match of message.matchAll(/\bfailed \(exit (\d{1,3})\)/g)) {
+    const code = Number(match[1]);
+    if (code <= 255) exitCodes.add(code);
+  }
   for (const code of Object.keys(errorCodes)) if (new RegExp(`\\b${code}\\b`).test(message)) codes.add(code);
   return { message, shape: { kind: inputKind(error), fields, names: [...names], codes: [...codes], exitCodes: [...exitCodes], signals: [...signals], truncated, unreadable } };
 }
