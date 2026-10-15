@@ -571,7 +571,7 @@ async fn create_state() -> Json {
   } else {
     None
   }
-  ensure_ssh_worker(state, port, git_required=mode == "provisioned-root")
+  ensure_ssh_worker(state, port, wait_for_git=mode != "provisioned-root")
   let root = remote(
       state,
       root_script +
@@ -602,6 +602,20 @@ async fn create_state() -> Json {
     let branch = environment("ORCA_REPO_BRANCH")
     guard valid_commit(head) && !branch.has_prefix("-") else {
       raise AdapterError("Invalid provisioned-root checkout identity")
+    }
+    let present = remote(
+      state,
+      "cd " +
+      quote(root) +
+      " && if git cat-file -e " +
+      quote(head + "^{commit}") +
+      " 2>/dev/null; then printf present; else printf missing; fi",
+      "task-commit-presence",
+    )
+    match present {
+      "present" => ()
+      "missing" => wait_git_relay(required(state, "tunnelDirectory"))
+      _ => raise AdapterError("Invalid task commit presence result")
     }
     ignore(
       remote(state, checkout_script(root, head, branch), "checkout-workspace"),

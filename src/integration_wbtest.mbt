@@ -66,6 +66,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    printf 'start\n' >> "$FAKE_HOME/git-management"
     #|    if test ! -f "$FAKE_HOME/git-unrecoverable"; then rm -f "$FAKE_HOME/git-unavailable"; fi
     #|    while test -f "$control"; do sleep 0.01; done ;;
+    #|  *'then printf present; else printf missing; fi'*) if test -f "$FAKE_HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
     #|  *'pwd -P'*) printf '/workspace/repo\n' ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/reuse-running-server" && test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
@@ -2812,6 +2813,34 @@ async test "Git readiness follows caller cancellation and rejects a stopped work
 }
 
 ///|
+async test "provisioned task checkout uses present commits without an available relay" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+  env.set("ORCA_REPO_BRANCH", "task-branch")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+  )
+  @fs.write_file(directory + "/git-unavailable", "")
+  let (status, output, errors) = @async.with_timeout(8000, async fn() {
+    invoke("create", env, directory)
+  })
+  assert_eq(status, 0, msg=errors)
+  let payload : Json = {
+    "schemaVersion": 1,
+    "recipeResult": @json.parse(output),
+  }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  assert_true(@fs.exists(directory + "/git-unavailable"))
+  assert_true(
+    @fs.read_file(directory + "/ssh-args")
+    .text()
+    .contains("git checkout -B 'task-branch'"),
+  )
+}
+
+///|
 async test "provisioned task checkout waits beyond thirty seconds for primary Git readiness" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
@@ -2821,6 +2850,7 @@ async test "provisioned task checkout waits beyond thirty seconds for primary Gi
     directory + "/orca.yaml",
     "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
   )
+  @fs.write_file(directory + "/task-commit-missing", "")
   @fs.write_file(directory + "/git-unavailable", "")
   @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
   let wrapper =
