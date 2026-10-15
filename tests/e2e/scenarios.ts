@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, lstat } from "node:fs/promises";
-import { run, start, terminate, until, quote, type Environment, processFailureCategory } from "../../scripts/process.ts";
+import { run as cleanupRun, start, processScope, withAbort, terminate, quote, type Environment, processFailureCategory } from "../../scripts/process.ts";
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
 import { budgets, measure } from "./timing.ts";
@@ -8,7 +8,8 @@ import { diagnosticRun } from "./diagnostics.ts";
 
 type Services = Awaited<ReturnType<typeof services>>;
 export const firstUseFailures: { workspace: number; run?: number; helper?: boolean; endpoint?: boolean; unavailable?: boolean }[] = [];
-export async function firstUse(runtime: Runtime, index: number, env: Environment, service: Services) {
+export async function firstUse(runtime: Runtime, index: number, env: Environment, service: Services, signal?: AbortSignal) {
+  const { run } = processScope(signal);
   const state = runtime.recipeResult.userData;
   const saved = JSON.parse(await readFile(state.tunnelDirectory + "/state.json", "utf8"));
   assert.equal(saved.workspaceUid, state.workspaceUid);
@@ -33,7 +34,8 @@ export async function firstUse(runtime: Runtime, index: number, env: Environment
   console.log(`PASS workspace ${index}: first Git use within ${budgets.firstUse} ms`);
 }
 
-export async function workspace(orca: Orca, runtime: Runtime, index: number, env: Environment, service: Services, expected: { build: string; task: string }, restarting = false, connectionsReady: () => Promise<void> = async () => {}, acquireConnectionStart: () => Promise<() => void> = async () => () => {}) {
+export async function workspace(orca: Orca, runtime: Runtime, index: number, env: Environment, service: Services, expected: { build: string; task: string }, signal?: AbortSignal, restarting = false, connectionsReady: () => Promise<void> = async () => {}, acquireConnectionStart: () => Promise<() => void> = async () => () => {}) {
+  const { run, start, until } = processScope(signal);
   const state = runtime.recipeResult.userData;
   assert.equal(typeof state.workspaceId, "string");
   const id = state.workspaceId as string, user = state.user as string, path = runtime.recipeResult.connection.projectRoot;
@@ -46,9 +48,9 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
   const sessionErrors: string[] = [];
   const exec = (session: number, script: string) => measure("ssh-operation", budgets.operation, () => run(["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", socketRoot + "/" + session, target, script], { env, timeout: budgets.operation }), index);
   const poll = (script: string) => until(async () => { try { await exec(0, script); return true; } catch { return false; } }, budgets.firstUse);
-  async function close() {
-    for (let i = 0; i < sessions.length; i++) await run([...base, "-S", socketRoot + "/" + i, "-O", "exit", target], { env }).catch(() => {});
-    for (const process of sessions) await terminate(process);
+  async function close(cleanupSignal = signal) {
+    await Promise.all(sessions.map((_, i) => cleanupRun([...base, "-S", socketRoot + "/" + i, "-O", "exit", target], { env, timeout: budgets.operation, signal: cleanupSignal }).catch(() => {})));
+    await Promise.all(sessions.map(process => terminate(process)));
     await rm(socketRoot, { recursive: true, force: true });
   }
   try {
@@ -68,7 +70,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       throw error;
     });
     } finally { release(); }
-    await connectionsReady();
+    await withAbort(signal, connectionsReady);
     assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse HEAD")).trim(), index === 1 ? expected.task : expected.build);
     assert.equal((await exec(0, "cat " + quote(path + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : "fixture-build");
     if (!restarting) {
@@ -152,7 +154,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       for (let peer = 0; peer < 4; peer++) assert.equal(browsing.result.entries.some(entry => entry.name === `isolation-${peer}.txt`), peer === index, "Orca must route to the workspace's unique marker");
     };
     const check = () => measure("workspace-check", budgets.operation, async () => {
-      assert.equal(await (await fetch(`http://127.0.0.1:${port}/isolation.txt`, { signal: AbortSignal.timeout(budgets.operation) })).text(), "workspace-" + index);
+      assert.equal(await (await fetch(`http://127.0.0.1:${port}/isolation.txt`, { signal: AbortSignal.any([AbortSignal.timeout(budgets.operation), ...signal ? [signal] : []]) })).text(), "workspace-" + index);
       await Promise.all([0, 1, 2].map(async session => {
         assert.equal(await exec(session, "cat " + quote(path + "/isolation.txt")), "workspace-" + index);
         assert(/^[a-f0-9]{40}\s+refs\/heads\/task-0/.test(await exec(session, `git ls-remote http://127.0.0.1:18080/w-${index}.git refs/heads/task-0`)));

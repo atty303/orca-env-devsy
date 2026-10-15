@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 export type Environment = Record<string, string | undefined>;
 export const children = new Set<ChildProcess>();
 
-export function start(argv: string[], options: { cwd?: string; env?: Environment; input?: string; inherit?: boolean } = {}) {
+export function start(argv: string[], options: { cwd?: string; env?: Environment; input?: string; inherit?: boolean; signal?: AbortSignal } = {}) {
+  options.signal?.throwIfAborted();
   const child = spawn(argv[0], argv.slice(1), {
     cwd: options.cwd,
     env: options.env ?? process.env,
@@ -11,18 +12,21 @@ export function start(argv: string[], options: { cwd?: string; env?: Environment
     stdio: ["pipe", options.inherit ? "inherit" : "pipe", options.inherit ? "inherit" : "pipe"],
   });
   children.add(child);
+  const abort = () => { try { stop(child); } catch { /* Termination is checked during owned cleanup. */ } };
+  options.signal?.addEventListener("abort", abort, { once: true });
+  const retire = () => { children.delete(child); options.signal?.removeEventListener("abort", abort); };
   const retainGroup = () => {
-    if (!groupExists(child)) { children.delete(child); return; }
+    if (!groupExists(child)) { retire(); return; }
     const watcher = setInterval(() => {
       if (!children.has(child) || !groupExists(child)) {
-        children.delete(child);
+        retire();
         clearInterval(watcher);
       }
     }, 20);
     watcher.unref();
   };
   child.once("close", retainGroup);
-  child.once("error", () => { if (!child.pid) children.delete(child); });
+  child.once("error", () => { if (!child.pid) retire(); });
   if (options.input !== undefined) child.stdin?.end(options.input);
   else child.stdin?.end();
   return child;
@@ -73,13 +77,17 @@ export async function terminate(child: ChildProcess) {
           children.delete(child);
           return;
         }
-        throw error;
+        // macOS can report EPERM while the group's leader is an unreaped zombie.
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
       }
       const elapsed = performance.now() - started;
       if (elapsed >= 5000) throw new Error("Child termination deadline exceeded");
       if (!killed && elapsed >= 3000) {
         try { process.kill(-group, "SIGKILL"); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EPERM") child.kill("SIGKILL");
+          else if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
         killed = true;
       }
       await Bun.sleep(20);
@@ -118,7 +126,7 @@ export function processFailureCategory(output: string) {
   return "process_exit";
 }
 
-export async function run(argv: string[], options: { cwd?: string; env?: Environment; input?: string; timeout?: number; output?: "stdout" | "stderr"; inherit?: boolean } = {}) {
+export async function run(argv: string[], options: { cwd?: string; env?: Environment; input?: string; timeout?: number; output?: "stdout" | "stderr"; inherit?: boolean; signal?: AbortSignal } = {}) {
   const child = start(argv, options);
   let stdout = "", stderr = "";
   const limit = 8 * 1024 * 1024;
@@ -129,8 +137,15 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
   child.stdout?.on("data", (data) => collect("stdout", data));
   child.stderr?.on("data", (data) => collect("stderr", data));
   let timer: ReturnType<typeof setTimeout>;
+  let abort: (() => void) | undefined;
   try {
     const code = await new Promise<number | null>((resolve, reject) => {
+      abort = () => {
+        try { stop(child); } catch { /* Cleanup retains ownership if signaling fails. */ }
+        abandonStreams(child);
+        reject(options.signal!.reason);
+      };
+      options.signal?.addEventListener("abort", abort, { once: true });
       timer = setTimeout(() => {
         try { stop(child, "SIGKILL"); } catch { /* Report the deadline failure below. */ }
         abandonStreams(child);
@@ -145,13 +160,40 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
       throw new Error(`${argv[0].split("/").at(-1)} failed (${code ?? child.signalCode}, ${processFailureCategory(stdout + "\n" + stderr)})`);
     }
     return options.output === "stderr" ? stderr : stdout;
-  } finally { clearTimeout(timer!); }
+  } finally {
+    clearTimeout(timer!);
+    if (abort) options.signal?.removeEventListener("abort", abort);
+  }
 }
 
-export async function until(check: () => Promise<boolean>, timeout = 30_000) {
+export async function withAbort<T>(signal: AbortSignal | undefined, action: () => Promise<T>): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) return action();
+  let abort: () => void;
+  try {
+    return await Promise.race([
+      new Promise<never>((_, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+      }),
+      action(),
+    ]);
+  } finally { signal.removeEventListener("abort", abort!); }
+}
+
+export function processScope(signal?: AbortSignal) {
+  return {
+    run: (argv: string[], options: Parameters<typeof run>[1] = {}) => run(argv, { ...options, signal }),
+    start: (argv: string[], options: Parameters<typeof start>[1] = {}) => start(argv, { ...options, signal }),
+    until: (check: () => Promise<boolean>, timeout?: number) => until(check, timeout, signal),
+  };
+}
+
+export async function until(check: () => Promise<boolean>, timeout = 30_000, signal?: AbortSignal) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (await check()) {
+    signal?.throwIfAborted();
+    if (await withAbort(signal, check)) {
       if (Date.now() > deadline) throw new Error("Readiness deadline exceeded");
       return;
     }

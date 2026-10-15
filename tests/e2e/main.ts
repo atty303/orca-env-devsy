@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, realpath, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { run, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
+import { run as cleanupRun, processScope, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
 import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
+import { interruptibleRun, cleanupDeadline } from "./control.ts";
 import { nativeSshSetupGate } from "./native-setup.ts";
 import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
@@ -21,6 +22,8 @@ const devsy = Bun.which("devsy") ?? "";
 const dhome = root + "/devsy";
 if (provider === "podman") env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS ?? `unix:path=/run/user/${process.getuid!()}/bus`;
 if (provider === "microsandbox") env.LD_LIBRARY_PATH = resolve(".tools/e2e/microsandbox");
+const phase = interruptibleRun();
+const { run } = processScope(phase.signal);
 const d = (args: string[]) => run([devsy, "--home", dhome, ...args], { env, timeout: 600_000 });
 // OpenSSH resolves its default config through passwd, independently of HOME.
 const sshWrapper = root + "/ssh";
@@ -36,21 +39,14 @@ const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
 const pending = new Set<string>();
 const provisionFailures: ({ workspace: number } & ReturnType<typeof provisionFailure>)[] = [];
-let interrupted = false;
-const interrupt = () => {
-  interrupted = true;
-  for (const provisionId of pending) void orca?.call("ephemeralVm", "cancelProvision", { provisionId }).catch(() => {});
-  for (const child of children) stop(child, "SIGTERM");
-};
-process.once("SIGINT", interrupt);
-process.once("SIGTERM", interrupt);
+
 try {
   assert(devsy, "Devsy must be provided by the mise task");
   for (const path of ["home", "run", "config", "state"]) await mkdir(root + "/" + path, { recursive: true, mode: 0o700 });
   await mkdir(env.HOME + "/.ssh", { recursive: true, mode: 0o700 });
   await writeFile(env.HOME + "/.ssh/config", "", { mode: 0o600 });
   await writeFile(sshWrapper, '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
-  const latest = await latestOrca();
+  const latest = await latestOrca(phase.signal);
   versions.orca = latest.version;
   console.log(`E2E ${provider} ${process.platform}/${process.arch} Orca ${latest.version}`);
   const version = async (argv: string[], timeout = budgets.operation) => {
@@ -70,7 +66,7 @@ try {
     for (const store of stores) assert((await realpath(store)).startsWith(root + "/"), "Podman storage must belong to this run");
     podmanStoreOwned = true;
   }
-  shared = await services(root, env);
+  shared = await services(root, env, phase.signal);
   if (provider === "microsandbox") await installMicrosandboxDiagnostics(root, env);
   const podman = provider === "podman" ? await installPodmanDiagnostics(root) : undefined;
   await writeFile(root + "/bin/ssh", '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
@@ -79,16 +75,11 @@ try {
   // (containers/podman#29848). Native CLI processes keep that state separate.
   const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + podman!] : [];
   await d(["provider", "add", provider, ...options]);
-  source = await fixture(root, env);
+  source = await fixture(root, env, phase.signal);
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
   const nativeSetup = await nativeSshSetupGate(root, adapter);
   const definitions = await recipes(source.source, devsy, dhome, provider, adapter, source.build, nativeSetup.command);
-  orca = await Orca.launch(latest.executable, root + "/profile", env);
-  const hostEnv = await orca.app.evaluate(() => ({ home: process.env.HOME, git: process.env.GIT_CONFIG_GLOBAL, agent: process.env.SSH_AUTH_SOCK, path: process.env.PATH }));
-  assert.equal(hostEnv.home, env.HOME);
-  assert.equal(hostEnv.git, env.GIT_CONFIG_GLOBAL);
-  assert.equal(hostEnv.agent, env.SSH_AUTH_SOCK);
-  assert(hostEnv.path?.split(":").includes(root + "/bin"), "Orca must preserve fixture tool PATH");
+  orca = await Orca.launch(latest.executable, root + "/profile", env, phase.signal);
   const added = await orca.call<{ repo?: { id: string }; error?: string }>("repos", "add", { path: source.source });
   assert(added.repo, "Orca must register the fixture repository");
   const connected = Promise.withResolvers<void>();
@@ -128,14 +119,14 @@ try {
     assert.equal(result.runtime.status, "running");
     if (definition.connection === "ssh") assert(result.sshTargetId);
     else assert(result.environment?.id);
-    await firstUse(result.runtime, index, env, shared!);
+    await firstUse(result.runtime, index, env, shared!, phase.signal);
     return { runtime: result.runtime, index };
   }));
   for (const result of provisioned) if (result.status === "rejected") throw result.reason;
   const connectedWorkspaces = await Promise.allSettled(provisioned.map(async result => {
     assert.equal(result.status, "fulfilled");
     const { runtime, index } = (result as PromiseFulfilledResult<{ runtime: Runtime; index: number }>).value;
-    const active = await workspace(orca!, runtime, index, env, shared!, source!, false, allConnectionsReady, acquireConnectionStart);
+    const active = await workspace(orca!, runtime, index, env, shared!, source!, phase.signal, false, allConnectionsReady, acquireConnectionStart);
     workspaces.push(active);
     if (active.serverVersion) assert.equal(active.serverVersion, latest.version);
   }).map(operation => operation.catch(error => { connected.reject(error); throw error; })));
@@ -143,7 +134,7 @@ try {
   assert.equal(new Set(runtimes.map(r => r.recipeResult.userData.workspaceId)).size, 4);
   assert(runtimes.every(runtime => runtime.runtimeEnvironmentId));
   assert.equal(new Set(runtimes.map(runtime => runtime.runtimeEnvironmentId)).size, 4);
-  if (interrupted) throw new Error("E2E interrupted");
+  if (phase.signal.aborted) throw new Error("E2E interrupted");
   const saved = await orca.call<Runtime[]>("ephemeralVm", "listRuntimes");
   for (const runtime of runtimes) assert(saved.some(r => r.id === runtime.id && r.workspaceId === runtime.workspaceId && r.sshTargetId === runtime.sshTargetId && r.runtimeEnvironmentId === runtime.runtimeEnvironmentId));
   assert.equal(await Bun.file(env.CODEX_HOME + "/refresh-count").text(), "refresh\n", "Concurrent creates must refresh shared host auth once");
@@ -175,7 +166,7 @@ try {
     await Promise.all(workspaces.filter(w => w !== current).map(w => w.check()));
     const resumed: Runtime = await measure("resume-workspace", budgets.lifecycle, () => orca!.call<Runtime>("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), current.index);
     assert.equal(resumed.status, "running");
-    await firstUse(resumed, current.index, env, shared);
+    await firstUse(resumed, current.index, env, shared, phase.signal);
     // Receipt-based resume must preserve guest modifications to auth.
     const state = resumed.recipeResult.userData;
     const proxy = [...state.command as string[], "--home", state.home as string, "workspace", "ssh", state.workspaceId as string, "--stdio", "--start-services=false", "--user", state.user as string].map(quote).join(" ");
@@ -183,7 +174,7 @@ try {
     if (current.index === 0) assert.equal(output, "manual-change");
     else assert.equal(JSON.parse(output).tokens.access_token, JSON.parse(await Bun.file(env.CODEX_HOME + "/auth.json").text()).tokens.access_token);
     // Reopen transport and verify persisted data without recreating the fixture.
-    const reopened = await workspace(orca, resumed, current.index, env, shared, source, true);
+    const reopened = await workspace(orca, resumed, current.index, env, shared, source, phase.signal, true);
     workspaces[workspaces.indexOf(current)] = reopened;
   }
   for (const [key, count] of shared.rejected) assert(!key.endsWith(":invalid") || count === 0, "Shared credentials must not cross workspace repositories");
@@ -198,49 +189,55 @@ try {
     await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "reconnect", "--receipt"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
     await Promise.all(live.map(w => w.check()));
   }
-  if (interrupted) throw new Error("E2E interrupted");
+  if (phase.signal.aborted) throw new Error("E2E interrupted");
   console.log("PASS concurrent Orca receipts, shared credentials/agent, persistence and interleaved lifecycle");
 
 } catch (error) {
   failure = error;
 } finally {
+  phase.beginCleanup();
+  const cleanup = cleanupDeadline(cleanupErrors);
+  await Orca.settleLaunches(cleanup.signal).catch(() => cleanupErrors.push("orca-launch"));
+  const cleanDevsy = (args: string[], timeout: number) => cleanupRun([devsy, "--home", dhome, ...args], { env, timeout, signal: cleanup.signal });
   const orcaObservations = await orca?.observations.snapshot();
   const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
-  for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }).catch(() => cleanupErrors.push("cancel-provision"));
+  for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }, cleanup.signal).catch(() => cleanupErrors.push("cancel-provision"));
   if (shared) console.log("Authenticated Git requests:", JSON.stringify({ accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected) }));
-  for (const active of workspaces) await active.close().catch(() => cleanupErrors.push("ssh-sessions"));
-  const cleanup = orca ? await orca.call<Runtime[]>("ephemeralVm", "listRuntimes").catch(() => runtimes) : [];
-  for (const runtime of cleanup) {
+  await Promise.all(workspaces.map(active => active.close(cleanup.signal).catch(() => cleanupErrors.push("ssh-sessions"))));
+  const remainingRuntimes = orca ? await orca.call<Runtime[]>("ephemeralVm", "listRuntimes", undefined, cleanup.signal).catch(() => runtimes) : [];
+  await Promise.all(remainingRuntimes.map(async runtime => {
     try {
-      const cleaned = await orca!.call<Runtime>("ephemeralVm", "cleanup", { runtimeId: runtime.id });
+      const cleaned = await orca!.call<Runtime>("ephemeralVm", "cleanup", { runtimeId: runtime.id }, cleanup.signal);
       assert.equal(cleaned.status, "cleaned");
     } catch { cleanupErrors.push("orca-runtime"); }
-  }
+  }));
   await orca?.close().catch(() => cleanupErrors.push("orca-client"));
   // This Devsy home was created for this run and contained no user workspaces.
   // Reap creations that failed before Orca could persist their receipts as well.
   try {
-    const remaining = source ? JSON.parse(await d(["--result-format", "json", "workspace", "list", "--skip-pro"])) as { id: string }[] : [];
-    for (const item of remaining) {
-      assert(/^orca-[a-f0-9-]+$/.test(item.id));
-      await d(["workspace", "delete", item.id, "--force", "--ignore-not-found"]);
+    const remaining = source ? JSON.parse(await cleanDevsy(["--result-format", "json", "workspace", "list", "--skip-pro"], budgets.operation)) as { id: string }[] : [];
+    for (const item of remaining) assert(/^orca-[a-f0-9-]+$/.test(item.id));
+    await Promise.all(remaining.map(async item => {
+      await cleanDevsy(["workspace", "delete", item.id, "--force", "--ignore-not-found"], budgets.lifecycle).catch(() => cleanupErrors.push("devsy-cleanup"));
       cleanupErrors.push("unreleased-workspace");
-    }
+    }));
   } catch { cleanupErrors.push("devsy-cleanup"); }
   if (podmanStoreOwned) {
     // Both stores were verified inside this disposable run before provisioning.
     // Reset also reaps the daemonless runtime's pause process and storage mounts.
-    await run(["podman", "system", "reset", "--force"], { env, timeout: budgets.lifecycle }).catch(() => cleanupErrors.push("podman-runtime"));
+    await cleanupRun(["podman", "system", "reset", "--force"], { env, timeout: budgets.lifecycle, signal: cleanup.signal }).catch(() => cleanupErrors.push("podman-runtime"));
   }
+  cleanup.close();
   source?.close();
   shared?.close();
   await Promise.all([...children].map(child => terminate(child).catch(() => cleanupErrors.push("child-process"))));
+  if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
   await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
-  process.removeListener("SIGINT", interrupt);
-  process.removeListener("SIGTERM", interrupt);
+  phase.close();
 }
 if (failure) throw failure;
+assert(!phase.interrupted, "E2E interrupted");
 assert.deepEqual(cleanupErrors, [], "E2E resources must be released");

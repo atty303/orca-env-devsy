@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
 import { once } from "node:events";
-import { children, run, start, terminate } from "../scripts/process.ts";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { children, processScope, run, start, terminate, until, waitForExit } from "../scripts/process.ts";
 import { Orca } from "./e2e/orca.ts";
 import { OrcaObservations } from "./e2e/observations.ts";
+import { cleanupDeadline } from "./e2e/control.ts";
+import { budgets } from "./e2e/timing.ts";
+import { services } from "./e2e/services.ts";
 
 test("command deadlines reject even when an exited parent leaves inherited pipes open", async () => {
   const before = new Set(children);
@@ -81,4 +87,171 @@ test("Orca close rejects at its deadline even if killing Electron never settles 
   expect(result).toBe("Orca close deadline exceeded");
   expect(kills).toBe(1);
   expect(performance.now() - started).toBeLessThan(1000);
+});
+
+test("one cleanup deadline cancels parallel stalled commands and prevents later launches", async () => {
+  const before = new Set(children);
+  const errors: string[] = [];
+  const cleanup = cleanupDeadline(errors, 200);
+  const scoped = processScope(cleanup.signal);
+  const started = performance.now();
+  try {
+    const results = await Promise.allSettled([0, 1, 2, 3].map((_, index) => scoped.run([process.execPath, "-e", "setInterval(() => {}, 100)"], { timeout: 1500, input: index === 0 ? "x".repeat(262144) : undefined })));
+    expect(results.every(result => result.status === "rejected")).toBe(true);
+    expect(errors).toEqual(["cleanup-deadline"]);
+    expect(performance.now() - started).toBeLessThan(1000);
+    await expect(scoped.run([process.execPath, "-e", "process.exit(0)"])).rejects.toThrow("E2E cleanup deadline exceeded");
+  } finally {
+    cleanup.close();
+    await Promise.all([...children].filter(child => !before.has(child)).map(child => terminate(child)));
+  }
+});
+
+test("an interrupted Orca call rejects immediately while cleanup uses its own signal", async () => {
+  let calls = 0;
+  const phase = new AbortController();
+  const cleanup = new AbortController();
+  const app = { evaluate: () => ++calls === 1 ? new Promise(() => {}) : Promise.resolve({ status: "cleaned" }) };
+  const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations(), phase.signal]) as Orca;
+  const active = orca.call("ephemeralVm", "resumeWorkspace");
+  phase.abort(new Error("E2E interrupted"));
+  await expect(active).rejects.toThrow("IPC failed");
+  await expect(orca.call("ephemeralVm", "resumeWorkspace")).rejects.toThrow("E2E interrupted");
+  expect(await orca.call("ephemeralVm", "cleanup", undefined, cleanup.signal)).toEqual({ status: "cleaned" });
+  expect(calls).toBe(2);
+});
+
+test("SSH agent readiness stops retrying when execution is interrupted", async () => {
+  const before = new Set(children);
+  const root = await mkdtemp(tmpdir() + "/oe-agent-cancel-");
+  const phase = new AbortController();
+  try {
+    await mkdir(root + "/mock");
+    await writeFile(root + "/mock/ssh-add", '#!/bin/sh\ntouch "$HOME/add-attempted"\nexit 1\n', { mode: 0o700 });
+    const operation = services(root, { HOME: root, CODEX_HOME: root + "/codex", PATH: root + "/mock:" + process.env.PATH }, phase.signal);
+    void operation.catch(() => {});
+    await until(() => Bun.file(root + "/add-attempted").exists(), 2000);
+    const started = performance.now();
+    phase.abort(new Error("E2E interrupted"));
+    await expect(operation).rejects.toThrow("E2E interrupted");
+    expect(performance.now() - started).toBeLessThan(500);
+  } finally {
+    phase.abort();
+    await Promise.all([...children].filter(child => !before.has(child)).map(child => terminate(child)));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("interrupted Electron launch and initialization retain late apps until failed-result cleanup", async () => {
+  const root = await mkdtemp(tmpdir() + "/oe-launch-");
+  try {
+    for (const stage of ["launch", "home", "environment", "bridge"] as const) {
+      const phase = new AbortController();
+      const acquired = Promise.withResolvers<never>();
+      let entered = false, closed = 0, evaluations = 0;
+      const app = {
+        on() {},
+        evaluate() {
+          evaluations++;
+          const target = stage === "home" ? 1 : stage === "environment" ? 2 : 3;
+          if (evaluations === target) { entered = true; return new Promise(() => {}); }
+          return Promise.resolve(evaluations === 1 ? root + "/home" : { home: root + "/home", path: "/fixture-bin" });
+        },
+        close: async () => { closed++; },
+        process: () => ({ kill() { throw new Error("Graceful fixture close must finish"); } }),
+      };
+      const launch = Orca.launch("fixture", root + "/profile", { HOME: root + "/home", PATH: "/fixture-bin" }, phase.signal, async () => {
+        if (stage === "launch") { entered = true; return acquired.promise; }
+        return app as never;
+      });
+      await until(async () => entered, 1000);
+      const started = performance.now();
+      phase.abort(new Error("E2E interrupted"));
+      await expect(launch).rejects.toThrow("E2E interrupted");
+      expect(performance.now() - started).toBeLessThan(500);
+      const errors: string[] = [];
+      const cleanup = cleanupDeadline(errors, 1000);
+      try {
+        const settled = Orca.settleLaunches(cleanup.signal);
+        if (stage === "launch") acquired.resolve(app as never);
+        await settled;
+        const report = root + "/" + stage + ".json";
+        await writeFile(report, JSON.stringify({ status: "failed", cleanupErrors: errors }));
+        expect(JSON.parse(await readFile(report, "utf8"))).toEqual({ status: "failed", cleanupErrors: [] });
+        expect(closed).toBe(1);
+        expect(evaluations).toBe(stage === "launch" ? 0 : stage === "home" ? 1 : stage === "environment" ? 2 : 3);
+      } finally { cleanup.close(); }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Electron acquired after its measured deadline is closed before launch cleanup settles", async () => {
+  const root = await mkdtemp(tmpdir() + "/oe-launch-");
+  const original = budgets.lifecycle;
+  let closed = 0, evaluations = 0;
+  try {
+    budgets.lifecycle = 20;
+    const app = {
+      evaluate() { evaluations++; },
+      close: async () => { closed++; },
+      process: () => ({ kill() { throw new Error("Graceful fixture close must finish"); } }),
+    };
+    const launch = Orca.launch("fixture", root + "/profile", { HOME: root + "/home" }, undefined, async () => {
+      await Bun.sleep(40);
+      return app as never;
+    });
+    await expect(launch).rejects.toThrow();
+    await Orca.settleLaunches(AbortSignal.timeout(1000));
+    expect(closed).toBe(1);
+    expect(evaluations).toBe(0);
+  } finally {
+    budgets.lifecycle = original;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("termination signals enter cleanup and repeated signals preserve the failed result", async () => {
+  const root = await mkdtemp(tmpdir() + "/oe-control-");
+  try {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      const report = root + "/" + signal + ".json";
+      const script = `
+import { interruptibleRun, cleanupDeadline } from ${JSON.stringify(resolve("tests/e2e/control.ts"))};
+import { processScope, withAbort } from ${JSON.stringify(resolve("scripts/process.ts"))};
+import { writeFile } from "node:fs/promises";
+const phase = interruptibleRun();
+let continued = false;
+try {
+  const active = processScope(phase.signal).run([process.execPath, "-e", "setInterval(() => {}, 100)"]);
+  console.log("active");
+  await active;
+  continued = true;
+} catch {} finally {
+  phase.beginCleanup();
+  const errors = [];
+  const cleanup = cleanupDeadline(errors, 500);
+  console.log("cleanup");
+  await withAbort(cleanup.signal, () => new Promise(() => {})).catch(() => {});
+  cleanup.close();
+  await writeFile(${JSON.stringify(report)}, JSON.stringify({ status: "failed", interrupted: phase.interrupted, continued, errors }));
+  phase.close();
+}
+`;
+      const child = start([process.execPath, "-e", script]);
+      let output = "";
+      child.stdout!.on("data", chunk => { output += chunk.toString(); });
+      child.stderr!.resume();
+      try {
+        await until(async () => output.includes("active"), 2000);
+        const started = performance.now();
+        child.kill(signal);
+        await until(async () => output.includes("cleanup"), 1000);
+        child.kill(signal);
+        await waitForExit(child, 2000);
+        expect(child.exitCode).toBe(0);
+        expect(JSON.parse(await readFile(report, "utf8"))).toEqual({ status: "failed", interrupted: true, continued: false, errors: ["cleanup-deadline"] });
+        expect(performance.now() - started).toBeLessThan(2000);
+      } finally { await terminate(child); }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
