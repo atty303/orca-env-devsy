@@ -173,3 +173,20 @@ test("native SSH gate runs adapter creation before release and defers only its r
     expect(await new Response(cancelled.stdout).text()).toBe("");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("adapter process API causes retain bounded errno and fixed phases without context", async () => {
+  const { adapterDiagnostics } = await import("./diagnostics.ts");
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "orca-errno-"));
+  try {
+    await mkdir(root + "/orca-env-devsy");
+    const events = [26, 0, 4096, 1.5, privateValue].map(osErrno => ({ stage: "resolve-context", status: "process-error", errorType: "process_os", phase: privateValue, osErrno, context: privateValue }));
+    await writeFile(root + "/orca-env-devsy/events.jsonl", events.map(event => JSON.stringify(event)).join("\n"));
+    const report = await adapterDiagnostics(root);
+    expect(report.events[0]).toEqual({ stage: "resolve-context", status: "process-error", errorType: "process_os", osErrno: 26 });
+    expect(report.events.slice(1).every(event => event.osErrno === undefined)).toBe(true);
+    expect(JSON.stringify(report)).not.toContain(privateValue);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

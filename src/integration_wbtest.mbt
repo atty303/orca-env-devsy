@@ -147,7 +147,43 @@ async fn invoke(
     extra_env=env,
     stdin?=input,
   )
-  (status, stdout.text(), stderr.text())
+  let diagnostics = []
+  if status != 0 {
+    try {
+      let path = env.get("XDG_STATE_HOME").unwrap() +
+        "/orca-env-devsy/events.jsonl"
+      for line in @fs.read_file(path).text().split("\n") {
+        if line == "" {
+          continue
+        }
+        let event = @json.parse(line.to_owned())
+        if field(event, "status") != Some(Json::string("process-error")) {
+          continue
+        }
+        let safe = Json::empty_object()
+        for name in ["process_os", "process_utf8", "process_api"] {
+          if field(event, "errorType") == Some(Json::string(name)) {
+            set_field(safe, "errorType", Json::string(name))
+          }
+        }
+        for name in ["read"] {
+          if field(event, "phase") == Some(Json::string(name)) {
+            set_field(safe, "phase", Json::string(name))
+          }
+        }
+        if field(event, "osErrno") is Some(Json::Number(code, ..)) &&
+          code > 0 &&
+          code < 4096 &&
+          code == code.to_int().to_double() {
+          set_field(safe, "osErrno", Json::number(code))
+        }
+        diagnostics.push(safe.stringify())
+      }
+    } catch {
+      _ => ()
+    }
+  }
+  (status, stdout.text(), stderr.text() + diagnostics.join("\n"))
 }
 
 ///|
@@ -2762,4 +2798,28 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
     stdin=@process.redirect_from_file("/dev/null"),
   )
   assert_eq(refreshed, 2)
+}
+
+///|
+async test "process API failures retain numeric errno without private context" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  let document : Json = {
+    "devsy": {
+      "command": [directory + "/private-missing-command"],
+      "connection": "ssh",
+    },
+    "environmentRecipes": [{ "id": "test" }],
+  }
+  @fs.write_file(directory + "/orca.yaml", document.stringify())
+  let (status, _, errors) = invoke("create", env, directory)
+  assert_true(status != 0)
+  assert_true(errors.contains("process_os"))
+  assert_true(errors.contains("osErrno"))
+  assert_false(errors.contains("\"phase\":\"spawn\""))
+  assert_false(errors.contains("private-missing-command"))
+  let records = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_false(records.contains("private-missing-command"))
 }
