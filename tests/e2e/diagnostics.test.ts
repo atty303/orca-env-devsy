@@ -13,6 +13,13 @@ test("specific VM start failures take precedence over generic boot failures", ()
   expect(processFailureCategory("failed to start the process")).toBe("vm_boot");
 });
 
+test("SSH host-key failures remain distinct from public-key authentication failures", () => {
+  expect(processFailureCategory("Host key verification failed. " + privateValue)).toBe("ssh_host_key");
+  expect(processFailureCategory("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! " + privateValue)).toBe("ssh_host_key");
+  expect(processFailureCategory("Permission denied (publickey). " + privateValue)).toBe("ssh_auth");
+  expect(processFailureCategory(privateValue)).toBe("process_exit");
+});
+
 test("native tar upload failures retain the source-owned stage and exit code", () => {
   const observed = provisionFailure(new Error(`local tar relay upload failed (exit 1): tar: ${privateValue}: file changed as we read it`));
   expect(observed.category).toBe("tar_source_changed");
