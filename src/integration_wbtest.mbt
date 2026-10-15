@@ -501,7 +501,47 @@ async test "failed provisioning cleans the requested UID before a recipe receipt
 }
 
 ///|
+async test "fake tunnel ignores a stale listener request from an earlier lifetime" {
+  let (directory, _) = fixture()
+  defer cleanup_fixture(directory)
+  let occupied = @socket.TcpServer(@socket.Addr::parse("127.0.0.1:0"))
+  defer occupied.close()
+  @fs.write_file(directory + "/listener-port", occupied.addr.port().to_string())
+  with_fake_tunnel(directory, async fn() {
+    @async.sleep(50)
+    assert_false(@fs.exists(directory + "/listener-ready"))
+    let fresh = @socket.TcpServer(@socket.Addr::parse("127.0.0.1:0"))
+    let port = fresh.addr.port()
+    fresh.close()
+    @fs.write_file(directory + "/listener-port.tmp", port.to_string())
+    @fs.rename(
+      directory + "/listener-port.tmp",
+      directory + "/listener-port",
+      replace=true,
+    )
+    @async.with_timeout(1000, async fn() {
+      while !@fs.exists(directory + "/listener-ready") {
+        @async.sleep(10)
+      }
+    })
+  })
+  assert_false(@fs.exists(directory + "/listener-port"))
+  assert_false(@fs.exists(directory + "/listener-ready"))
+}
+
+///|
 async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
+  // A previous lifetime's port request must not race the next SSH invocation.
+  for marker in ["listener-port", "listener-ready"] {
+    @fs.remove(directory + "/" + marker) catch {
+      _ => ()
+    }
+  }
+  defer (for marker in ["listener-port", "listener-ready"] {
+    @fs.remove(directory + "/" + marker) catch {
+      _ => ()
+    }
+  })
   @async.with_task_group(async fn(group) {
     group.spawn_bg(no_wait=true, async fn() {
       while !@fs.exists(directory + "/listener-port") {
@@ -511,17 +551,12 @@ async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
         .text()
         .trim()
         .to_owned()
-      // Masters share a listener; resume may rebind its port after TCP probes.
+      // Reconnecting masters share the current lifetime's listener.
       let listener = @socket.TcpServer(
         @socket.Addr::parse("127.0.0.1:" + port),
         reuse_addr=true,
       )
-      defer {
-        listener.close()
-        @fs.remove(directory + "/listener-ready") catch {
-          _ => ()
-        }
-      }
+      defer listener.close()
       @fs.write_file(directory + "/listener-ready", "")
       while true {
         let (connection, _) = listener.accept()
