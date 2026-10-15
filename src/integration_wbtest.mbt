@@ -147,43 +147,47 @@ async fn invoke(
     extra_env=env,
     stdin?=input,
   )
+  let diagnostics = if status != 0 { fixture_process_errors(env) } else { "" }
+  (status, stdout.text(), stderr.text() + diagnostics)
+}
+
+///|
+async fn fixture_process_errors(env : Map[String, String]) -> String {
   let diagnostics = []
-  if status != 0 {
-    try {
-      let path = env.get("XDG_STATE_HOME").unwrap() +
-        "/orca-env-devsy/events.jsonl"
-      for line in @fs.read_file(path).text().split("\n") {
-        if line == "" {
-          continue
-        }
-        let event = @json.parse(line.to_owned())
-        if field(event, "status") != Some(Json::string("process-error")) {
-          continue
-        }
-        let safe = Json::empty_object()
-        for name in ["process_os", "process_utf8", "process_api"] {
-          if field(event, "errorType") == Some(Json::string(name)) {
-            set_field(safe, "errorType", Json::string(name))
-          }
-        }
-        for name in ["read"] {
-          if field(event, "phase") == Some(Json::string(name)) {
-            set_field(safe, "phase", Json::string(name))
-          }
-        }
-        if field(event, "osErrno") is Some(Json::Number(code, ..)) &&
-          code > 0 &&
-          code < 4096 &&
-          code == code.to_int().to_double() {
-          set_field(safe, "osErrno", Json::number(code))
-        }
-        diagnostics.push(safe.stringify())
+  try {
+    let path = env.get("XDG_STATE_HOME").unwrap() +
+      "/orca-env-devsy/events.jsonl"
+    for line in @fs.read_file(path).text().split("\n") {
+      if line == "" {
+        continue
       }
-    } catch {
-      _ => ()
+      let event = @json.parse(line.to_owned())
+      if field(event, "status") != Some(Json::string("process-error")) {
+        continue
+      }
+      let safe = Json::empty_object()
+      for name in ["process_os", "process_utf8", "process_api"] {
+        if field(event, "errorType") == Some(Json::string(name)) {
+          set_field(safe, "errorType", Json::string(name))
+        }
+      }
+      for name in ["read"] {
+        if field(event, "phase") == Some(Json::string(name)) {
+          set_field(safe, "phase", Json::string(name))
+        }
+      }
+      if field(event, "osErrno") is Some(Json::Number(code, ..)) &&
+        code > 0 &&
+        code < 4096 &&
+        code == code.to_int().to_double() {
+        set_field(safe, "osErrno", Json::number(code))
+      }
+      diagnostics.push(safe.stringify())
     }
+  } catch {
+    _ => ()
   }
-  (status, stdout.text(), stderr.text() + diagnostics.join("\n"))
+  diagnostics.join("\n")
 }
 
 ///|
@@ -2530,7 +2534,10 @@ async test "adoption publishes connected independently of pending Git options" {
   let wrapper =
     #|#!/bin/sh
     #|case "$*" in
+    #|  *'workspace list'*) touch "$FAKE_HOME/adoption-list" ;;
+    #|  *'workspace status'*) touch "$FAKE_HOME/adoption-status" ;;
     #|  *'context get'*)
+    #|    touch "$FAKE_HOME/adoption-options"
     #|    while test ! -f "$FAKE_HOME/allow-options-query"; do sleep 0.01; done
     #|    touch "$FAKE_HOME/options-blocked"
     #|    while test ! -f "$FAKE_HOME/release-options"; do sleep 0.01; done ;;
@@ -2562,11 +2569,73 @@ async test "adoption publishes connected independently of pending Git options" {
         @async.sleep(10)
       }
     }) catch {
-      _ =>
+      _ => {
+        let observed : Json = {
+          "primarySocket": @fs.exists(socket + "/socket"),
+          "managementSocket": @fs.exists(socket + "/credential-socket"),
+          "workspaceList": @fs.exists(directory + "/adoption-list"),
+          "workspaceStatus": @fs.exists(directory + "/adoption-status"),
+          "optionsRequested": @fs.exists(directory + "/adoption-options"),
+        }
+        if child.try_wait() is Some(code) {
+          set_field(observed, "workerExited", Json::boolean(true))
+          if code >= -255 && code <= 255 {
+            set_field(
+              observed,
+              "workerExitCode",
+              Json::number(code.to_double()),
+            )
+          }
+        } else {
+          set_field(observed, "workerExited", Json::boolean(false))
+        }
+        let status = @json.parse(@fs.read_file(worker + "/status.json").text())
+        for
+          value in [
+            "connected", "connecting", "stopped", "workspace-stopped", "ownership-error",
+          ] {
+          if field(status, "status") == Some(Json::string(value)) {
+            set_field(observed, "status", Json::string(value))
+          }
+        }
+        try {
+          let events = @fs.read_file(
+            directory + "/.local/state/orca-env-devsy/events.jsonl",
+          ).text()
+          let phases = Json::empty_object()
+          for line in events.split("\n") {
+            if line == "" {
+              continue
+            }
+            let event = @json.parse(line.to_owned())
+            for
+              stage in [
+                "workspace-list", "workspace-status", "orca-tunnel", "git-relay-management",
+              ] {
+              if field(event, "stage") == Some(Json::string(stage)) {
+                for
+                  status in [
+                    "started", "success", "exit-error", "process-error", "cancelled",
+                    "adopted", "stopped",
+                  ] {
+                  if field(event, "status") == Some(Json::string(status)) {
+                    set_field(phases, stage, Json::string(status))
+                  }
+                }
+              }
+            }
+          }
+          set_field(observed, "phases", phases)
+        } catch {
+          _ => ()
+        }
         assert_true(
           false,
-          msg="adoption fixture: primary did not connect while options were gated",
+          msg="adoption fixture: primary did not connect while options were gated " +
+            observed.stringify() +
+            fixture_process_errors(env),
         )
+      }
     }
     assert_false(@fs.exists(socket + "/credential-socket"))
     assert_false(@fs.exists(directory + "/options-blocked"))
