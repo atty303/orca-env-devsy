@@ -18,6 +18,10 @@ test("native tar upload failures retain the source-owned stage and exit code", (
   expect(observed.category).toBe("tar_source_changed");
   expect(observed.signals).toContain("local_tar_upload_failed");
   expect(observed.error.exitCodes).toEqual([1]);
+  expect(observed.signals).not.toContain("tar_directory_changed");
+  const directory = provisionFailure(new Error("local tar relay upload failed (exit 1): tar: .: file changed as we read it"));
+  expect(directory.category).toBe("tar_directory_changed");
+  expect(directory.signals).toContain("tar_source_changed");
   expect(JSON.stringify(observed)).not.toContain(privateValue);
   expect(provisionFailure("local tar relay upload failed (exit 999): " + privateValue).error.exitCodes).toEqual([]);
 });
