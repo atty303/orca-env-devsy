@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, realpath, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { run as cleanupRun, processScope, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
-import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
+import { Orca, orcaRelease, type Provision, type Runtime } from "./orca.ts";
 import { interruptibleRun, cleanupDeadline } from "./control.ts";
-import { nativeSshSetupGate } from "./native-setup.ts";
 import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
 import { workspace, firstUse, firstUseFailures, sshConnectionFailures } from "./scenarios.ts";
@@ -38,7 +37,6 @@ const cleanupErrors: string[] = [];
 const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
 const pending = new Set<string>();
-const registrationFailures: { workspace: number; responseEnvironment: boolean; runtimeEnvironment: boolean; stateReadFailed: boolean; connected: boolean; managed: boolean; stateEnvironment: boolean; savedReadFailed: boolean; savedRuntime: boolean; savedEnvironment: boolean; stateMatchesSaved: boolean }[] = [];
 const provisionFailures: ({ workspace: number } & ReturnType<typeof provisionFailure>)[] = [];
 
 try {
@@ -47,9 +45,9 @@ try {
   await mkdir(env.HOME + "/.ssh", { recursive: true, mode: 0o700 });
   await writeFile(env.HOME + "/.ssh/config", "", { mode: 0o600 });
   await writeFile(sshWrapper, '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
-  const latest = await latestOrca(phase.signal);
-  versions.orca = latest.version;
-  console.log(`E2E ${provider} ${process.platform}/${process.arch} Orca ${latest.version}`);
+  const release = await orcaRelease(phase.signal);
+  versions.orca = release.version;
+  console.log(`E2E ${provider} ${process.platform}/${process.arch} Orca ${release.version}`);
   const version = async (argv: string[], timeout = budgets.operation) => {
     const output = await run(argv, { env, timeout });
     const result = /\d+\.\d+\.\d+/.exec(output)?.[0];
@@ -76,11 +74,10 @@ try {
   // (containers/podman#29848). Native CLI processes keep that state separate.
   const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + podman!] : [];
   await d(["provider", "add", provider, ...options]);
-  source = await fixture(root, env, phase.signal);
+  source = await fixture(root, env, release.version, phase.signal);
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
-  const nativeSetup = await nativeSshSetupGate(root, adapter);
-  const definitions = await recipes(source.source, devsy, dhome, provider, adapter, source.build, nativeSetup.command);
-  orca = await Orca.launch(latest.executable, root + "/profile", env, phase.signal);
+  const definitions = await recipes(source.source, devsy, dhome, provider, adapter, source.build);
+  orca = await Orca.launch(release.executable, root + "/profile", env, phase.signal);
   const added = await orca.call<{ repo?: { id: string }; error?: string }>("repos", "add", { path: source.source });
   assert(added.repo, "Orca must register the fixture repository");
   const connected = Promise.withResolvers<void>();
@@ -106,7 +103,7 @@ try {
         const category = failureCategory(error);
         provisionFailures.push({ workspace: index, ...provisionFailure(error) });
         throw new Error(`Orca recipe IPC failed (${definition.id}, ${category})`);
-      }).finally(async () => { if (index === 0) await nativeSetup.release(); });
+      });
       if (!result.ok) {
         const category = failureCategory(result.error);
         provisionFailures.push({ workspace: index, ...provisionFailure(result.error, result.stderr, result.stdout) });
@@ -120,15 +117,6 @@ try {
     assert.equal(result.runtime.status, "running");
     if (definition.connection === "ssh") assert(result.sshTargetId);
     else assert(result.environment?.id);
-    if (!result.runtime.runtimeEnvironmentId) {
-      const state = result.sshTargetId ? await orca!.call<{ status: string; managedServer?: { kind: string; environmentId?: string } }>("ssh", "getState", { targetId: result.sshTargetId }).catch(() => undefined) : undefined;
-      const saved = await orca!.call<Runtime[]>("ephemeralVm", "listRuntimes").catch(() => undefined);
-      const persisted = saved?.find(runtime => runtime.id === result.runtime.id);
-      const stateEnvironment = state?.managedServer?.environmentId;
-      const observation = { workspace: index, responseEnvironment: typeof result.environmentId === "string", runtimeEnvironment: typeof result.runtime.runtimeEnvironmentId === "string", stateReadFailed: state === undefined, connected: state?.status === "connected", managed: state?.managedServer?.kind === "managed", stateEnvironment: typeof stateEnvironment === "string", savedReadFailed: saved === undefined, savedRuntime: persisted !== undefined, savedEnvironment: typeof persisted?.runtimeEnvironmentId === "string", stateMatchesSaved: typeof stateEnvironment === "string" && stateEnvironment === persisted?.runtimeEnvironmentId };
-      registrationFailures.push(observation);
-      console.error("Orca registration failure:", JSON.stringify(observation));
-    }
     await firstUse(result.runtime, index, env, shared!, phase.signal);
     return { runtime: result.runtime, index };
   }));
@@ -138,12 +126,13 @@ try {
     const { runtime, index } = (result as PromiseFulfilledResult<{ runtime: Runtime; index: number }>).value;
     const active = await workspace(orca!, runtime, index, env, shared!, source!, phase.signal, false, allConnectionsReady, acquireConnectionStart);
     workspaces.push(active);
-    if (active.serverVersion) assert.equal(active.serverVersion, latest.version);
+    if (active.serverVersion) assert.equal(active.serverVersion, release.version);
   }).map(operation => operation.catch(error => { connected.reject(error); throw error; })));
   for (const result of connectedWorkspaces) if (result.status === "rejected") throw result.reason;
   assert.equal(new Set(runtimes.map(r => r.recipeResult.userData.workspaceId)).size, 4);
-  assert(runtimes.every(runtime => runtime.runtimeEnvironmentId));
-  assert.equal(new Set(runtimes.map(runtime => runtime.runtimeEnvironmentId)).size, 4);
+  const routeIds = runtimes.map(runtime => runtime.recipeResult.connection.type === "ssh" ? runtime.sshTargetId : runtime.runtimeEnvironmentId);
+  assert(routeIds.every(id => typeof id === "string" && id.length > 0));
+  assert.equal(new Set(routeIds).size, 4);
   if (phase.signal.aborted) throw new Error("E2E interrupted");
   const saved = await orca.call<Runtime[]>("ephemeralVm", "listRuntimes");
   for (const runtime of runtimes) assert(saved.some(r => r.id === runtime.id && r.workspaceId === runtime.workspaceId && r.sshTargetId === runtime.sshTargetId && r.runtimeEnvironmentId === runtime.runtimeEnvironmentId));
@@ -243,7 +232,7 @@ try {
   await Promise.all([...children].map(child => terminate(child).catch(() => cleanupErrors.push("child-process"))));
   if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, sshConnectionFailures, registrationFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();

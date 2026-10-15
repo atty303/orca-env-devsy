@@ -2,10 +2,12 @@ import { cp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { processScope, type Environment } from "../../scripts/process.ts";
 
-export async function fixture(root: string, env: Environment, signal?: AbortSignal) {
+export async function fixture(root: string, env: Environment, version: string, signal?: AbortSignal) {
   const { run } = processScope(signal);
   const source = root + "/source";
   await cp(resolve("tests/e2e/fixture"), source, { recursive: true });
+  const dockerfile = source + "/.devcontainer/Dockerfile";
+  await writeFile(dockerfile, await readFile(dockerfile, "utf8") + `ENV ORCA_E2E_VERSION=${version}\n`);
   const git = (args: string[]) => run(["git", "-C", source, ...args], { env });
   await git(["init", "-b", "main"]);
   await git(["add", "."]);
@@ -31,7 +33,7 @@ export async function fixture(root: string, env: Environment, signal?: AbortSign
   return { source, build, task, url, close: () => server.stop(true) };
 }
 
-export async function recipes(source: string, devsy: string, home: string, provider: string, adapter: string, build: string, deferredSshCreate: string) {
+export async function recipes(source: string, devsy: string, home: string, provider: string, adapter: string, build: string) {
   const definitions = [
     { id: "ssh-worktree", connection: "ssh", mode: "orca-worktree" },
     { id: "ssh-root", connection: "ssh", mode: "provisioned-root" },
@@ -40,7 +42,7 @@ export async function recipes(source: string, devsy: string, home: string, provi
   ];
   await writeFile(source + "/orca.yaml", JSON.stringify({
     devsy: { command: [devsy], home, buildRef: build, addons: { codexAuth: true }, upArgs: ["--provider", provider] },
-    environmentRecipes: definitions.map(({ id, connection, mode }) => ({ id, name: id, checkoutMode: mode, devsy: { connection }, create: id === "ssh-root" ? deferredSshCreate : adapter + " create", resume: adapter + " resume", suspend: adapter + " suspend", destroy: adapter + " destroy" })),
+    environmentRecipes: definitions.map(({ id, connection, mode }) => ({ id, name: id, checkoutMode: mode, devsy: { connection }, create: adapter + " create", resume: adapter + " resume", suspend: adapter + " suspend", destroy: adapter + " destroy" })),
   }, null, 2));
   return definitions;
 }

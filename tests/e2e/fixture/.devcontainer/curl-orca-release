@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+for arg do
+  shift
+  case "$arg" in
+    https://github.com/stablyai/orca/releases/latest/download/orca-linux.AppImage|https://github.com/stablyai/orca/releases/latest/download/orca-linux-arm64.AppImage)
+      version=${ORCA_E2E_VERSION:?Missing fixture Orca version}
+      case "$version" in ''|*[!0-9.]*) printf '%s\n' 'Invalid fixture Orca version' >&2; exit 64 ;; esac
+      arg="https://github.com/stablyai/orca/releases/download/v$version/${arg##*/}"
+      ;;
+  esac
+  set -- "$@" "$arg"
+done
+exec /usr/bin/curl "$@"

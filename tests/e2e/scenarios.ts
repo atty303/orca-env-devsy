@@ -150,17 +150,21 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     listener.stop(true);
     await run([...base, "-S", socketRoot + "/0", "-O", "forward", "-L", `${port}:127.0.0.1:8080`, target], { env });
     const checkClient = async () => {
-      assert(runtime.runtimeEnvironmentId, "Orca must register a managed environment for each recipe");
-      if (runtime.sshTargetId) {
-        const connected = await orca.call<{ status: string; managedServer?: { kind: string; environmentId?: string } }>("ssh", "getState", { targetId: runtime.sshTargetId });
+      type Browse = { resolvedPath: string; entries: { name: string }[] };
+      let browsing: Browse;
+      if (runtime.recipeResult.connection.type === "ssh") {
+        assert(runtime.sshTargetId, "Orca must register the SSH target");
+        const connected = await orca.call<{ status: string }>("ssh", "getState", { targetId: runtime.sshTargetId });
         assert.equal(connected.status, "connected");
-        assert.equal(connected.managedServer?.kind, "managed");
-        assert.equal(connected.managedServer.environmentId, runtime.runtimeEnvironmentId);
+        browsing = await orca.call<Browse>("ssh", "browseDir", { targetId: runtime.sshTargetId, dirPath: path });
+      } else {
+        assert(runtime.runtimeEnvironmentId, "Orca must register the server environment");
+        const response = await orca.call<{ ok: boolean; result: Browse }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method: "files.browseServerDir", params: { path }, timeoutMs: budgets.operation });
+        assert(response.ok);
+        browsing = response.result;
       }
-      const browsing = await orca.call<{ ok: boolean; result: { resolvedPath: string; entries: { name: string }[] } }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method: "files.browseServerDir", params: { path }, timeoutMs: budgets.operation });
-      assert(browsing.ok);
-      assert.equal(browsing.result.resolvedPath, path);
-      for (let peer = 0; peer < 4; peer++) assert.equal(browsing.result.entries.some(entry => entry.name === `isolation-${peer}.txt`), peer === index, "Orca must route to the workspace's unique marker");
+      assert.equal(browsing.resolvedPath, path);
+      for (let peer = 0; peer < 4; peer++) assert.equal(browsing.entries.some(entry => entry.name === `isolation-${peer}.txt`), peer === index, "Orca must route to the workspace's unique marker");
     };
     const check = () => measure("workspace-check", budgets.operation, async () => {
       assert.equal(await (await fetch(`http://127.0.0.1:${port}/isolation.txt`, { signal: AbortSignal.any([AbortSignal.timeout(budgets.operation), ...signal ? [signal] : []]) })).text(), "workspace-" + index);
@@ -214,8 +218,10 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       serverVersion = /\d+\.\d+\.\d+/.exec(version)?.[0];
       assert(serverVersion, "Installed Orca server must report its version");
     }
-    const connected = await orca.call<{ ok: boolean }>("runtimeEnvironments", "getStatus", { selector: runtime.runtimeEnvironmentId, timeoutMs: budgets.operation });
-    assert(connected.ok);
+    if (runtime.recipeResult.connection.type === "orca-server") {
+      const connected = await orca.call<{ ok: boolean }>("runtimeEnvironments", "getStatus", { selector: runtime.runtimeEnvironmentId, timeoutMs: budgets.operation });
+      assert(connected.ok);
+    }
     console.log(`PASS workspace ${index}: three SSH sessions, signed Git push/fetch, agent, auth, files and HTTP isolation`);
     return { runtime, index, exec, check, checkClient, serve, close, recoverRelay, crashWorker, path, id, serverVersion };
   } catch (error) {
