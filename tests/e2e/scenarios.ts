@@ -4,9 +4,10 @@ import { run as cleanupRun, start, processScope, withAbort, terminate, quote, ty
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
 import { budgets, measure } from "./timing.ts";
-import { diagnosticRun } from "./diagnostics.ts";
+import { diagnosticRun, sshStartupPhases } from "./diagnostics.ts";
 
 type Services = Awaited<ReturnType<typeof services>>;
+export const sshConnectionFailures: { workspace: number; restarting: boolean; sessions: { exitCode: number | null; signal: NodeJS.Signals | null; category: string; socketReady: boolean; truncated: boolean; phases: string[] }[] }[] = [];
 export const firstUseFailures: { workspace: number; run?: number; helper?: boolean; endpoint?: boolean; unavailable?: boolean }[] = [];
 export async function firstUse(runtime: Runtime, index: number, env: Environment, service: Services, signal?: AbortSignal) {
   const { run } = processScope(signal);
@@ -46,6 +47,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
   const target = user + "@" + id + ".devsy";
   const sessions: ReturnType<typeof start>[] = [];
   const sessionErrors: string[] = [];
+  const socketReady: boolean[] = [], truncated: boolean[] = [];
   const exec = (session: number, script: string) => measure("ssh-operation", budgets.operation, () => run(["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", socketRoot + "/" + session, target, script], { env, timeout: budgets.operation }), index);
   const poll = (script: string) => until(async () => { try { await exec(0, script); return true; } catch { return false; } }, budgets.firstUse);
   async function close(cleanupSignal = signal) {
@@ -57,16 +59,23 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     const release = await acquireConnectionStart();
     try {
     for (let i = 0; i < 3; i++) {
-      const child = start([...base, "-M", "-S", socketRoot + "/" + i, "-o", "ExitOnForwardFailure=yes", ...(i === 0 ? ["-R", `18080:127.0.0.1:${service.port}`] : []), "-N", target], { env });
+      const child = start([...base, "-v", "-M", "-S", socketRoot + "/" + i, "-o", "ExitOnForwardFailure=yes", ...(i === 0 ? ["-R", `18080:127.0.0.1:${service.port}`] : []), "-N", target], { env });
       child.stdout?.resume();
-      child.stderr?.on("data", data => { sessionErrors[i] = ((sessionErrors[i] ?? "") + data.toString()).slice(-8192); });
+      child.stderr?.on("data", data => {
+        const text = (sessionErrors[i] ?? "") + data.toString();
+        truncated[i] ||= text.length > 8192;
+        sessionErrors[i] = text.slice(-8192);
+      });
       sessions.push(child);
     }
     await measure("parallel-ssh-ready", budgets.sshConnections, () => Promise.all([0, 1, 2].map(async session => {
       await until(() => lstat(socketRoot + "/" + session).then(stat => stat.isSocket(), () => false), budgets.sshConnections);
+      socketReady[session] = true;
       await run([...base, "-S", socketRoot + "/" + session, "-O", "check", target], { env, timeout: budgets.operation });
     })), index).catch(error => {
-      console.error("SSH connection failure:", JSON.stringify({ workspace: index, sessions: sessions.map((child, i) => ({ exitCode: child.exitCode, category: processFailureCategory(sessionErrors[i] ?? "") })) }));
+      const observation = { workspace: index, restarting, sessions: sessions.map((child, i) => ({ exitCode: child.exitCode, signal: child.signalCode, category: processFailureCategory(sessionErrors[i] ?? ""), socketReady: socketReady[i] === true, truncated: truncated[i] === true, phases: sshStartupPhases(sessionErrors[i] ?? "") })) };
+      if (sshConnectionFailures.length < 8) sshConnectionFailures.push(observation);
+      console.error("SSH connection failure:", JSON.stringify(observation));
       throw error;
     });
     } finally { release(); }

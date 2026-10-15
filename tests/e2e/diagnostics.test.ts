@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { DiagnosticError, failureCategory, provisionFailure } from "./diagnostics.ts";
+import { DiagnosticError, failureCategory, provisionFailure, sshStartupPhases } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
 import { classifyPodman } from "./podman.ts";
 import { processFailureCategory } from "../../scripts/process.ts";
@@ -18,6 +18,17 @@ test("SSH host-key failures remain distinct from public-key authentication failu
   expect(processFailureCategory("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! " + privateValue)).toBe("ssh_host_key");
   expect(processFailureCategory("Permission denied (publickey). " + privateValue)).toBe("ssh_auth");
   expect(processFailureCategory(privateValue)).toBe("process_exit");
+});
+
+test("SSH startup observation retains fixed phases from real client diagnostics", async () => {
+  const child = Bun.spawn(["ssh", "-v", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "ProxyCommand=false", "fixture.invalid"], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  const stderr = await new Response(child.stderr).text();
+  expect(await child.exited).not.toBe(0);
+  expect(sshStartupPhases(stderr)).toContain("proxy_start");
+  const phases = sshStartupPhases(`debug1: Executing proxy command: ${privateValue}\ndebug1: Remote protocol version 2.0, remote software version ${privateValue}\nAuthenticated to ${privateValue} (via proxy) using "none".\n`);
+  expect(phases).toEqual(["proxy_start", "remote_identification", "authenticated"]);
+  expect(JSON.stringify(phases)).not.toContain(privateValue);
+  expect(sshStartupPhases(privateValue)).toEqual([]);
 });
 
 test("native tar upload failures retain the source-owned stage and exit code", () => {
