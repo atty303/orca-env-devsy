@@ -50,8 +50,13 @@ function errorInformation(error: unknown) {
   const visit = (value: unknown, path: string, depth: number) => {
     if (fields.length >= 32 || text.length >= 16) { truncated = true; return; }
     if (typeof value === "string") {
-      text.push(value.slice(0, 16_384));
-      if (value.length > 16_384) truncated = true;
+      // Orca's sshCommandExitError embeds the command before the actual output.
+      // Options and script text describe what was attempted, not why it failed.
+      const commandExit = /^Command "[\s\S]*" failed \(exit (\d{1,3})\): ([\s\S]*)$/.exec(value);
+      const output = commandExit?.[2] ?? value;
+      if (commandExit && Number(commandExit[1]) <= 255) exitCodes.add(Number(commandExit[1]));
+      text.push(output.slice(0, 16_384));
+      if (output.length > 16_384) truncated = true;
       return;
     }
     if (!value || typeof value !== "object") return;

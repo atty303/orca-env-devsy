@@ -26,6 +26,17 @@ test("native tar upload failures retain the source-owned stage and exit code", (
   expect(provisionFailure("local tar relay upload failed (exit 999): " + privateValue).error.exitCodes).toEqual([]);
 });
 
+test("SSH command error categories describe output rather than embedded command text", () => {
+  const observed = provisionFailure(new Error(`Command "ssh -o StrictHostKeyChecking=no ${privateValue}" failed (exit 255): /private/socket: No such file or directory`));
+  expect(observed.category).toBe("missing_resource");
+  expect(observed.error.exitCodes).toEqual([255]);
+  expect(observed.markers).toContain("no such file");
+  expect(observed.markers).not.toContain("ssh");
+  expect(JSON.stringify(observed)).not.toContain(privateValue);
+  expect(JSON.stringify(observed)).not.toContain("/private/socket");
+  expect(provisionFailure(new Error(`Command "${privateValue}" failed (exit 255): Host key verification failed`)).category).toBe("host_key");
+});
+
 test("OCI failure classification retains only fixed operation and errno labels", () => {
   const observed = classifyPodman(`Error: OCI runtime error: crun: sethostname ${privateValue}: Invalid argument`);
   expect(observed.runtimeOperations).toEqual(["sethostname"]);
