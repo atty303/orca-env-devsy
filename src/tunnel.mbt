@@ -38,6 +38,46 @@ async fn adapter_executable() -> String {
 }
 
 ///|
+async fn saved_proxy_executable() -> String {
+  let directory = adapter_state_home()
+  @fs.mkdir(directory, recursive=true, permission=0o700, allow_exist=true)
+  let lock = @fs.open(
+    directory + "/launcher.lock",
+    mode=ReadWrite,
+    create_mode=OpenOrCreate,
+    permission=0o600,
+  )
+  defer lock.close()
+  @async.with_timeout(10000, async fn() {
+    while !lock.try_lock(Exclusive) {
+      @async.sleep(10)
+    }
+  })
+  let target = directory + "/ssh-proxy-adapter"
+  let executable = adapter_executable()
+  if executable == target {
+    return target
+  }
+  save_diagnostic("ssh-proxy-launcher", "started")
+  errdefer save_diagnostic(
+    "ssh-proxy-launcher",
+    "failed",
+    error_type="filesystem",
+  )
+  let binary = @fs.read_file(executable).binary()
+  if !@fs.exists(target) || @fs.read_file(target).binary() != binary {
+    // A private executable copy survives package-manager pruning. Rename keeps
+    // active proxies valid while create/resume/reconnect refresh future calls.
+    let temporary = directory + "/ssh-proxy-adapter.tmp"
+    defer (@fs.remove(temporary) catch { _ => () })
+    @fs.write_file(temporary, binary, permission=0o700)
+    @fs.rename(temporary, target, replace=true)
+  }
+  save_diagnostic("ssh-proxy-launcher", "success")
+  target
+}
+
+///|
 fn adapter_state_home() -> String raise {
   let root = match @env.get_env_var("XDG_STATE_HOME") {
     Some(value) if value != "" => value
@@ -221,6 +261,7 @@ async fn reconnect_all_inner() -> Unit {
     save_diagnostic("reconnect", "success")
     return
   }
+  ignore(saved_proxy_executable())
   let mut failures = 0
   let permits = @async.Semaphore(4)
   @async.with_task_group(async fn(group) {
@@ -462,6 +503,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   }
   if adopted {
     errdefer stop_tunnel_master(state, directory)
+    stop_git_management(state)
     let mut terminal = false
     @async.with_task_group(async fn(group) {
       // Both reads use the saved context; neither changes transport ownership.

@@ -637,7 +637,7 @@ async fn emit_connection(
       "host": required(state, "workspaceId") + ".devsy",
       "port": 22,
       "username": required(state, "user"),
-      "proxyCommand": proxy(state, adapter_executable(), services=false),
+      "proxyCommand": proxy(state, saved_proxy_executable(), services=false),
     }
     let output : Json = {
       "type": "ssh",

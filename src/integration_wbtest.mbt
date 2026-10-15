@@ -2480,6 +2480,7 @@ async test "adoption publishes connected independently of pending Git options" {
   let socket = required(saved, "socketDirectory")
   @fs.mkdir(socket, recursive=true, allow_exist=true)
   @fs.write_file(socket + "/socket", "")
+  @fs.write_file(socket + "/credential-socket", "")
   @fs.write_file(worker + "/enabled", "")
   @fs.write_file(worker + "/status.json", "{}")
   @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
@@ -2515,6 +2516,7 @@ async test "adoption publishes connected independently of pending Git options" {
         @async.sleep(10)
       }
     })
+    assert_false(@fs.exists(socket + "/credential-socket"))
     assert_false(@fs.exists(directory + "/release-options"))
     @fs.write_file(directory + "/release-options", "")
     @async.with_timeout(2000, async fn() {
@@ -2656,4 +2658,58 @@ async test "provisioned task checkout waits beyond five seconds for primary Git 
   assert_true(@fs.exists(directory + "/task-checkout"))
   assert_false(@fs.exists(directory + "/git-management"))
   assert_false(errors.contains("readiness is unavailable"))
+}
+
+///|
+async test "saved SSH proxy survives pruning its original adapter installation" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let installed = directory + "/installed-adapter"
+  @fs.write_file(
+    installed,
+    @fs.read_file(integration_binary()),
+    permission=0o700,
+  )
+  let (status, output, errors) = @process.collect_output(
+    installed,
+    ["create"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let result = @json.parse(output.text())
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  let proxy = required(
+    field(field(result, "connection").unwrap(), "target").unwrap(),
+    "proxyCommand",
+  )
+  @fs.remove(installed)
+  let (code, _, _) = @process.collect_output(
+    "/bin/sh",
+    ["-c", proxy],
+    extra_env=env,
+    stdin=@process.redirect_from_file("/dev/null"),
+  )
+  // The fake Devsy rejects stdio with exit 2; exit 127 means the launcher vanished.
+  assert_eq(code, 2)
+  let launcher = directory + "/.local/state/orca-env-devsy/ssh-proxy-adapter"
+  @fs.rename(launcher, launcher + ".old")
+  @fs.write_file(launcher, "outdated", permission=0o700)
+  let (reconnected, _, reconnect_errors) = invoke("reconnect", env, directory)
+  assert_eq(reconnected, 0, msg=reconnect_errors)
+  assert_eq(
+    @fs.read_file(launcher).binary(),
+    @fs.read_file(integration_binary()).binary(),
+  )
+  let (refreshed, _, _) = @process.collect_output(
+    "/bin/sh",
+    ["-c", proxy],
+    extra_env=env,
+    stdin=@process.redirect_from_file("/dev/null"),
+  )
+  assert_eq(refreshed, 2)
 }
