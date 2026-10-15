@@ -130,8 +130,23 @@ export class Orca {
       throw new DiagnosticError(error);
     } finally { clearTimeout(timer!); }
   }
-  async close() {
-    const timer = setTimeout(() => this.app.process().kill("SIGKILL"), 5000);
-    try { await this.app.close(); } finally { clearTimeout(timer); }
+  async close(timeout = budgets.operation) {
+    let timer: ReturnType<typeof setTimeout>;
+    console.log("Orca close: started");
+    try {
+      await measure("orca-close", timeout, () => Promise.race([
+        this.app.close(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            try { this.app.process().kill("SIGKILL"); } catch { /* Closing still fails at the deadline. */ }
+            reject(new Error("Orca close deadline exceeded"));
+          }, timeout);
+        }),
+      ]));
+      console.log("Orca close: completed");
+    } catch (error) {
+      console.log("Orca close: failed");
+      throw error;
+    } finally { clearTimeout(timer!); }
   }
 }

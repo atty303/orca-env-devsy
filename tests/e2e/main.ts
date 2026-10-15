@@ -173,7 +173,7 @@ try {
     const suspended: Runtime = await orca.call<Runtime>("ephemeralVm", "suspendWorkspace", { workspaceId: current.runtime.workspaceId });
     assert.equal(suspended.status, "suspended");
     await Promise.all(workspaces.filter(w => w !== current).map(w => w.check()));
-    const resumed: Runtime = await orca.call<Runtime>("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId });
+    const resumed: Runtime = await measure("resume-workspace", budgets.lifecycle, () => orca!.call<Runtime>("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), current.index);
     assert.equal(resumed.status, "running");
     await firstUse(resumed, current.index, env, shared);
     // Receipt-based resume must preserve guest modifications to auth.
@@ -236,7 +236,7 @@ try {
   shared?.close();
   for (const child of children) stop(child, "SIGKILL");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   process.removeListener("SIGINT", interrupt);
