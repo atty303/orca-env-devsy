@@ -15,20 +15,24 @@ export async function launch(binary: string, home: string, report: string) {
     try { return Number(/^oom_kill (\d+)$/m.exec(await Bun.file("/proc/vmstat").text())?.[1]); }
     catch { return NaN; }
   };
-  const tracked = ["run", "load"].includes(process.argv[2]);
+  // Lifecycle arguments are generated sandbox names. Keep their failure stderr;
+  // inspect stdout contains configuration and must not enter the report.
+  const lifecycle = ["inspect", "start", "stop", "remove"].includes(process.argv[2]);
+  const tracked = lifecycle || ["run", "load"].includes(process.argv[2]);
   const before = tracked ? await oomCount() : NaN;
   const child = Bun.spawn([binary, ...process.argv.slice(2)], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const interrupt = () => child.kill("SIGTERM");
   process.once("SIGTERM", interrupt);
   process.once("SIGINT", interrupt);
-  let tail = "";
-  const forward = async (stream: ReadableStream<Uint8Array>, destination: NodeJS.WriteStream) => {
+  let tail = "", stderrTail = "";
+  const forward = async (stream: ReadableStream<Uint8Array>, destination: NodeJS.WriteStream, error = false) => {
     for await (const chunk of stream) {
       tail = (tail + Buffer.from(chunk).toString()).slice(-8192);
+      if (error) stderrTail = (stderrTail + Buffer.from(chunk).toString()).slice(-8192);
       destination.write(chunk);
     }
   };
-  const [code] = await Promise.all([child.exited, forward(child.stdout, process.stdout), forward(child.stderr, process.stderr)]);
+  const [code] = await Promise.all([child.exited, forward(child.stdout, process.stdout), forward(child.stderr, process.stderr, true)]);
   if (code !== 0 && tracked) try {
     const boot: { stage: string; errno?: number }[] = [];
     const stages = new Set(["mount", "build_vm", "config", "network", "image", "other"]);
@@ -42,7 +46,7 @@ export async function launch(binary: string, home: string, report: string) {
       if (stages.has(record.stage)) boot.push({ stage: record.stage, ...(Number.isInteger(record.errno) && Math.abs(record.errno) <= 4096 ? { errno: record.errno } : {}) });
     }
     const after = await oomCount();
-    await appendFile(report, JSON.stringify({ memoryMiB: Math.floor(totalmem() / 1048576), ...(Number.isFinite(before) && Number.isFinite(after) ? { oomKills: Math.max(0, after - before) } : {}), operation: process.argv[2], exitCode: code, category: processFailureCategory(tail), boot }) + "\n", { mode: 0o600 });
+    await appendFile(report, JSON.stringify({ memoryMiB: Math.floor(totalmem() / 1048576), ...(Number.isFinite(before) && Number.isFinite(after) ? { oomKills: Math.max(0, after - before) } : {}), operation: process.argv[2], exitCode: code, category: processFailureCategory(tail), ...(lifecycle ? { message: stderrTail } : {}), boot }) + "\n", { mode: 0o600 });
   } catch { /* Diagnostics must not replace the runtime's result. */ }
   process.exit(code);
 }
