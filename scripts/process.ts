@@ -11,11 +11,27 @@ export function start(argv: string[], options: { cwd?: string; env?: Environment
     stdio: ["pipe", options.inherit ? "inherit" : "pipe", options.inherit ? "inherit" : "pipe"],
   });
   children.add(child);
-  child.once("close", () => children.delete(child));
-  child.once("error", () => children.delete(child));
+  const retainGroup = () => {
+    if (!groupExists(child)) { children.delete(child); return; }
+    const watcher = setInterval(() => {
+      if (!children.has(child) || !groupExists(child)) {
+        children.delete(child);
+        clearInterval(watcher);
+      }
+    }, 20);
+    watcher.unref();
+  };
+  child.once("close", retainGroup);
+  child.once("error", () => { if (!child.pid) children.delete(child); });
   if (options.input !== undefined) child.stdin?.end(options.input);
   else child.stdin?.end();
   return child;
+}
+
+function groupExists(child: ChildProcess) {
+  if (!child.pid || child.pid <= 1) return false;
+  try { process.kill(-child.pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 export function stop(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
@@ -53,7 +69,10 @@ export async function terminate(child: ChildProcess) {
     for (;;) {
       try { process.kill(-group, 0); }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+          children.delete(child);
+          return;
+        }
         throw error;
       }
       const elapsed = performance.now() - started;
