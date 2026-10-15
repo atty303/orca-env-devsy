@@ -26,7 +26,11 @@ export function start(argv: string[], options: { cwd?: string; env?: Environment
     watcher.unref();
   };
   child.once("close", retainGroup);
-  child.once("error", () => { if (!child.pid) retire(); });
+  child.on("error", () => { if (!child.pid) retire(); });
+  child.stdin?.on("error", () => {
+    try { stop(child, "SIGKILL"); } catch { /* Owned cleanup checks termination. */ }
+    child.emit("error", new Error("Child input stream failed"));
+  });
   if (options.input !== undefined) child.stdin?.end(options.input);
   else child.stdin?.end();
   return child;

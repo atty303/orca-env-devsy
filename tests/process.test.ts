@@ -89,6 +89,15 @@ test("Orca close rejects at its deadline even if killing Electron never settles 
   expect(performance.now() - started).toBeLessThan(1000);
 });
 
+test("closed child input fails safely without an unhandled stream error", async () => {
+  const before = new Set(children);
+  try {
+    await expect(run(["sh", "-c", "exec 0<&-; sleep 30"], { input: "private-input".repeat(131072), timeout: 1000 })).rejects.toThrow("Child input stream failed");
+  } finally {
+    await Promise.all([...children].filter(child => !before.has(child)).map(child => terminate(child)));
+  }
+});
+
 test("one cleanup deadline cancels parallel stalled commands and prevents later launches", async () => {
   const before = new Set(children);
   const errors: string[] = [];
