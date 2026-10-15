@@ -26,6 +26,7 @@ const errorNames = new Set(["Error", "TypeError", "RangeError", "OrcadInstanceLo
 const errorFields = ["message", "name", "code", "exitCode", "signal", "reason", "error", "cause"] as const;
 const errorSignals = new Set(["SIGHUP", "SIGINT", "SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGPIPE"]);
 const errorPatterns = {
+  tar_directory_changed: ["tar: .: file changed as we read it", "tar: ./: file changed as we read it"],
   tar_source_changed: ["file changed as we read it", "file removed before we read it", "file shrank by"],
   local_tar_upload_failed: ["local tar relay upload failed"],
   managed_setup_failed: ["Orca couldn’t start its server on this host", "Managed Orca server setup failed"],
