@@ -30,7 +30,7 @@ export async function fixture(root: string, env: Environment) {
   return { source, build, task, url, close: () => server.stop(true) };
 }
 
-export async function recipes(source: string, devsy: string, home: string, provider: string, adapter: string, build: string) {
+export async function recipes(source: string, devsy: string, home: string, provider: string, adapter: string, build: string, deferredSshCreate: string) {
   const definitions = [
     { id: "ssh-worktree", connection: "ssh", mode: "orca-worktree" },
     { id: "ssh-root", connection: "ssh", mode: "provisioned-root" },
@@ -39,7 +39,7 @@ export async function recipes(source: string, devsy: string, home: string, provi
   ];
   await writeFile(source + "/orca.yaml", JSON.stringify({
     devsy: { command: [devsy], home, buildRef: build, addons: { codexAuth: true }, upArgs: ["--provider", provider] },
-    environmentRecipes: definitions.map(({ id, connection, mode }) => ({ id, name: id, checkoutMode: mode, devsy: { connection }, create: adapter + " create", resume: adapter + " resume", suspend: adapter + " suspend", destroy: adapter + " destroy" })),
+    environmentRecipes: definitions.map(({ id, connection, mode }) => ({ id, name: id, checkoutMode: mode, devsy: { connection }, create: id === "ssh-root" ? deferredSshCreate : adapter + " create", resume: adapter + " resume", suspend: adapter + " suspend", destroy: adapter + " destroy" })),
   }, null, 2));
   return definitions;
 }

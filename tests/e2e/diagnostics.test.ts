@@ -127,3 +127,49 @@ test("async console reads retain the originating workspace and ordering", async 
   expect(report.events[0].error?.category).toBe("broken_pipe");
   expect(report.completeness).toBe("complete");
 });
+
+test("native SSH gate runs adapter creation before release and defers only its receipt", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join, resolve } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "orca-native-gate-"));
+  try {
+    const adapter = root + "/adapter";
+    await writeFile(adapter, `#!/bin/sh\nprintf started > '${root}/started'\nwhile test ! -f '${root}/created'; do sleep 0.01; done\nprintf '${receipt.replaceAll("'", "'\\''")}\\n'\n`, { mode: 0o700 });
+    const entry = root + "/entry.ts", release = root + "/release";
+    await writeFile(entry, `import { deferSshReceipt } from ${JSON.stringify(resolve("tests/e2e/native-setup.ts"))}; await deferSshReceipt(${JSON.stringify(adapter)}, ${JSON.stringify(release)}, 5000);`);
+    const child = Bun.spawn([process.execPath, entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    let output = "", progress = "";
+    const stdout = (async () => { for await (const chunk of child.stdout) output += Buffer.from(chunk).toString(); })();
+    const stderr = (async () => { for await (const chunk of child.stderr) progress += Buffer.from(chunk).toString(); })();
+    try {
+      const until = async (ready: () => Promise<boolean> | boolean) => {
+        const deadline = performance.now() + 5000;
+        while (!await ready()) { if (performance.now() >= deadline) throw new Error("Gate fixture deadline exceeded"); await Bun.sleep(10); }
+      };
+      await until(() => Bun.file(root + "/started").exists());
+      expect(output).toBe("");
+      await writeFile(root + "/created", "");
+      await until(() => progress.includes("waiting for the first deployment"));
+      expect(output).toBe("");
+      await writeFile(release, "");
+      expect(await child.exited).toBe(0);
+      await Promise.all([stdout, stderr]);
+      expect(output).toBe(receipt + "\n");
+      expect(progress).not.toContain(privateValue);
+    } finally { child.kill("SIGKILL"); await child.exited; }
+    await writeFile(adapter, "#!/bin/sh\nprintf failure-output\nexit 7\n", { mode: 0o700 });
+    await rm(release);
+    const failed = Bun.spawn([process.execPath, entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(await failed.exited).toBe(7);
+    expect(await new Response(failed.stdout).text()).toBe("failure-output");
+    expect(await new Response(failed.stderr).text()).toBe("");
+    await writeFile(adapter, "#!/bin/sh\nprintf pending-receipt\n", { mode: 0o700 });
+    const cancelled = Bun.spawn([process.execPath, entry], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    await cancelled.stderr.getReader().read();
+    cancelled.kill("SIGTERM");
+    expect(await cancelled.exited).toBe(143);
+    expect(cancelled.signalCode).toBe("SIGTERM");
+    expect(await new Response(cancelled.stdout).text()).toBe("");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

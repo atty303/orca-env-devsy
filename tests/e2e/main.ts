@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, realpath, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { run, children, stop, quote, type Environment } from "../../scripts/process.ts";
 import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
+import { nativeSshSetupGate } from "./native-setup.ts";
 import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
 import { workspace, firstUse, firstUseFailures } from "./scenarios.ts";
@@ -79,7 +80,9 @@ try {
   const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + podman!] : [];
   await d(["provider", "add", provider, ...options]);
   source = await fixture(root, env);
-  const definitions = await recipes(source.source, devsy, dhome, provider, resolve("_build/native/release/build/cmd/main/main.exe"), source.build);
+  const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
+  const nativeSetup = await nativeSshSetupGate(root, adapter);
+  const definitions = await recipes(source.source, devsy, dhome, provider, adapter, source.build, nativeSetup.command);
   orca = await Orca.launch(latest.executable, root + "/profile", env);
   const hostEnv = await orca.app.evaluate(() => ({ home: process.env.HOME, git: process.env.GIT_CONFIG_GLOBAL, agent: process.env.SSH_AUTH_SOCK, path: process.env.PATH }));
   assert.equal(hostEnv.home, env.HOME);
@@ -111,7 +114,7 @@ try {
         const category = failureCategory(error);
         provisionFailures.push({ workspace: index, ...provisionFailure(error) });
         throw new Error(`Orca recipe IPC failed (${definition.id}, ${category})`);
-      });
+      }).finally(async () => { if (index === 0) await nativeSetup.release(); });
       if (!result.ok) {
         const category = failureCategory(result.error);
         provisionFailures.push({ workspace: index, ...provisionFailure(result.error, result.stderr, result.stdout) });
