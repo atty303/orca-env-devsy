@@ -8,6 +8,7 @@ async fn save_diagnostic(
   duration_ms? : Double,
   attempt? : Int32,
   retry_delay_ms? : Int32,
+  os_errno? : Int32,
 ) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
@@ -30,6 +31,9 @@ async fn save_diagnostic(
       "time": @env.now().to_string(),
       "runId": recording_run_id,
       "adapterVersion": version,
+    }
+    if os_errno is Some(code) && code > 0 && code < 4096 {
+      set_field(event, "osErrno", Json::number(code.to_double()))
     }
     if exit_code is Some(code) {
       set_field(event, "exitCode", Json::number(code.to_double()))

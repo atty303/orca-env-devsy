@@ -37,44 +37,71 @@ async fn command_result(
   let started = @env.now()
   let progress = Progress::new(stage)
   progress_message(stage + ": running…")
+  let mut failure_kind = "process_api"
+  let mut failure_errno = None
+  let mut failure_phase = None
   let (status, output, errors) = {
     errdefer {
-      save_diagnostic(stage, "process-error", error_type="process_api")
+      save_diagnostic(
+        stage,
+        if @async.is_being_cancelled() {
+          "cancelled"
+        } else {
+          "process-error"
+        },
+        error_type=failure_kind,
+        os_errno?=failure_errno,
+        phase?=failure_phase,
+      )
       progress_message(stage + ": failed (" + progress_timing(started) + ")")
     }
-    let (out, stdout) = @process.read_from_process()
-    defer out.close()
-    let (err, stderr) = @process.read_from_process()
-    defer err.close()
-    @async.with_task_group(async fn(group) {
-      let child = @process.spawn(
-        group,
-        program,
-        args,
-        extra_env?=environment,
-        inherit_env=environment is None,
-        stdout~,
-        stderr~,
-      )
-      let output = group.spawn(async fn() {
-        progress.read_output(
-          out,
-          capture=true,
-          statuses=devsy_progress_stage(stage),
-          messages=stage == "orca-install" || stage == "checkout-workspace",
+    try {
+      let (out, stdout) = @process.read_from_process()
+      defer out.close()
+      let (err, stderr) = @process.read_from_process()
+      defer err.close()
+      @async.with_task_group(async fn(group) {
+        let child = @process.spawn(
+          group,
+          program,
+          args,
+          extra_env?=environment,
+          inherit_env=environment is None,
+          stdout~,
+          stderr~,
         )
+        let output = group.spawn(async fn() {
+          progress.read_output(
+            out,
+            capture=true,
+            statuses=devsy_progress_stage(stage),
+            messages=stage == "orca-install" || stage == "checkout-workspace",
+          )
+        })
+        let errors = group.spawn(async fn() {
+          progress.read_output(
+            err,
+            capture=false,
+            messages=devsy_progress_stage(stage) ||
+              stage == "orca-install" ||
+              stage == "checkout-workspace",
+          )
+        })
+        (child.wait(), output.wait(), errors.wait())
       })
-      let errors = group.spawn(async fn() {
-        progress.read_output(
-          err,
-          capture=false,
-          messages=devsy_progress_stage(stage) ||
-            stage == "orca-install" ||
-            stage == "checkout-workspace",
-        )
-      })
-      (child.wait(), output.wait(), errors.wait())
-    })
+    } catch {
+      @os_error.OSError(code, ..) as error => {
+        failure_kind = "process_os"
+        failure_errno = Some(code)
+        raise error
+      }
+      @utf8.Malformed(_) as error => {
+        failure_kind = "process_utf8"
+        failure_phase = Some("read")
+        raise error
+      }
+      error => raise error
+    }
   }
   progress_message(
     stage +
