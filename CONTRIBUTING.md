@@ -9,12 +9,14 @@ required and may be `docker`, `podman`, `microsandbox` or `apple`. Install and s
 the selected runtime first. Linux requires the Electron libraries and a display;
 CI uses Xvfb. Apple requires a Mac with Apple Silicon and virtualization support.
 
-E2E downloads the latest stable Orca release and uses its preload IPC bridge in
-an isolated profile. Four workspaces share one host Git helper/store and one
+E2E uses the Orca release pinned by `e2e_orca_version` in `mise.toml` for both
+the desktop and fixture server. It drives the desktop preload IPC bridge in an
+isolated profile. Four workspaces share one host Git helper/store and one
 SSH agent. A local authenticated Git server and synthetic Codex refresh RPC keep
 real account credentials out of the fixture. Sanitized results, versions and
 operation durations are written under `.e2e/`; private runtime state is temporary.
-The elapsed-time limits are defined in `tests/e2e/timing.ts`.
+Timing targets and their five-second acceptance buffer are defined in
+`tests/e2e/timing.ts`; the buffer does not change the performance targets.
 
 CI runs Linux x64 Docker, rootless Podman and Microsandbox, and Linux arm64 Docker
 and rootless Podman. Apple arm64 and Microsandbox arm64 are manual lanes; they
