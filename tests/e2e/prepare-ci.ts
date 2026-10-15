@@ -32,7 +32,6 @@ if (provider === "docker") {
   await run(["sudo", "systemctl", "restart", "docker"], { inherit: true });
   assert.equal((await run(["docker", "version", "--format", "{{.Server.Version}}"])).trim(), process.env.E2E_DOCKER_VERSION);
 } else if (provider === "podman") {
-  await run(["systemctl", "--user", "enable", "--now", "podman.socket"], { inherit: true });
   assert.equal((await run(["podman", "info", "--format", "{{.Host.Security.Rootless}}"])).trim(), "true", "Podman must run rootless");
 } else if (provider === "microsandbox") {
   assert.equal(process.arch, "x64");
