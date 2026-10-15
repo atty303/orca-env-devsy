@@ -7,7 +7,7 @@ import { interruptibleRun, cleanupDeadline } from "./control.ts";
 import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
 import { workspace, firstUse, firstUseFailures, sshConnectionFailures } from "./scenarios.ts";
-import { budgets, timings, measure } from "./timing.ts";
+import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
 import { installMicrosandboxDiagnostics } from "./microsandbox.ts";
 import { installPodmanDiagnostics } from "./podman.ts";
 import { failureCategory, provisionFailure, adapterDiagnostics } from "./diagnostics.ts";
@@ -23,7 +23,7 @@ if (provider === "podman") env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSI
 if (provider === "microsandbox") env.LD_LIBRARY_PATH = resolve(".tools/e2e/microsandbox");
 const phase = interruptibleRun();
 const { run } = processScope(phase.signal);
-const d = (args: string[]) => run([devsy, "--home", dhome, ...args], { env, timeout: 600_000 });
+const d = (args: string[]) => run([devsy, "--home", dhome, ...args], { env, timeout: budgets.provision });
 // OpenSSH resolves its default config through passwd, independently of HOME.
 const sshWrapper = root + "/ssh";
 env.ORCA_SYSTEM_SSH_PATH = sshWrapper;
@@ -232,7 +232,7 @@ try {
   await Promise.all([...children].map(child => terminate(child).catch(() => cleanupErrors.push("child-process"))));
   if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, timings, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();

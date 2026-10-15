@@ -1,8 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { DiagnosticError, failureCategory, provisionFailure, sshStartupPhases } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
 import { classifyPodman } from "./podman.ts";
 import { processFailureCategory } from "../../scripts/process.ts";
+
+import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
 
 const privateValue = "private-credential-fixture";
 const receipt = JSON.stringify({ schemaVersion: 1, connection: { type: "ssh", pairingCode: privateValue, projectRoot: "/private/path" }, userData: { token: privateValue } });
@@ -191,4 +193,20 @@ test("adapter process API causes retain bounded errno and fixed phases without c
     expect(report.events.slice(1).every(event => event.osErrno === undefined)).toBe(true);
     expect(JSON.stringify(report)).not.toContain(privateValue);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("E2E accepts the five-second buffer while retaining the original target", async () => {
+  for (const key of Object.keys(targets) as (keyof typeof targets)[]) expect(budgets[key]).toBe(targets[key] + bufferMs);
+  let now = 100;
+  const clock = spyOn(performance, "now").mockImplementation(() => now);
+  const first = timings.length;
+  try {
+    for (const elapsed of [targets.firstUse + 1, budgets.firstUse, budgets.firstUse + 1]) {
+      const result = measure("buffer-boundary", budgets.firstUse, async () => { now += elapsed; });
+      if (elapsed <= budgets.firstUse) await result;
+      else await expect(result).rejects.toThrow("exceeded");
+      expect(timings.at(-1)).toMatchObject({ targetMs: targets.firstUse, budgetMs: budgets.firstUse, elapsedMs: elapsed, ok: elapsed <= budgets.firstUse });
+    }
+  } finally { clock.mockRestore(); timings.splice(first); }
 });
