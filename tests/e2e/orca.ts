@@ -11,7 +11,7 @@ export type Runtime = {
   recipeResult: { userData: Record<string, unknown>; connection: { type: string; projectRoot: string; pairingCode?: string } };
   sshTargetId?: string; runtimeEnvironmentId?: string;
 };
-export type Provision = { ok: boolean; error?: unknown; stderr?: string; stdout?: string; runtime: Runtime; sshTargetId?: string; environmentId?: string; environment?: { id: string } };
+export type Provision = { ok: boolean; error?: unknown; stderr?: string; stdout?: string; runtime: Runtime; sshTargetId?: string; environment?: { id: string } };
 
 export async function ensureOrcaInstallation(root: string, executable: string, install: () => Promise<void>) {
   const marker = root + "/.extraction-complete";
@@ -22,16 +22,19 @@ export async function ensureOrcaInstallation(root: string, executable: string, i
   await Bun.write(marker, "complete\n");
 }
 
-export async function latestOrca(signal?: AbortSignal) {
+export async function orcaRelease(signal?: AbortSignal) {
+  const requested = process.env.E2E_ORCA_VERSION;
+  if (!requested || !/^\d+\.\d+\.\d+$/.test(requested)) throw new Error("E2E_ORCA_VERSION must specify a release version");
   const headers: Record<string, string> = { "Accept": "application/vnd.github+json" };
   if (process.env.GITHUB_TOKEN) headers.Authorization = "Bearer " + process.env.GITHUB_TOKEN;
-  const response = await fetch("https://api.github.com/repos/stablyai/orca/releases/latest", { headers, signal: AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]) });
+  const response = await fetch(`https://api.github.com/repos/stablyai/orca/releases/tags/v${requested}`, { headers, signal: AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]) });
   if (!response.ok) throw new Error(`Orca release lookup failed (${response.status})`);
   const release = await response.json() as { tag_name: string; assets: { name: string; browser_download_url: string; digest?: string }[] };
   const version = release.tag_name.replace(/^v/, "");
+  if (version !== requested) throw new Error("Orca release lookup returned a different version");
   const name = process.platform === "darwin" ? `Orca-${version}-arm64-mac.zip` : process.arch === "arm64" ? "orca-linux-arm64.AppImage" : "orca-linux.AppImage";
   const asset = release.assets.find(asset => asset.name === name);
-  if (!asset) throw new Error("Latest Orca has no artifact for this host");
+  if (!asset) throw new Error("Selected Orca release has no artifact for this host");
   const root = resolve(`.tools/e2e/orca/${release.tag_name}/${process.platform}-${process.arch}`);
   const executable = process.platform === "darwin" ? root + "/Orca.app/Contents/MacOS/Orca" : root + "/squashfs-root/orca-ide";
   await ensureOrcaInstallation(root, executable, async () => {

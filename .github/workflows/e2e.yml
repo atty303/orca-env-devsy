@@ -27,7 +27,7 @@ jobs:
           version: 2026.10.8
       - name: Prepare provider and Electron dependencies
         run: mise run test:e2e:prepare-ci -- "${{ matrix.provider }}"
-      - name: Exercise latest Orca with the adapter
+      - name: Exercise pinned Orca with the adapter
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: xvfb-run -a mise run test:e2e -- --provider "${{ matrix.provider }}"
