@@ -2773,7 +2773,46 @@ async test "adopted primary is stopped before reconnecting after a failed health
 }
 
 ///|
-async test "provisioned task checkout waits beyond five seconds for primary Git readiness" {
+async test "Git readiness follows caller cancellation and rejects a stopped worker" {
+  let directory = @fs.tmpdir(prefix="orca-env-devsy-test")
+  defer cleanup_fixture(directory)
+  @fs.write_file(directory + "/enabled", "")
+  {
+    let lease = @fs.open(
+      directory + "/worker.lock",
+      mode=ReadWrite,
+      create_mode=OpenOrCreate,
+      permission=0o600,
+    )
+    defer lease.close()
+    assert_true(lease.try_lock(Exclusive))
+    let cancelled = try {
+      @async.with_timeout(200, async fn() { wait_git_relay(directory) })
+      false
+    } catch {
+      @async.TimeoutError => true
+      _ => false
+    }
+    assert_true(cancelled)
+    assert_true(worker_alive(directory))
+    for status in ["ready", "disabled"] {
+      @fs.write_file(directory + "/git-status", status)
+      @async.with_timeout(1000, async fn() { wait_git_relay(directory) })
+    }
+  }
+  let stopped = try {
+    @async.with_timeout(1000, async fn() { wait_git_relay(directory) })
+    false
+  } catch {
+    AdapterError("Tunnel worker stopped before Git credential relay readiness") =>
+      true
+    _ => false
+  }
+  assert_true(stopped)
+}
+
+///|
+async test "provisioned task checkout waits beyond thirty seconds for primary Git readiness" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -2801,7 +2840,7 @@ async test "provisioned task checkout waits beyond five seconds for primary Git 
       while !@fs.exists(directory + "/git-probed") {
         @async.sleep(10)
       }
-      @async.sleep(6500)
+      @async.sleep(31500)
       @fs.remove(directory + "/git-unavailable")
     })
     invoke("create", env, directory)
