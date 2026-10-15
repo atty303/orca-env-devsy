@@ -226,7 +226,7 @@ async fn spawn_tunnel_worker(directory : String) -> Unit {
   defer sink.close()
   ignore(
     @process.spawn_orphan(
-      adapter_executable(),
+      saved_proxy_executable(),
       ["--tunnel-worker", directory],
       stdin=@process.redirect_from_file("/dev/null"),
       stdout=sink,
