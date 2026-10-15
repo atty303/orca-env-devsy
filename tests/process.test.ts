@@ -50,6 +50,25 @@ test("termination escalates for a descendant that ignores TERM and closes its pi
   }
 });
 
+test("termination retains ownership after the leader and all its pipes close", async () => {
+  const child = start(["sh", "-c", `sh -c 'echo $$; exec sleep 30 >/dev/null 2>&1' </dev/null & exit 0`]);
+  const [output] = await once(child.stdout!, "data");
+  const descendant = Number(output.toString().trim());
+  expect(Number.isSafeInteger(descendant) && descendant > 1).toBe(true);
+  await once(child, "close");
+  try {
+    expect(children.has(child)).toBe(true);
+    await terminate(child);
+    let gone = false;
+    try { process.kill(descendant, 0); }
+    catch (error) { gone = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+    expect(gone).toBe(true);
+    expect(children.has(child)).toBe(false);
+  } finally {
+    try { process.kill(-child.pid!, "SIGKILL"); } catch { /* Owned process group may already be gone. */ }
+  }
+});
+
 test("Orca close rejects at its deadline even if killing Electron never settles close", async () => {
   let kills = 0;
   const app = { close: () => new Promise<void>(() => {}), process: () => ({ kill(signal: string) { expect(signal).toBe("SIGKILL"); kills++; return false; } }) };
