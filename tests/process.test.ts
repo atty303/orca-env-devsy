@@ -285,3 +285,28 @@ try {
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+
+test("Microsandbox lifecycle failures preserve stderr and exit without exporting inspect stdout", async () => {
+  const root = await mkdtemp(tmpdir() + "/orca-msb-diagnostic-");
+  try {
+    const binary = root + "/msb", report = root + "/failures.jsonl", launcher = root + "/launch.ts";
+    await writeFile(binary, "#!/bin/sh\nprintf 'fixture configuration must stay private'\nprintf 'remove: permission denied /tmp/owned-sandbox/state.db' >&2\nexit 7\n", { mode: 0o700 });
+    await writeFile(launcher, `import { launch } from ${JSON.stringify(resolve("tests/e2e/microsandbox.ts"))};\nawait launch(${JSON.stringify(binary)}, ${JSON.stringify(root)}, ${JSON.stringify(report)});\n`);
+    for (const operation of ["inspect", "start", "stop", "remove", "exec"]) {
+      const child = start([process.execPath, launcher, operation, "fixture-sandbox"]);
+      let stdout = "", stderr = "";
+      child.stdout!.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+      child.stderr!.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+      await waitForExit(child, 5000);
+      expect(child.exitCode).toBe(7);
+      expect(stdout).toBe("fixture configuration must stay private");
+      expect(stderr).toBe("remove: permission denied /tmp/owned-sandbox/state.db");
+    }
+    const text = await readFile(report, "utf8");
+    const records = text.trim().split("\n").map(line => JSON.parse(line));
+    expect(records.map(record => record.operation)).toEqual(["inspect", "start", "stop", "remove"]);
+    expect(records.every(record => record.message === "remove: permission denied /tmp/owned-sandbox/state.db" && record.exitCode === 7)).toBe(true);
+    expect(text).not.toContain("fixture configuration must stay private");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
