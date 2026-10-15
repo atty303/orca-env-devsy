@@ -18,6 +18,7 @@ const root = await realpath(await mkdtemp("/tmp/oe-e2e-"));
 const env: Environment = { PATH: process.env.PATH, HOME: root + "/home", XDG_STATE_HOME: root + "/state", XDG_CONFIG_HOME: root + "/config", XDG_DATA_HOME: root + "/data", XDG_CACHE_HOME: root + "/cache", XDG_RUNTIME_DIR: root + "/run", CODEX_HOME: root + "/codex", ORCA_ENV_DEVSY_RECORDING: process.env.ORCA_ENV_DEVSY_RECORDING === "0" ? "0" : "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: root + "/home/.gitconfig", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "E2E", GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "E2E", GIT_COMMITTER_EMAIL: "e2e@example.invalid", SHELL: "/bin/sh" };
 const devsy = Bun.which("devsy") ?? "";
 const dhome = root + "/devsy";
+if (provider === "podman") env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS ?? `unix:path=/run/user/${process.getuid!()}/bus`;
 if (provider === "microsandbox") env.LD_LIBRARY_PATH = resolve(".tools/e2e/microsandbox");
 const d = (args: string[]) => run([devsy, "--home", dhome, ...args], { env, timeout: 600_000 });
 // OpenSSH resolves its default config through passwd, independently of HOME.
@@ -51,15 +52,15 @@ try {
   const latest = await latestOrca();
   versions.orca = latest.version;
   console.log(`E2E ${provider} ${process.platform}/${process.arch} Orca ${latest.version}`);
-  const version = async (argv: string[]) => {
-    const output = await run(argv, { env, timeout: budgets.operation });
+  const version = async (argv: string[], timeout = budgets.operation) => {
+    const output = await run(argv, { env, timeout });
     const result = /\d+\.\d+\.\d+/.exec(output)?.[0];
     assert(result, "Runtime must report a semantic version");
     return result;
   };
   versions.devsy = await version([devsy, "--version"]);
   versions[provider] = await version(provider === "docker" ? ["docker", "version", "--format", "{{.Server.Version}}"] : [provider === "apple" ? "container" : provider === "microsandbox" ? "msb" : "podman", "--version"]);
-  if (provider === "podman") versions.crun = await version(["podman", "info", "--format", "{{.Host.OCIRuntime.Version}}"]);
+  if (provider === "podman") versions.crun = await version(["podman", "info", "--format", "{{.Host.OCIRuntime.Version}}"], budgets.lifecycle);
   if (provider === "podman") {
     assert.equal((await run(["podman", "info", "--format", "{{.Host.Security.Rootless}}"], { env, timeout: budgets.operation })).trim(), "true");
     assert.equal((await run(["podman", "info", "--format", "{{.Host.ServiceIsRemote}}"], { env, timeout: budgets.operation })).trim(), "false", "Podman must use its daemonless CLI");
