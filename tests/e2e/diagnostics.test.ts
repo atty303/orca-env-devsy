@@ -12,6 +12,8 @@ test("OCI failure classification retains only fixed operation and errno labels",
   expect(observed.runtimeErrors).toEqual(["invalid argument"]);
   expect(JSON.stringify(observed)).not.toContain(privateValue);
   expect(classifyPodman(privateValue).runtimeOperations).toEqual([]);
+  expect(classifyPodman("crun: setrlimit `RLIMIT_NOFILE`: Invalid argument").runtimeOperations).toEqual(["setrlimit", "rlimit_nofile"]);
+  expect(classifyPodman("crun: open executable: Invalid argument").runtimeOperations).toEqual(["open executable", "open"]);
 });
 
 test("causal IPC error codes and post-recipe boundary survive wrapping without raw values", () => {
