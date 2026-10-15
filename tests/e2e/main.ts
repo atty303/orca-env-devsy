@@ -38,6 +38,7 @@ const cleanupErrors: string[] = [];
 const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
 const pending = new Set<string>();
+const registrationFailures: { workspace: number; responseEnvironment: boolean; runtimeEnvironment: boolean; stateReadFailed: boolean; connected: boolean; managed: boolean; stateEnvironment: boolean; savedReadFailed: boolean; savedRuntime: boolean; savedEnvironment: boolean; stateMatchesSaved: boolean }[] = [];
 const provisionFailures: ({ workspace: number } & ReturnType<typeof provisionFailure>)[] = [];
 
 try {
@@ -119,6 +120,15 @@ try {
     assert.equal(result.runtime.status, "running");
     if (definition.connection === "ssh") assert(result.sshTargetId);
     else assert(result.environment?.id);
+    if (!result.runtime.runtimeEnvironmentId) {
+      const state = result.sshTargetId ? await orca!.call<{ status: string; managedServer?: { kind: string; environmentId?: string } }>("ssh", "getState", { targetId: result.sshTargetId }).catch(() => undefined) : undefined;
+      const saved = await orca!.call<Runtime[]>("ephemeralVm", "listRuntimes").catch(() => undefined);
+      const persisted = saved?.find(runtime => runtime.id === result.runtime.id);
+      const stateEnvironment = state?.managedServer?.environmentId;
+      const observation = { workspace: index, responseEnvironment: typeof result.environmentId === "string", runtimeEnvironment: typeof result.runtime.runtimeEnvironmentId === "string", stateReadFailed: state === undefined, connected: state?.status === "connected", managed: state?.managedServer?.kind === "managed", stateEnvironment: typeof stateEnvironment === "string", savedReadFailed: saved === undefined, savedRuntime: persisted !== undefined, savedEnvironment: typeof persisted?.runtimeEnvironmentId === "string", stateMatchesSaved: typeof stateEnvironment === "string" && stateEnvironment === persisted?.runtimeEnvironmentId };
+      registrationFailures.push(observation);
+      console.error("Orca registration failure:", JSON.stringify(observation));
+    }
     await firstUse(result.runtime, index, env, shared!, phase.signal);
     return { runtime: result.runtime, index };
   }));
@@ -233,7 +243,7 @@ try {
   await Promise.all([...children].map(child => terminate(child).catch(() => cleanupErrors.push("child-process"))));
   if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, budgets, timings, firstUseFailures, sshConnectionFailures, registrationFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: shared && { accepted: Object.fromEntries(shared.requests), rejected: Object.fromEntries(shared.rejected), backendFailures: shared.backendFailures }, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();

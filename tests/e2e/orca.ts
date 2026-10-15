@@ -11,7 +11,7 @@ export type Runtime = {
   recipeResult: { userData: Record<string, unknown>; connection: { type: string; projectRoot: string; pairingCode?: string } };
   sshTargetId?: string; runtimeEnvironmentId?: string;
 };
-export type Provision = { ok: boolean; error?: unknown; stderr?: string; stdout?: string; runtime: Runtime; sshTargetId?: string; environment?: { id: string } };
+export type Provision = { ok: boolean; error?: unknown; stderr?: string; stdout?: string; runtime: Runtime; sshTargetId?: string; environmentId?: string; environment?: { id: string } };
 
 export async function ensureOrcaInstallation(root: string, executable: string, install: () => Promise<void>) {
   const marker = root + "/.extraction-complete";
