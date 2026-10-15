@@ -1,9 +1,18 @@
 import { expect, test } from "bun:test";
 import { DiagnosticError, failureCategory, provisionFailure } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
+import { classifyPodman } from "./podman.ts";
 
 const privateValue = "private-credential-fixture";
 const receipt = JSON.stringify({ schemaVersion: 1, connection: { type: "ssh", pairingCode: privateValue, projectRoot: "/private/path" }, userData: { token: privateValue } });
+
+test("OCI failure classification retains only fixed operation and errno labels", () => {
+  const observed = classifyPodman(`Error: OCI runtime error: crun: sethostname ${privateValue}: Invalid argument`);
+  expect(observed.runtimeOperations).toEqual(["sethostname"]);
+  expect(observed.runtimeErrors).toEqual(["invalid argument"]);
+  expect(JSON.stringify(observed)).not.toContain(privateValue);
+  expect(classifyPodman(privateValue).runtimeOperations).toEqual([]);
+});
 
 test("causal IPC error codes and post-recipe boundary survive wrapping without raw values", () => {
   const error = { message: privateValue, cause: { name: "OrcadInstanceLockError", code: "orcad_instance_lock_held", message: privateValue, exitCode: 42, signal: "SIGTERM" }, token: privateValue };

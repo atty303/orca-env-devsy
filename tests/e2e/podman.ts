@@ -7,7 +7,11 @@ const markers = ["crun", "runc", "netavark", "aardvark", "slirp4netns", "rootles
 
 export function classifyPodman(output: string) {
   const text = output.toLowerCase();
-  return { category: processFailureCategory(text), markers: markers.filter(marker => text.includes(marker)) };
+  // Fixed runtime operations and errno phrases distinguish OCI failures without
+  // retaining container names, paths, arguments or process output.
+  const operations = ["sethostname", "setdomainname", "setresuid", "setresgid", "setgroups", "setns", "unshare", "clone", "execve", "chdir", "pivot_root", "mount_setattr", "mount", "seccomp", "bpf", "sd-bus call", "re-exec", "cgroup.subtree_control", "cpu.max", "memory.max", "pids.max"];
+  const errors = ["invalid argument", "invalid unit name", "file name too long", "permission denied", "operation not permitted", "no such file or directory", "device or resource busy", "cannot allocate memory", "no space left on device", "resource temporarily unavailable", "function not implemented"];
+  return { category: processFailureCategory(text), markers: markers.filter(marker => text.includes(marker)), runtimeOperations: operations.filter(operation => text.includes(operation)), runtimeErrors: errors.filter(error => text.includes(error)) };
 }
 
 export async function installPodmanDiagnostics(root: string) {
