@@ -2723,6 +2723,21 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
     "proxyCommand",
   )
   @fs.remove(installed)
+  let worker = required(field(result, "userData").unwrap(), "tunnelDirectory")
+  @fs.write_file(directory + "/git-unavailable", "")
+  @async.with_timeout(5000, async fn() {
+    while !@fs.exists(directory + "/git-management") ||
+          @fs.read_file(worker + "/git-status").text() != "ready" {
+      @async.sleep(10)
+    }
+  }) catch {
+    _ =>
+      assert_true(
+        false,
+        msg="pruned adapter worker did not recover the Git relay",
+      )
+  }
+  assert_true(worker_alive(worker))
   let (code, _, _) = @process.collect_output(
     "/bin/sh",
     ["-c", proxy],
