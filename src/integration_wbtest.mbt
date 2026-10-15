@@ -946,6 +946,24 @@ async test "destroy succeeds repeatedly after external deletion" {
 }
 
 ///|
+fn fixture_shell_error(stderr : String) -> String {
+  if stderr.to_lower().contains("text file busy") {
+    "text_file_busy"
+  } else {
+    process_error_type(stderr)
+  }
+}
+
+///|
+test "shell fixture diagnostics retain categories without private output" {
+  assert_eq(
+    fixture_shell_error("/private/fixture/orca: Text file busy private-secret"),
+    "text_file_busy",
+  )
+  assert_eq(fixture_shell_error("private-secret"), "process_exit")
+}
+
+///|
 async test "existing Orca installation is validated and reused without downloading or replacing it" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
@@ -963,22 +981,22 @@ async test "existing Orca installation is validated and reused without downloadi
   )
   let executable = "#!/bin/sh\nprintf 'existing-version\\n'\n"
   @fs.write_file(install + "/orca-ide", executable, permission=0o700)
-  let (status, _, _) = @process.collect_output(
+  let (status, _, errors) = @process.collect_output(
     "/bin/sh",
     ["-c", server_install_script()],
     extra_env=env,
     inherit_env=false,
   )
-  assert_eq(status, 0)
+  assert_eq(status, 0, msg=fixture_shell_error(errors.text()))
   assert_eq(@fs.read_file(install + "/orca-ide").text(), executable)
   @fs.write_file(install + "/orca-ide", "#!/bin/sh\nexit 8\n", permission=0o700)
-  let (status, _, _) = @process.collect_output(
+  let (status, _, errors) = @process.collect_output(
     "/bin/sh",
     ["-c", server_install_script()],
     extra_env=env,
     inherit_env=false,
   )
-  assert_eq(status, 8)
+  assert_eq(status, 8, msg=fixture_shell_error(errors.text()))
   assert_true(@fs.exists(install + "/orca-ide"))
 }
 
