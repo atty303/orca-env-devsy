@@ -18,7 +18,6 @@ const root = await realpath(await mkdtemp("/tmp/oe-e2e-"));
 const env: Environment = { PATH: process.env.PATH, HOME: root + "/home", XDG_STATE_HOME: root + "/state", XDG_CONFIG_HOME: root + "/config", XDG_DATA_HOME: root + "/data", XDG_CACHE_HOME: root + "/cache", XDG_RUNTIME_DIR: root + "/run", CODEX_HOME: root + "/codex", ORCA_ENV_DEVSY_RECORDING: process.env.ORCA_ENV_DEVSY_RECORDING === "0" ? "0" : "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: root + "/home/.gitconfig", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "E2E", GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "E2E", GIT_COMMITTER_EMAIL: "e2e@example.invalid", SHELL: "/bin/sh" };
 const devsy = Bun.which("devsy") ?? "";
 const dhome = root + "/devsy";
-if (provider === "podman") env.CONTAINER_HOST = `unix:///run/user/${process.getuid!()}/podman/podman.sock`;
 if (provider === "microsandbox") env.LD_LIBRARY_PATH = resolve(".tools/e2e/microsandbox");
 const d = (args: string[]) => run([devsy, "--home", dhome, ...args], { env, timeout: 600_000 });
 // OpenSSH resolves its default config through passwd, independently of HOME.
@@ -29,6 +28,7 @@ const runtimes: Runtime[] = [];
 const workspaces: Awaited<ReturnType<typeof workspace>>[] = [];
 let shared: Awaited<ReturnType<typeof services>> | undefined;
 let failure: unknown;
+let podmanStoreOwned = false;
 const cleanupErrors: string[] = [];
 const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
@@ -60,13 +60,22 @@ try {
   versions.devsy = await version([devsy, "--version"]);
   versions[provider] = await version(provider === "docker" ? ["docker", "version", "--format", "{{.Server.Version}}"] : [provider === "apple" ? "container" : provider === "microsandbox" ? "msb" : "podman", "--version"]);
   if (provider === "podman") versions.crun = await version(["podman", "info", "--format", "{{.Host.OCIRuntime.Version}}"]);
-  if (provider === "podman") assert.equal((await run(["podman", "info", "--format", "{{.Host.Security.Rootless}}"], { env, timeout: budgets.operation })).trim(), "true");
+  if (provider === "podman") {
+    assert.equal((await run(["podman", "info", "--format", "{{.Host.Security.Rootless}}"], { env, timeout: budgets.operation })).trim(), "true");
+    assert.equal((await run(["podman", "info", "--format", "{{.Host.ServiceIsRemote}}"], { env, timeout: budgets.operation })).trim(), "false", "Podman must use its daemonless CLI");
+    const stores = (await run(["podman", "info", "--format", "{{.Store.GraphRoot}}\n{{.Store.RunRoot}}"], { env, timeout: budgets.operation })).trim().split("\n");
+    assert.equal(stores.length, 2);
+    for (const store of stores) assert((await realpath(store)).startsWith(root + "/"), "Podman storage must belong to this run");
+    podmanStoreOwned = true;
+  }
   shared = await services(root, env);
   if (provider === "microsandbox") await installMicrosandboxDiagnostics(root, env);
   const podman = provider === "podman" ? await installPodmanDiagnostics(root) : undefined;
   await writeFile(root + "/bin/ssh", '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
   await d(["context", "set", "-o", "TELEMETRY=false", "-o", "SSH_INJECT_DOCKER_CREDENTIALS=false"]);
-  const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + podman!, "-o", `PODMAN_HOST=unix:///run/user/${process.getuid!()}/podman/podman.sock`] : [];
+  // The API service's libsubid path races on concurrent keep-id creates
+  // (containers/podman#29848). Native CLI processes keep that state separate.
+  const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + podman!] : [];
   await d(["provider", "add", provider, ...options]);
   source = await fixture(root, env);
   const definitions = await recipes(source.source, devsy, dhome, provider, resolve("_build/native/release/build/cmd/main/main.exe"), source.build);
@@ -214,6 +223,11 @@ try {
       cleanupErrors.push("unreleased-workspace");
     }
   } catch { cleanupErrors.push("devsy-cleanup"); }
+  if (podmanStoreOwned) {
+    // Both stores were verified inside this disposable run before provisioning.
+    // Reset also reaps the daemonless runtime's pause process and storage mounts.
+    await run(["podman", "system", "reset", "--force"], { env, timeout: budgets.lifecycle }).catch(() => cleanupErrors.push("podman-runtime"));
+  }
   source?.close();
   shared?.close();
   for (const child of children) stop(child, "SIGKILL");
