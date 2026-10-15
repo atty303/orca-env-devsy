@@ -1,8 +1,9 @@
 import { cp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { run, type Environment } from "../../scripts/process.ts";
+import { processScope, type Environment } from "../../scripts/process.ts";
 
-export async function fixture(root: string, env: Environment) {
+export async function fixture(root: string, env: Environment, signal?: AbortSignal) {
+  const { run } = processScope(signal);
   const source = root + "/source";
   await cp(resolve("tests/e2e/fixture"), source, { recursive: true });
   const git = (args: string[]) => run(["git", "-C", source, ...args], { env });

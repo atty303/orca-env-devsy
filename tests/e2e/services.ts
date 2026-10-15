@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
-import { run, start, stop, type Environment } from "../../scripts/process.ts";
+import { processScope, stop, type Environment } from "../../scripts/process.ts";
 
 export const access = (generation: number, expiry = Math.floor(Date.now() / 1000) + 1_209_600) => "fixture." + Buffer.from(JSON.stringify({ exp: expiry, generation })).toString("base64url") + ".invalid-signature";
 export const auth = (token: string) => JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: token, id_token: token, account_id: "e2e-account", refresh_token: "fixture-not-a-real-refresh-token" } });
 
-export async function services(root: string, env: Environment) {
+export async function services(root: string, env: Environment, signal?: AbortSignal) {
+  const { run, start } = processScope(signal);
   await mkdir(root + "/bin");
   await mkdir(env.CODEX_HOME!, { recursive: true, mode: 0o700 });
   await writeFile(env.CODEX_HOME + "/auth.json", auth(access(0, Math.floor(Date.now() / 1000) + 60)), { mode: 0o600 });
@@ -34,7 +35,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   try {
     for (let attempt = 0; ; attempt++) {
       try { await run(["ssh-add", key], { env }); break; }
-      catch (error) { if (attempt === 50) throw error; await Bun.sleep(100); }
+      catch (error) { signal?.throwIfAborted(); if (attempt === 50) throw error; await Bun.sleep(100); }
     }
     const publicKey = (await readFile(key + ".pub", "utf8")).trim();
     await writeFile(root + "/helper", `#!${process.execPath}
@@ -55,6 +56,7 @@ process.exit(await child.exited);
     let backendFailures = 0;
     const backends = new Set<ReturnType<typeof Bun.spawn>>();
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      if (signal?.aborted) return new Response(null, { status: 503 });
       const url = new URL(request.url), match = /^\/(w-[0-3]\.git)(\/.*)$/.exec(url.pathname);
       if (!match) return new Response(null, { status: 404 });
       const user = match[1].slice(0, -4);
@@ -65,6 +67,7 @@ process.exit(await child.exited);
       }
       requests.set(user, (requests.get(user) ?? 0) + 1);
       const body = new Uint8Array(await request.arrayBuffer());
+      if (signal?.aborted) return new Response(null, { status: 503 });
       const child = Bun.spawn(["git", "http-backend"], { env: { ...env, GIT_PROJECT_ROOT: root + "/git", GIT_HTTP_EXPORT_ALL: "1", PATH_INFO: url.pathname, QUERY_STRING: url.search.slice(1), REQUEST_METHOD: request.method, CONTENT_TYPE: request.headers.get("content-type") ?? "", HTTP_CONTENT_ENCODING: request.headers.get("content-encoding") ?? "", HTTP_GIT_PROTOCOL: request.headers.get("git-protocol") ?? "", CONTENT_LENGTH: String(body.length), REMOTE_USER: user }, stdin: body, stdout: "pipe", stderr: "ignore" });
       backends.add(child);
       const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
