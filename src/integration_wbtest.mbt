@@ -2798,6 +2798,7 @@ async test "Git readiness follows caller cancellation and rejects a stopped work
     )
     defer lease.close()
     assert_true(lease.try_lock(Exclusive))
+    defer lease.unlock()
     let cancelled = try {
       @async.with_timeout(200, async fn() { wait_git_relay(directory) })
       false
@@ -3093,6 +3094,24 @@ async test "FUSE Git object creation uses rename without replacing user settings
       "PATH": directory + "/bin:" + @env.get_env_var("PATH").unwrap(),
     }
     if initial is Some("locked") {
+      let (_, executable, _) = @process.collect_output(
+        "sh",
+        ["-c", "command -v git"],
+        extra_env=env,
+      )
+      env.set("REAL_GIT", executable.text().trim().to_owned())
+      env.set("LOCK_ATTEMPT", directory + "/lock-attempt")
+      @fs.write_file(
+        directory + "/bin/git",
+        (
+          #|#!/bin/sh
+          #|"$REAL_GIT" "$@"
+          #|status=$?
+          #|if test "$status" -eq 255; then : > "$LOCK_ATTEMPT"; fi
+          #|exit "$status"
+        ),
+        permission=0o700,
+      )
       @fs.write_file(
         directory + "/.gitconfig.lock",
         "[core]\ncreateObject = link\n",
@@ -3115,7 +3134,11 @@ async test "FUSE Git object creation uses rename without replacing user settings
     let (status, _, errors) = @async.with_task_group(async fn(group) {
       if initial == Some("locked") {
         group.spawn_bg(async fn() {
-          @async.sleep(200)
+          @async.with_timeout(5000, async fn() {
+            while !@fs.exists(directory + "/lock-attempt") {
+              @async.sleep(10)
+            }
+          })
           @fs.rename(directory + "/.gitconfig.lock", directory + "/.gitconfig")
         })
       }
