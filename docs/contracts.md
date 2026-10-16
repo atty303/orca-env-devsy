@@ -141,6 +141,23 @@ Process records distinguish start, success, process API failure and nonzero exit
 Devsy phase records are written as transitions arrive. Unknown phases and
 free-text messages are omitted from diagnostic records; detailed progress text
 is not retained.
+Create records share `runId` and carry `createAttempt` and `createPhase`.
+`create-input` retains the workspace/recipe identity and the received
+`ORCA_REPO_REF`, `ORCA_REPO_REF_HEAD`, and `ORCA_REPO_BRANCH` before defaults or
+validation. Each value has an `unset`, `empty`, `valid`, or `invalid` state;
+only values accepted by the bounded diagnostic allowlist have a `value`.
+`create-configuration` distinguishes configured `buildRef` from `build-selection`;
+`build-request` / `build-lookup` retain the chosen input and normalized lookup
+before remote resolution.
+`build-resolution` retains the preflight branch/commit, clone records retain the
+selected source kind, allowlisted strategy, strategy source and fallback reason, and `build-checkout-head` /
+`build-checkout` retain the acquired commit and comparison against the acquired
+branch tip or pinned commit. These checks concern the build checkout. Orca's
+later additional worktree is outside the adapter's observation boundary.
+`create-attempt` ends in success, failure, or retry; a missing terminal event means
+the attempt is incomplete. Existing file rotation can evict earlier events.
+Invalid inputs and remote values are recorded without their raw content.
+
 Command values are not recorded; inspect the saved `userData.command` locally
 when checking the effective invocation. Recording failures do not affect workspace actions. `ORCA_ENV_DEVSY_RECORDING=0`
 disables recording. The file is rotated at 256 KiB; remove it to delete records,

@@ -1014,7 +1014,7 @@ async test "existing Orca installation is validated and reused without downloadi
 
 ///|
 async test "branch builds try shallow and retry only a missing pinned commit with full clone" {
-  for failure in ["missing", "other", "none"] {
+  for failure in ["missing", "missing-full", "other", "none"] {
     let (directory, env) = fixture()
     defer cleanup_fixture(directory)
     @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
@@ -1024,13 +1024,16 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       #|case "$*" in
       #| *--git-clone-strategy=shallow*)
       #|   printf '%s\n' "$@" >> "$FAKE_HOME/shallow-args"
-      #|   if test "$CLONE_FAILURE" = missing; then
+      #|   if test "$CLONE_FAILURE" = missing || test "$CLONE_FAILURE" = missing-full; then
       #|     printf '%s\n' "{\"kind\":\"status\",\"phase\":\"cloning_repository\",\"state\":\"failed\",\"error\":{\"message\":\"Could not parse object 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\"}}"
       #|     printf '\377 non-UTF-8 private-stderr-secret\n' >&2
       #|     exit 1
       #|   fi
       #|   if test "$CLONE_FAILURE" = other; then exit 3; fi ;;
       #|esac
+      #|if test "$CLONE_FAILURE" = missing-full; then
+      #|  case "$*" in *'workspace up'*) exit 9 ;; esac
+      #|fi
       #|exec "$FAKE_HOME/bin/devsy-original" "$@"
     @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
     env.set("CLONE_FAILURE", failure)
@@ -1041,14 +1044,30 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(
       status == 0,
-      failure != "other",
+      failure != "other" && failure != "missing-full",
       msg="clone scenario \{failure}: \{errors}",
     )
+    let records = saved_create_events(directory)
+    if failure == "missing" || failure == "missing-full" {
+      let fallback = field(create_event(records, "clone-fallback"), "source").unwrap()
+      assert_eq(
+        field(fallback, "fallbackReason"),
+        Some(Json::string("missing-shallow-commit")),
+      )
+      assert_eq(field(fallback, "sourceKind"), Some(Json::string("commit")))
+      assert_eq(field(fallback, "cloneStrategy"), Some(Json::string("full")))
+    }
     let shallow = @fs.read_file(directory + "/shallow-args").text()
     assert_true(shallow.contains("https://example.com/repo.git@main\n"))
     assert_true(shallow.contains("--git-clone-strategy=shallow\n"))
     let full = @fs.read_file(directory + "/args").text()
     assert_eq(full.contains("--git-clone-strategy=\n"), failure == "missing")
+    if failure == "missing-full" {
+      assert_eq(
+        field(create_event(records, "create-attempt"), "status"),
+        Some(Json::string("failed")),
+      )
+    }
     if status == 0 {
       let payload : Json = {
         "schemaVersion": 1,
@@ -3161,5 +3180,396 @@ async test "FUSE Git object creation uses rename without replacing user settings
       }
       None => assert_eq(status, 1)
     }
+  }
+}
+
+///|
+async fn saved_create_events(directory : String) -> Array[Json] {
+  let events = []
+  for
+    line in @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    )
+    .text()
+    .split("\n") {
+    if line != "" {
+      events.push(@json.parse(line.to_owned()))
+    }
+  }
+  events
+}
+
+///|
+fn create_event(
+  events : Array[Json],
+  stage : String,
+  attempt~ : Int32 = 1,
+) -> Json raise {
+  let matches = events.filter(event => {
+    field(event, "stage") == Some(Json::string(stage)) &&
+    field(event, "createAttempt") == Some(Json::number(attempt.to_double()))
+  })
+  guard matches.length() == 1 else {
+    raise AdapterError("Expected one saved create event for " + stage)
+  }
+  matches[0]
+}
+
+///|
+async test "saved create sources separate Orca inputs configuration resolution and acquired checkout" {
+  for input_state in ["unset", "empty", "valid", "invalid", "token"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    let head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    for name in ["ORCA_REPO_REF", "ORCA_REPO_REF_HEAD", "ORCA_REPO_BRANCH"] {
+      match input_state {
+        "unset" => env.remove(name)
+        "empty" => env.set(name, "")
+        "valid" =>
+          env.set(
+            name,
+            if name == "ORCA_REPO_REF_HEAD" {
+              head
+            } else {
+              "fix/task-source"
+            },
+          )
+        "token" => env.set(name, "ghp_privacy_secret_fixture")
+        _ =>
+          env.set(
+            name, "https://fixture-user:privacy-secret@example.com/repo?token=privacy-secret",
+          )
+      }
+    }
+    env.set("FAKE_BUILD_COMMIT", head)
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let events = saved_create_events(directory)
+    let received = events.filter(event => {
+        field(event, "stage") == Some(Json::string("create-input")) &&
+        field(event, "status") == Some(Json::string("received"))
+      })[0]
+    let source = field(received, "source").unwrap()
+    for name in ["ORCA_REPO_REF", "ORCA_REPO_REF_HEAD", "ORCA_REPO_BRANCH"] {
+      let value = field(source, name).unwrap()
+      assert_eq(
+        field(value, "state"),
+        Some(
+          Json::string(
+            if input_state == "token" {
+              "invalid"
+            } else {
+              input_state
+            },
+          ),
+        ),
+      )
+      assert_eq(field(value, "value") is Some(_), input_state == "valid")
+    }
+    assert_eq(
+      field(field(source, "ORCA_VM_INSTANCE_ID").unwrap(), "value"),
+      Some(Json::string("test-id")),
+    )
+    assert_eq(
+      field(field(source, "ORCA_RECIPE_ID").unwrap(), "value"),
+      Some(Json::string("test")),
+    )
+    let config = field(create_event(events, "create-configuration"), "source").unwrap()
+    assert_eq(
+      field(config, "checkoutMode"),
+      Some(Json::string("orca-worktree")),
+    )
+    assert_eq(field(config, "connection"), Some(Json::string("ssh")))
+    assert_eq(
+      field(field(config, "configuredBuildRef").unwrap(), "value"),
+      Some(Json::string("refs/heads/main")),
+    )
+    let resolved = field(create_event(events, "build-resolution"), "source").unwrap()
+    assert_eq(
+      field(field(resolved, "resolvedCommit").unwrap(), "value"),
+      Some(Json::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+    )
+    let selected = field(create_event(events, "build-selection"), "source").unwrap()
+    assert_eq(
+      field(field(selected, "resolvedBranch").unwrap(), "value"),
+      Some(Json::string("main")),
+    )
+    assert_eq(
+      field(selected, "selectionReason"),
+      Some(Json::string("configured-build-ref")),
+    )
+    let clone = field(create_event(events, "clone-shallow"), "source").unwrap()
+    assert_eq(field(clone, "cloneStrategy"), Some(Json::string("shallow")))
+    assert_eq(field(clone, "fallback"), Some(Json::boolean(false)))
+    let checkout = field(create_event(events, "build-checkout"), "source").unwrap()
+    assert_eq(field(checkout, "scope"), Some(Json::string("build-checkout")))
+    assert_eq(
+      field(field(checkout, "actualCommit").unwrap(), "value"),
+      Some(Json::string(head)),
+    )
+    assert_eq(field(checkout, "matches"), Some(Json::boolean(true)))
+    assert_eq(
+      field(create_event(events, "create-attempt"), "status"),
+      Some(Json::string("success")),
+    )
+    for event in events {
+      if field(event, "createAttempt") is Some(_) {
+        assert_eq(field(event, "runId"), field(received, "runId"))
+      }
+    }
+    let raw = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_false(raw.contains("privacy-secret"))
+    assert_false(raw.contains("ghp_privacy_secret_fixture"))
+    assert_false(raw.contains("example.com"))
+    let payload : Json = {
+      "schemaVersion": 1,
+      "recipeResult": @json.parse(output),
+    }
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+  }
+}
+
+///|
+async test "saved create failure retains inputs and the failed decision boundary" {
+  for failure in ["input", "resolution", "ref-shape", "build", "checkout"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    env.set("ORCA_REPO_REF", "fix/task-source")
+    env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    env.set("ORCA_REPO_BRANCH", "task")
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh, buildRef: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    match failure {
+      "input" =>
+        env.set("ORCA_VM_INSTANCE_ID", "https://privacy-secret@example.com")
+      "resolution" =>
+        @fs.write_file(
+          directory + "/bin/git",
+          "#!/bin/sh\nexit 9\n",
+          permission=0o700,
+        )
+      "ref-shape" => {
+        @fs.write_file(
+          directory + "/orca.yaml",
+          "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+        )
+        @fs.write_file(
+          directory + "/bin/git",
+          "#!/bin/sh\ncase \"$*\" in *--symref*) printf 'ref: refs/heads/main\\tHEAD\\n';; *) printf 'malformed privacy-secret\\n';; esac\n",
+          permission=0o700,
+        )
+      }
+      "build" => @fs.write_file(directory + "/fail-up", "")
+      _ =>
+        env.set("FAKE_BUILD_COMMIT", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    }
+    let (status, output, _) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_eq(output, "")
+    let events = saved_create_events(directory)
+    let failed = create_event(events, "create-attempt")
+    assert_eq(field(failed, "status"), Some(Json::string("failed")))
+    assert_eq(
+      field(failed, "createPhase"),
+      Some(
+        Json::string(
+          match failure {
+            "input" => "input-validation"
+            "resolution" | "ref-shape" => "ref-resolution"
+            "build" => "build"
+            _ => "checkout-verification"
+          },
+        ),
+      ),
+    )
+    let received = events.filter(event => {
+        field(event, "stage") == Some(Json::string("create-input")) &&
+        field(event, "status") == Some(Json::string("received"))
+      })[0]
+    assert_eq(
+      field(
+        field(field(received, "source").unwrap(), "ORCA_REPO_REF").unwrap(),
+        "value",
+      ),
+      Some(Json::string("fix/task-source")),
+    )
+    if failure == "resolution" || failure == "ref-shape" {
+      let requested = field(create_event(events, "build-request"), "source").unwrap()
+      assert_eq(
+        field(requested, "selectionReason"),
+        Some(Json::string("configured-build-ref")),
+      )
+    }
+    if failure == "ref-shape" {
+      assert_eq(
+        field(
+          field(
+            field(create_event(events, "build-lookup"), "source").unwrap(),
+            "lookupRef",
+          ).unwrap(),
+          "value",
+        ),
+        Some(Json::string("refs/heads/main")),
+      )
+    }
+    if failure == "checkout" {
+      assert_eq(
+        field(
+          field(create_event(events, "build-checkout"), "source").unwrap(),
+          "matches",
+        ),
+        Some(Json::boolean(false)),
+      )
+    }
+    assert_false(
+      @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
+      .text()
+      .contains("privacy-secret"),
+    )
+  }
+}
+
+///|
+async test "task head fallback keeps attempts linked without claiming an Orca worktree checkout" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("ORCA_REPO_REF", "refs/heads/main")
+  env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+  env.set("ORCA_REPO_BRANCH", "task")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+  )
+  let (status, output, _) = invoke("create", env, directory)
+  assert_true(status != 0)
+  assert_eq(output, "")
+  let events = saved_create_events(directory)
+  let first = create_event(events, "create-attempt")
+  let second = create_event(events, "create-attempt", attempt=2)
+  assert_eq(field(first, "status"), Some(Json::string("retry")))
+  assert_eq(field(second, "status"), Some(Json::string("failed")))
+  assert_eq(field(first, "runId"), field(second, "runId"))
+  let fallback = field(create_event(events, "clone-fallback"), "source").unwrap()
+  assert_eq(
+    field(fallback, "fallbackReason"),
+    Some(Json::string("task-head-mismatch")),
+  )
+  assert_eq(field(fallback, "cloneStrategy"), None)
+  let retry_clone = field(
+    create_event(events, "clone-full", attempt=2),
+    "source",
+  ).unwrap()
+  assert_eq(field(retry_clone, "cloneStrategy"), Some(Json::string("full")))
+  let selection = field(
+    create_event(events, "build-selection", attempt=2),
+    "source",
+  ).unwrap()
+  assert_eq(
+    field(selection, "selectionReason"),
+    Some(Json::string("checkout-mismatch-retry")),
+  )
+  assert_eq(field(selection, "resolvedBranch"), Some({ "state": "unset" }))
+}
+
+///|
+async test "create recording opt out and unwritable event store preserve lifecycle contracts" {
+  for recording in ["enabled", "disabled", "unwritable"] {
+    for failure in [false, true] {
+      let (directory, env) = fixture()
+      defer cleanup_fixture(directory)
+      @fs.write_file(
+        directory + "/orca.yaml",
+        "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+      )
+      let store = directory + "/.local/state/orca-env-devsy/events.jsonl"
+      if recording == "disabled" {
+        env.set("ORCA_ENV_DEVSY_RECORDING", "0")
+      } else if recording == "unwritable" {
+        @fs.mkdir(store, recursive=true)
+      }
+      if failure {
+        @fs.write_file(directory + "/fail-up", "")
+      }
+      let (status, output, errors) = invoke("create", env, directory)
+      assert_eq(status == 0, !failure, msg=errors)
+      if failure {
+        assert_eq(output, "")
+      } else {
+        let result = @json.parse(output)
+        let state = field(result, "userData").unwrap()
+        assert_eq(
+          field(state, "buildRef"),
+          Some(Json::string("refs/heads/main")),
+        )
+        assert_eq(
+          field(state, "buildCommit"),
+          Some(Json::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+        )
+        assert_eq(field(state, "connection"), Some(Json::string("ssh")))
+        let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+        let (status, _, errors) = invoke("destroy", env, directory, payload~)
+        assert_eq(status, 0, msg=errors)
+      }
+      if recording == "disabled" {
+        assert_false(@fs.exists(store))
+      }
+      if recording == "unwritable" {
+        assert_eq(@fs.readdir(store).length(), 0)
+      }
+    }
+  }
+}
+
+///|
+async test "clone override records the allowlisted strategy from the actual invocation" {
+  for
+    (args, expected) in [
+      (["--git-clone-strategy=blobless"], "blobless"),
+      (["--git-clone-strategy", "shallow"], "shallow"),
+      (["--git-clone-strategy="], "full"),
+      (
+        ["--git-clone-strategy=bare", "--git-clone-strategy", "treeless"],
+        "treeless",
+      ),
+      (["--git-clone-strategy=privacy-secret"], "invalid"),
+      (["--git-clone-strategy"], "invalid"),
+    ] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    let document : Json = {
+      "devsy": {
+        "connection": "ssh",
+        "buildRef": "refs/heads/main",
+        "upArgs": Json::array(args.map(Json::string)),
+      },
+      "environmentRecipes": [{ "id": "test" }],
+    }
+    @fs.write_file(directory + "/orca.yaml", document.stringify())
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let events = saved_create_events(directory)
+    let clone = field(create_event(events, "clone-override"), "source").unwrap()
+    assert_eq(field(clone, "cloneStrategy"), Some(Json::string(expected)))
+    assert_eq(field(clone, "strategySource"), Some(Json::string("upArgs")))
+    assert_false(
+      @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
+      .text()
+      .contains("privacy-secret"),
+    )
+    let payload : Json = {
+      "schemaVersion": 1,
+      "recipeResult": @json.parse(output),
+    }
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
   }
 }

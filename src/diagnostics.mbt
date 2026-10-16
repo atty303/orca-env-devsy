@@ -9,6 +9,7 @@ async fn save_diagnostic(
   attempt? : Int32,
   retry_delay_ms? : Int32,
   os_errno? : Int32,
+  source? : CreateEvidence,
 ) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
@@ -31,6 +32,17 @@ async fn save_diagnostic(
       "time": @env.now().to_string(),
       "runId": recording_run_id,
       "adapterVersion": version,
+    }
+    if create_recording.attempt > 0 {
+      set_field(
+        event,
+        "createAttempt",
+        Json::number(create_recording.attempt.to_double()),
+      )
+      set_field(event, "createPhase", Json::string(create_recording.phase))
+    }
+    if source is Some(evidence) {
+      set_field(event, "source", evidence.to_json())
     }
     if os_errno is Some(code) && code > 0 && code < 4096 {
       set_field(event, "osErrno", Json::number(code.to_double()))
@@ -132,4 +144,236 @@ async fn tunnel_errors(reader : @process.ReadFromProcess) -> String {
     }
   }
   process_error_type(tail)
+}
+
+///|
+priv struct CreateRecording {
+  mut attempt : Int32
+  mut phase : String
+}
+
+///|
+let create_recording : CreateRecording = {
+  attempt: 0,
+  phase: "input-validation",
+}
+
+///|
+priv enum CreateEvidence {
+  Inputs
+  Configuration(String, String, String?)
+  Request(String, Bool)
+  Lookup(String)
+  Selection(String, String, String?, String, String)
+  Clone(String?, String, Array[String], String?)
+  TaskHeadRetry(String)
+  AcquiredCommit(String)
+  Checkout(String, String, Bool)
+}
+
+///|
+priv enum DiagnosticValueKind {
+  Identity
+  Workspace
+  RefName
+  Commit
+}
+
+///|
+fn diagnostic_value(value : String?, kind : DiagnosticValueKind) -> Json {
+  match value {
+    None => { "state": "unset" }
+    Some("") => { "state": "empty" }
+    Some(text) => {
+      let valid = match kind {
+        Commit => valid_commit(text)
+        Workspace => valid_workspace_id(text)
+        Identity => text.length() <= 128 && valid_context(text)
+        RefName => diagnostic_ref(text)
+      }
+      let credential_form = text
+        .split("/")
+        .iter()
+        .any(part => {
+          [
+            "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "sk-",
+            "eyJ",
+          ]
+          .iter()
+          .any(prefix => part.has_prefix(prefix))
+        })
+      if valid && !credential_form {
+        { "state": "valid", "value": text }
+      } else {
+        { "state": "invalid" }
+      }
+    }
+  }
+}
+
+///|
+// A recording grammar, never a replacement for checkout validation. Excludes
+// URLs, credential forms, control characters and Git's invalid ref syntax.
+fn diagnostic_ref(text : String) -> Bool {
+  text.length() <= 1024 &&
+  !text.has_prefix("-") &&
+  !text.contains("..") &&
+  text
+  .split("/")
+  .iter()
+  .all(part => {
+    part != "" &&
+    !part.has_prefix(".") &&
+    !part.has_suffix(".") &&
+    !part.has_suffix(".lock")
+  }) &&
+  text
+  .iter()
+  .all(c => {
+    (c >= 'a' && c <= 'z') ||
+    (c >= 'A' && c <= 'Z') ||
+    (c >= '0' && c <= '9') ||
+    c == '/' ||
+    c == '-' ||
+    c == '_' ||
+    c == '.'
+  })
+}
+
+///|
+fn CreateEvidence::to_json(self : CreateEvidence) -> Json {
+  match self {
+    Inputs => {
+      let inputs = Json::empty_object()
+      for
+        (name, kind) in [
+          ("ORCA_VM_INSTANCE_ID", Workspace),
+          ("ORCA_RECIPE_ID", Identity),
+          ("ORCA_REPO_REF", RefName),
+          ("ORCA_REPO_REF_HEAD", Commit),
+          ("ORCA_REPO_BRANCH", RefName),
+        ] {
+        set_field(inputs, name, diagnostic_value(@env.get_env_var(name), kind))
+      }
+      inputs
+    }
+    Configuration(mode, connection, build_ref) =>
+      {
+        "checkoutMode": if mode == "orca-worktree" || mode == "provisioned-root" {
+          Json::string(mode)
+        } else {
+          Json::string("invalid")
+        },
+        "connection": connection,
+        "configuredBuildRef": diagnostic_value(build_ref, RefName),
+      }
+    Request(build_ref, task_build) =>
+      {
+        "buildRef": diagnostic_value(Some(build_ref), RefName),
+        "selectionReason": if task_build {
+          "orca-input"
+        } else {
+          "configured-build-ref"
+        },
+      }
+    Lookup(lookup_ref) =>
+      { "lookupRef": diagnostic_value(Some(lookup_ref), RefName) }
+    Selection(build_ref, lookup_ref, branch, commit, reason) =>
+      {
+        "buildRef": diagnostic_value(Some(build_ref), RefName),
+        "lookupRef": diagnostic_value(Some(lookup_ref), RefName),
+        "resolvedBranch": diagnostic_value(branch, RefName),
+        "resolvedCommit": diagnostic_value(Some(commit), Commit),
+        "selectionReason": reason,
+      }
+    Clone(branch, commit, args, reason) => {
+      let (strategy, origin) = diagnostic_clone_strategy(args)
+      {
+        "sourceKind": if branch is Some(_) {
+          "branch"
+        } else {
+          "commit"
+        },
+        "branch": diagnostic_value(branch, RefName),
+        "commit": diagnostic_value(Some(commit), Commit),
+        "cloneStrategy": strategy,
+        "strategySource": origin,
+        "fallback": reason is Some(_),
+        "fallbackReason": match reason {
+          Some(value) => Json::string(value)
+          None => Json::null()
+        },
+      }
+    }
+    TaskHeadRetry(commit) =>
+      {
+        "commit": diagnostic_value(Some(commit), Commit),
+        "fallback": true,
+        "fallbackReason": "task-head-mismatch",
+      }
+    AcquiredCommit(actual) =>
+      {
+        "scope": "build-checkout",
+        "actualCommit": diagnostic_value(Some(actual), Commit),
+      }
+    Checkout(actual, expected, matches) =>
+      {
+        "scope": "build-checkout",
+        "actualCommit": diagnostic_value(Some(actual), Commit),
+        "expectedCommit": diagnostic_value(Some(expected), Commit),
+        "matches": matches,
+      }
+  }
+}
+
+///|
+// Inspect only the strategy flags in the actual invocation. Other arguments
+// never enter the diagnostic record. Devsy uses the last valid repeated flag.
+fn diagnostic_clone_strategy(args : Array[String]) -> (String, String) {
+  let mut strategy = "full"
+  let mut count = 0
+  let mut invalid = false
+  let mut index = 0
+  while index < args.length() {
+    let argument = args[index]
+    let value = if argument == "--git-clone-strategy" {
+      count += 1
+      index += 1
+      if index < args.length() {
+        Some(args[index])
+      } else {
+        None
+      }
+    } else if argument.has_prefix("--git-clone-strategy=") {
+      count += 1
+      Some(argument[21:].to_owned())
+    } else {
+      None
+    }
+    if count > 0 &&
+      (
+        argument == "--git-clone-strategy" ||
+        argument.has_prefix("--git-clone-strategy=")
+      ) {
+      match value {
+        Some("") => strategy = "full"
+        Some("shallow" | "blobless" | "treeless" | "bare" as known) =>
+          strategy = known
+        _ => invalid = true
+      }
+    }
+    index += 1
+  }
+  (
+    if invalid {
+      "invalid"
+    } else {
+      strategy
+    },
+    if count > 1 {
+      "upArgs"
+    } else {
+      "adapter"
+    },
+  )
 }

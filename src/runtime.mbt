@@ -304,6 +304,17 @@ async fn notify(stage : String) -> Unit {
 
 ///|
 async fn create_state(pinned_commit? : String) -> Json {
+  create_recording.attempt += 1
+  create_recording.phase = "input-validation"
+  save_diagnostic("create-input", "received", source=Inputs)
+  let mut attempt_complete = false
+  errdefer (if !attempt_complete {
+    save_diagnostic(
+      "create-attempt",
+      "failed",
+      error_type="create_stage_failed",
+    )
+  })
   let document = read_document(environment("ORCA_REPO_PATH") + "/orca.yaml")
   let id = environment("ORCA_RECIPE_ID")
   let config = resolve_settings(document, id, name => @env.get_env_var(name))
@@ -316,6 +327,19 @@ async fn create_state(pinned_commit? : String) -> Json {
     })[0]
   let mode = string_field(recipe, "checkoutMode", "recipe").unwrap_or(
     "orca-worktree",
+  )
+  save_diagnostic(
+    "create-configuration",
+    "received",
+    source=Configuration(
+      mode,
+      if config.connection == Server {
+        "orca-server"
+      } else {
+        "ssh"
+      },
+      config.build_ref,
+    ),
   )
   guard mode == "orca-worktree" || mode == "provisioned-root" else {
     raise AdapterError("Invalid checkoutMode")
@@ -361,6 +385,11 @@ async fn create_state(pinned_commit? : String) -> Json {
     _ => raise AdapterError("devsy.buildRef is required for orca-worktree")
   }
   let task_build = mode == "provisioned-root" && config.build_ref is None
+  save_diagnostic(
+    "build-request",
+    "selected",
+    source=Request(build_ref, task_build),
+  )
   let state : Json = {
     "adapterVersion": 1,
     "workspaceId": environment("ORCA_VM_INSTANCE_ID"),
@@ -391,6 +420,8 @@ async fn create_state(pinned_commit? : String) -> Json {
   if config.context is Some(value) {
     set_field(state, "context", Json::string(value))
   }
+  save_diagnostic("create-input", "success")
+  create_recording.phase = "ref-resolution"
   let contexts = @json.parse(
     devsy(
       state,
@@ -458,6 +489,7 @@ async fn create_state(pinned_commit? : String) -> Json {
   } else {
     build_ref
   }
+  save_diagnostic("build-lookup", "selected", source=Lookup(lookup_ref))
   let mut resolved_branch = None
   let mut hash = if valid_commit(lookup_ref) {
     lookup_ref
@@ -500,14 +532,44 @@ async fn create_state(pinned_commit? : String) -> Json {
       resolved_branch = shallow_branch(reference)
     }
   }
+  save_diagnostic(
+    "build-resolution",
+    "success",
+    source=Selection(
+      build_ref,
+      lookup_ref,
+      resolved_branch,
+      hash,
+      if valid_commit(lookup_ref) {
+        "literal-commit"
+      } else {
+        "remote-ref"
+      },
+    ),
+  )
+  let mut selection_reason = if task_build {
+    "orca-input"
+  } else {
+    "configured-build-ref"
+  }
   if task_build && hash != environment("ORCA_REPO_REF_HEAD") {
+    selection_reason = "task-head-differs-from-ref"
     hash = environment("ORCA_REPO_REF_HEAD")
     resolved_branch = None
   }
   if pinned_commit is Some(commit) {
+    selection_reason = "checkout-mismatch-retry"
     hash = commit
     resolved_branch = None
   }
+  save_diagnostic(
+    "build-selection",
+    "success",
+    source=Selection(
+      build_ref, lookup_ref, resolved_branch, hash, selection_reason,
+    ),
+  )
+  create_recording.phase = "build"
   set_field(state, "buildCommit", Json::string(hash))
   set_field(state, "buildRef", Json::string(build_ref))
   guard workspace(state) == None else {
@@ -569,6 +631,7 @@ async fn create_state(pinned_commit? : String) -> Json {
       arg == "--git-clone-strategy" || arg.has_prefix("--git-clone-strategy=")
     })
   let strategy = if automatic_shallow && !overridden { "shallow" } else { "" }
+  let initial_args = create_args(native_source, strategy)
   save_diagnostic(
     if overridden {
       "clone-override"
@@ -578,17 +641,20 @@ async fn create_state(pinned_commit? : String) -> Json {
       "clone-full"
     },
     "started",
+    source=Clone(resolved_branch, hash, initial_args, None),
   )
   let (status, initial_output) = devsy_result(
-    state,
-    create_args(native_source, strategy),
-    "workspace-create",
+    state, initial_args, "workspace-create",
   )
   let mut pinned_build = resolved_branch is None
   let output = if status != 0 &&
     strategy == "shallow" &&
     missing_shallow_commit(initial_output, hash) {
-    save_diagnostic("clone-fallback", "started")
+    save_diagnostic(
+      "clone-fallback",
+      "started",
+      source=Clone(None, hash, pinned_args, Some("missing-shallow-commit")),
+    )
     pinned_build = true
     devsy(state, pinned_args, "workspace-create-full")
   } else {
@@ -645,6 +711,7 @@ async fn create_state(pinned_commit? : String) -> Json {
     raise AdapterError("Invalid remote project root")
   }
   ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
+  create_recording.phase = "checkout-verification"
   let actual_commit = remote(
       state,
       "git -C " + quote(root) + " rev-parse HEAD",
@@ -652,6 +719,11 @@ async fn create_state(pinned_commit? : String) -> Json {
     )
     .trim()
     .to_owned()
+  save_diagnostic(
+    "build-checkout-head",
+    "observed",
+    source=AcquiredCommit(actual_commit),
+  )
   if !pinned_build && resolved_branch is Some(branch) {
     hash = remote(
         state,
@@ -664,14 +736,30 @@ async fn create_state(pinned_commit? : String) -> Json {
       .trim()
       .to_owned()
   }
+  let build_matches = valid_commit(hash) && actual_commit == hash
+  save_diagnostic(
+    "build-checkout",
+    if build_matches {
+      "success"
+    } else {
+      "mismatch"
+    },
+    source=Checkout(actual_commit, hash, build_matches),
+  )
   if task_build &&
     actual_commit != environment("ORCA_REPO_REF_HEAD") &&
     pinned_commit is None {
-    save_diagnostic("clone-fallback", "started")
+    save_diagnostic(
+      "clone-fallback",
+      "started",
+      source=TaskHeadRetry(environment("ORCA_REPO_REF_HEAD")),
+    )
     discard_created_workspace(state)
+    save_diagnostic("create-attempt", "retry")
+    attempt_complete = true
     return create_state(pinned_commit=environment("ORCA_REPO_REF_HEAD"))
   }
-  guard valid_commit(hash) && actual_commit == hash else {
+  guard build_matches else {
     raise AdapterError(
       "Remote build checkout does not match resolved build commit",
     )
@@ -679,6 +767,7 @@ async fn create_state(pinned_commit? : String) -> Json {
   set_field(state, "buildCommit", Json::string(actual_commit))
   set_field(state, "projectRoot", Json::string(root))
   if mode == "provisioned-root" {
+    create_recording.phase = "task-checkout"
     let head = environment("ORCA_REPO_REF_HEAD")
     let branch = environment("ORCA_REPO_BRANCH")
     guard valid_commit(head) && !branch.has_prefix("-") else {
@@ -702,6 +791,8 @@ async fn create_state(pinned_commit? : String) -> Json {
       remote(state, checkout_script(root, head, branch), "checkout-workspace"),
     )
   }
+  attempt_complete = true
+  save_diagnostic("create-attempt", "success")
   state
 }
 
@@ -830,6 +921,7 @@ async fn execute_inner(mode : String) -> Unit {
   }
   match mode {
     "create" => {
+      create_recording.phase = "connection"
       errdefer discard_created_workspace(state)
       codex_addon(state)
       emit_connection(state, true, wait_for_git=false)
