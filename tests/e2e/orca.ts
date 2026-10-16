@@ -22,16 +22,14 @@ export async function ensureOrcaInstallation(root: string, executable: string, i
   await Bun.write(marker, "complete\n");
 }
 
-export async function orcaRelease(signal?: AbortSignal) {
-  const requested = process.env.E2E_ORCA_VERSION;
-  if (!requested || !/^\d+\.\d+\.\d+$/.test(requested)) throw new Error("E2E_ORCA_VERSION must specify a release version");
+export async function latestOrca(signal?: AbortSignal) {
   const headers: Record<string, string> = { "Accept": "application/vnd.github+json" };
   if (process.env.GITHUB_TOKEN) headers.Authorization = "Bearer " + process.env.GITHUB_TOKEN;
-  const response = await fetch(`https://api.github.com/repos/stablyai/orca/releases/tags/v${requested}`, { headers, signal: AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]) });
+  const response = await fetch("https://api.github.com/repos/stablyai/orca/releases/latest", { headers, signal: AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]) });
   if (!response.ok) throw new Error(`Orca release lookup failed (${response.status})`);
   const release = await response.json() as { tag_name: string; assets: { name: string; browser_download_url: string; digest?: string }[] };
   const version = release.tag_name.replace(/^v/, "");
-  if (version !== requested) throw new Error("Orca release lookup returned a different version");
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Stable Orca release has an invalid version");
   const name = process.platform === "darwin" ? `Orca-${version}-arm64-mac.zip` : process.arch === "arm64" ? "orca-linux-arm64.AppImage" : "orca-linux.AppImage";
   const asset = release.assets.find(asset => asset.name === name);
   if (!asset) throw new Error("Selected Orca release has no artifact for this host");

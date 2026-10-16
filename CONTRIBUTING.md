@@ -9,11 +9,12 @@ required and may be `docker`, `podman`, `microsandbox` or `apple`. Install and s
 the selected runtime first. Linux requires the Electron libraries and a display;
 CI uses Xvfb. Apple requires a Mac with Apple Silicon and virtualization support.
 
-E2E uses the Orca release pinned by `e2e_orca_version` in `mise.toml` for both
-the desktop and fixture server. It drives the desktop preload IPC bridge in an
-isolated profile. Four workspaces share one host Git helper/store and one
-SSH agent. A local authenticated Git server and synthetic Codex refresh RPC keep
-real account credentials out of the fixture. Sanitized results, versions and
+E2E resolves the latest stable Orca release once per run and uses that version
+for both the desktop and fixture server. It drives the desktop preload IPC bridge
+in an isolated profile. Four workspaces share one host Git helper/store and one
+SSH agent. One additional Devsy container serves public build sources and
+authenticated Git repositories from Linux tmpfs, using the selected provider.
+A synthetic Codex refresh RPC keeps real account credentials out of the fixture. Sanitized results, versions and
 operation durations are written under `.e2e/`; private runtime state is temporary.
 Timing targets and their five-second acceptance buffer are defined in
 `tests/e2e/timing.ts`; the buffer does not change the performance targets.
@@ -21,6 +22,13 @@ Timing targets and their five-second acceptance buffer are defined in
 CI runs Linux x64 Docker, rootless Podman and Microsandbox, and Linux arm64 Docker
 and rootless Podman. Apple arm64 and Microsandbox arm64 are manual lanes; they
 require hosts with the corresponding virtualization support.
+
+The IPC suite also creates real worktrees through the remote Orca runtime. It
+checks shallow branch builds, independent devcontainer build refs, and builds
+from provisioned-root start refs without a `buildRef`. Build and lifecycle source
+markers and an allowlisted clone audit verify the source and acquisition strategy.
+Parallel signed Git sessions repeat commit/push/fetch/reset to detect transient
+object visibility failures on shared filesystems.
 
 The IPC suite covers recipe execution, receipt persistence, connection registration
 and saved-state lifecycle handling. Renderer workspace/terminal routing and the

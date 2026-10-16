@@ -69,24 +69,27 @@ url = "https://github.com/apple/container/releases/download/1.5.0/container-1.5.
 url_api = "https://api.github.com/repos/apple/container/releases/assets/597136570"
 
 [[tools."github:devsy-org/devsy"]]
-version = "1.23.0"
+version = "1.23.2"
 backend = "github:devsy-org/devsy"
-specifiers = ["1.23.0"]
+specifiers = ["1.23.2"]
+
+[tools."github:devsy-org/devsy".options]
+matching = "devsy-"
 
 [tools."github:devsy-org/devsy"."platforms.linux-arm64"]
-checksum = "sha256:4418123145970d9ec9034c7d966a9b27571e47820c59886e31965911aa7518d7"
-url = "https://github.com/devsy-org/devsy/releases/download/v1.23.0/devsy-linux-arm64"
-url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/619985295"
+checksum = "sha256:872cd988be2f5c37dc92da684c92fb6e9dd56153963366c1bdb143b78f816ae2"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.23.2/devsy-linux-arm64"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/632776050"
 
 [tools."github:devsy-org/devsy"."platforms.linux-x64"]
-checksum = "sha256:bf6e00b498a09ed614670ce24bd7cf46830b31218e773961f6c267c1a25b8186"
-url = "https://github.com/devsy-org/devsy/releases/download/v1.23.0/devsy-linux-amd64"
-url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/619985294"
+checksum = "sha256:0e9e703662575faa796c933e108bbaa9bcfbcf95046825da9c8eb3cf452e8891"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.23.2/devsy-linux-amd64"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/632776043"
 
 [tools."github:devsy-org/devsy"."platforms.macos-arm64"]
-checksum = "sha256:9c33376c86bf97c03d32df220a77ad9cbf50ee0d92891560ef1ca6f9069f73f3"
-url = "https://github.com/devsy-org/devsy/releases/download/v1.23.0/Devsy_mac_arm64.zip"
-url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/619989583"
+checksum = "sha256:2de96ea53362219c378a971119d7fe4a97a550fb6d23272ef4ea7962a7915960"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.23.2/devsy-darwin-arm64"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/632776041"
 
 [[tools.hk]]
 version = "1.55.0"

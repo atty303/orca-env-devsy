@@ -11,7 +11,7 @@ All settings below can appear in `devsy`, `devsy.profiles.<name>`, or
 | `command` | Nonempty string array: executable then fixed arguments; default `["devsy"]` |
 | `home` | Devsy state directory; omitted uses Devsy's default |
 | `context` | Existing Devsy context; omitted uses Devsy's default |
-| `buildRef` | Remote ref supplying the complete build checkout; default `HEAD` |
+| `buildRef` | Remote ref supplying the complete build checkout; required for `orca-worktree`, optional for `provisioned-root` |
 | `upArgs` | Array of native Devsy workspace-up arguments |
 | `addons.codexAuth` | Optional file-backed Codex ChatGPT authentication handoff; default false |
 | `profile` | Select one common profile; recipe selection overrides common selection |
@@ -53,18 +53,29 @@ configuration. No host HEAD is consulted to infer Orca's task starting commit.
 | `orca-worktree` | Schema 1; Orca creates a linked worktree | Schema 1; Orca creates a linked worktree |
 | `provisioned-root` | Schema 2; checkout supplied `ORCA_REPO_REF_HEAD` and `ORCA_REPO_BRANCH` | Rejected |
 
-Branch build refs use shallow clones. If Devsy reports that the pinned commit is
-missing during cloning, the adapter retries with a full clone while retaining
-the same commit and workspace UID. Other failures are not retried. `HEAD`, tags
-and commit refs use full clones; an explicit native clone option in `upArgs`
-overrides the automatic choice. Branch names are validated by Git before use.
+`orca-worktree` requires an explicit nonempty `buildRef` before provisioning.
+`provisioned-root` can omit it: the supplied `ORCA_REPO_REF` and
+`ORCA_REPO_REF_HEAD` then select the build source. An explicit `buildRef`
+overrides the build source without changing Orca's task commit.
 
-Build source and task source are separate: Devsy builds from `buildRef` first.
-For provisioned-root the adapter then checks out Orca's task commit, reusing it
-when already present. Missing commits are fetched using the workspace's Git
-authentication. This does not rebuild the devcontainer. Dockerfile, context and
-lifecycle hooks belong to the build checkout. Changing worktrees does not trigger
-reconstruction.
+Build branches matching the remote's default branch use shallow clones.
+Provisioned-root builds from Orca's supplied start branch also use shallow clones
+when its tip matches the expected commit. Devsy resolves branch sources;
+the adapter verifies the build checkout against its fetched remote-tracking ref.
+A moved provisioned-root start ref or a missing shallow commit can retry with a
+full clone of the required commit. Other build branches, tags and fixed commits
+use full clones, keeping other remote branches available for Orca's later
+worktree. Explicit native clone options in `upArgs` override the automatic choice.
+
+The complete build checkout supplies Dockerfile, context and lifecycle commands.
+For provisioned-root the adapter subsequently checks out Orca's task commit,
+reusing it when present and fetching only a missing commit. For orca-worktree,
+Orca creates the task worktree and controls its base. Neither operation rebuilds
+the devcontainer. Orca's own remote refreshes are independent of clone strategy.
+
+On FUSE filesystems (including virtiofs), creation sets the container user's default `core.createObject` to
+`rename` when no global value is configured. This avoids transient missing-object
+errors from hardlink-based object creation; an explicit Git setting is retained.
 
 Create/resume emit exactly one recipe JSON on stdout. Suspend/destroy emit no
 result. Lifecycle input is Orca's schema-1 payload with `recipeResult.userData`.

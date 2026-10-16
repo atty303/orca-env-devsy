@@ -1,0 +1,6 @@
+{
+  "build": { "dockerfile": "Dockerfile", "context": ".." },
+  "workspaceMount": "",
+  "workspaceFolder": "/srv/fixture",
+  "remoteUser": "root"
+}

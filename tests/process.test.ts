@@ -137,7 +137,7 @@ test("SSH agent readiness stops retrying when execution is interrupted", async (
   try {
     await mkdir(root + "/mock");
     await writeFile(root + "/mock/ssh-add", '#!/bin/sh\ntouch "$HOME/add-attempted"\nexit 1\n', { mode: 0o700 });
-    const operation = services(root, { HOME: root, CODEX_HOME: root + "/codex", PATH: root + "/mock:" + process.env.PATH }, phase.signal);
+    const operation = services(root, { HOME: root, CODEX_HOME: root + "/codex", PATH: root + "/mock:" + process.env.PATH }, { devsy: "devsy", home: root + "/devsy", provider: "apple", source: root + "/source.git" }, phase.signal);
     void operation.catch(() => {});
     await until(() => Bun.file(root + "/add-attempted").exists(), 2000);
     const started = performance.now();

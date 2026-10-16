@@ -4,7 +4,6 @@ include = [
 ]
 
 [vars]
-e2e_orca_version = "1.4.224"
 e2e_docker_version = "29.9.0"
 e2e_containerd_package = "2.4.1-2~ubuntu.24.04~noble"
 e2e_buildx_package = "0.38.0-1~ubuntu.24.04~noble"
@@ -78,10 +77,9 @@ outputs = ["node_modules/.installed"]
 run = "bun install --frozen-lockfile && touch node_modules/.installed"
 
 [tasks."test:e2e"]
-description = "Run pinned Orca/provider integration scenarios (explicit --provider required)"
+description = "Run stable Orca/provider integration scenarios (explicit --provider required)"
 depends = ["build"]
-tools = { "github:devsy-org/devsy" = "1.23.0" }
-env = { E2E_ORCA_VERSION = "{{vars.e2e_orca_version}}" }
+tools = { "github:devsy-org/devsy[matching=devsy-]" = "1.23.2" }
 run = "bun tests/e2e/main.ts"
 
 [tasks."test:e2e:prepare-ci"]

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { gitServer, type GitServerOptions } from "./git-server.ts";
 import { processScope, stop, type Environment } from "../../scripts/process.ts";
 
 export const access = (generation: number, expiry = Math.floor(Date.now() / 1000) + 1_209_600) => "fixture." + Buffer.from(JSON.stringify({ exp: expiry, generation })).toString("base64url") + ".invalid-signature";
 export const auth = (token: string) => JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: token, id_token: token, account_id: "e2e-account", refresh_token: "fixture-not-a-real-refresh-token" } });
 
-export async function services(root: string, env: Environment, signal?: AbortSignal) {
+export async function services(root: string, env: Environment, options: GitServerOptions, signal?: AbortSignal) {
   const { run, start } = processScope(signal);
-  await mkdir(root + "/bin");
+  await mkdir(root + "/bin", { recursive: true });
   await mkdir(env.CODEX_HOME!, { recursive: true, mode: 0o700 });
   await writeFile(env.CODEX_HOME + "/auth.json", auth(access(0, Math.floor(Date.now() / 1000) + 60)), { mode: 0o600 });
   await writeFile(env.CODEX_HOME + "/next-auth.json", auth(access(1)), { mode: 0o600 });
@@ -31,7 +32,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   await run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "e2e", "-f", key], { env });
   env.SSH_AUTH_SOCK = root + "/agent.sock";
   const agent = start(["ssh-agent", "-D", "-a", env.SSH_AUTH_SOCK], { env });
-  let closeServer = () => {};
+  let server: Awaited<ReturnType<typeof gitServer>> | undefined;
   try {
     for (let attempt = 0; ; attempt++) {
       try { await run(["ssh-add", key], { env }); break; }
@@ -50,52 +51,14 @@ process.exit(await child.exited);
     await run(["git", "config", "--global", "credential.useHttpPath", "true"], { env });
     await run(["git", "config", "--global", "user.name", "E2E"], { env });
     await run(["git", "config", "--global", "user.email", "e2e@example.invalid"], { env });
-    await mkdir(root + "/git");
-    const requests = new Map<string, number>();
-    const rejected = new Map<string, number>();
-    let backendFailures = 0;
-    const backends = new Set<ReturnType<typeof Bun.spawn>>();
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-      if (signal?.aborted) return new Response(null, { status: 503 });
-      const url = new URL(request.url), match = /^\/(w-[0-3]\.git)(\/.*)$/.exec(url.pathname);
-      if (!match) return new Response(null, { status: 404 });
-      const user = match[1].slice(0, -4);
-      if (request.headers.get("authorization") !== "Basic " + btoa(user + ":dummy-" + user)) {
-        const key = user + (request.headers.has("authorization") ? ":invalid" : ":missing");
-        rejected.set(key, (rejected.get(key) ?? 0) + 1);
-        return new Response(null, { status: 401, headers: { "WWW-Authenticate": 'Basic realm="e2e"' } });
-      }
-      requests.set(user, (requests.get(user) ?? 0) + 1);
-      const body = new Uint8Array(await request.arrayBuffer());
-      if (signal?.aborted) return new Response(null, { status: 503 });
-      const child = Bun.spawn(["git", "http-backend"], { env: { ...env, GIT_PROJECT_ROOT: root + "/git", GIT_HTTP_EXPORT_ALL: "1", PATH_INFO: url.pathname, QUERY_STRING: url.search.slice(1), REQUEST_METHOD: request.method, CONTENT_TYPE: request.headers.get("content-type") ?? "", HTTP_CONTENT_ENCODING: request.headers.get("content-encoding") ?? "", HTTP_GIT_PROTOCOL: request.headers.get("git-protocol") ?? "", CONTENT_LENGTH: String(body.length), REMOTE_USER: user }, stdin: body, stdout: "pipe", stderr: "ignore" });
-      backends.add(child);
-      const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
-      try {
-        const output = new Uint8Array(await new Response(child.stdout).arrayBuffer());
-        if (await child.exited !== 0) { backendFailures++; return new Response(null, { status: 500 }); }
-        const boundary = Buffer.from(output).indexOf("\r\n\r\n");
-        assert(boundary >= 0);
-        const headers = new Headers();
-        let status = 200;
-        for (const line of Buffer.from(output.subarray(0, boundary)).toString().split("\r\n")) {
-          const colon = line.indexOf(":");
-          if (line.slice(0, colon).toLowerCase() === "status") status = Number(line.slice(colon + 1).trim().split(" ")[0]);
-          else headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
-        }
-        return new Response(output.subarray(boundary + 4), { status, headers });
-      } finally { clearTimeout(timer); backends.delete(child); }
-    }});
-    closeServer = () => { server.stop(true); for (const child of backends) child.kill("SIGKILL"); };
     for (let i = 0; i < 4; i++) {
-      await run(["git", "init", "--bare", root + `/git/w-${i}.git`], { env });
-      await run(["git", "-C", root + `/git/w-${i}.git`, "config", "http.receivepack", "true"], { env });
       await run(["git", "credential", "approve"], { env, input: `protocol=http\nhost=127.0.0.1:18080\npath=w-${i}.git\nusername=w-${i}\npassword=dummy-w-${i}\n\n` });
     }
     for (let i = 0; i < 4; i++) {
       const credential = await run(["git", "credential", "fill"], { env, input: `protocol=http\nhost=127.0.0.1:18080\npath=w-${i}.git\n\n` });
       assert(credential.includes(`username=w-${i}\n`), "Shared host helper must resolve each fixture target");
     }
-    return { get backendFailures() { return backendFailures; }, port: server.port!, publicKey, requests, rejected, close() { closeServer(); stop(agent, "SIGKILL"); } };
-  } catch (error) { closeServer(); stop(agent, "SIGKILL"); throw error; }
+    server = await gitServer(root, env, options, signal);
+    return { ...server, publicKey, async close(cleanupSignal?: AbortSignal) { try { await server!.close(cleanupSignal); } finally { stop(agent, "SIGKILL"); } } };
+  } catch (error) { await server?.close().catch(() => {}); stop(agent, "SIGKILL"); throw error; }
 }

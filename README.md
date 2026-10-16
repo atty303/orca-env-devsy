@@ -15,7 +15,7 @@ mise use github:atty303/orca-env-devsy
 | Where | Required commands |
 | --- | --- |
 | Host | Devsy (`devsy`), Git (`git`), OpenSSH (`ssh`), a POSIX shell and `env` supporting `-u` |
-| Devcontainer, both connections | Git and a POSIX-compatible SSH command shell |
+| Devcontainer, both connections | Git, `stat` supporting `-f -c %T`, `sleep`, and a POSIX-compatible SSH command shell |
 | Devcontainer, Server connection | Linux x86_64/arm64; `curl`, `uname`, `mkdir`, `mktemp`, `chmod`, `mv`, `rm`; [official Orca Linux runtime libraries](https://github.com/stablyai/orca/blob/v1.4.224/config/docker/cli-launch-contract/Dockerfile) |
 | Host, Codex addon refresh | Codex (`codex`) with managed ChatGPT file authentication |
 | Devcontainer, Codex addon enabled | `grep`, `cat`, `sha256sum`, `mkdir`, `mktemp`, `mv`, `rm` |
@@ -47,6 +47,8 @@ environmentRecipes:
   - id: cloud-server
     name: Cloud Server
     checkoutMode: orca-worktree
+    devsy:
+      buildRef: main
     create: orca-env-devsy create
     resume: orca-env-devsy resume
     suspend: orca-env-devsy suspend
@@ -68,10 +70,13 @@ in that order without splitting their elements. `${VAR}` expands to empty when
 undefined; `${VAR?}` requires the variable to be defined, allowing an empty
 value. There is no shell evaluation.
 
-`buildRef` selects the **entire build checkout**; omitting it uses the remote
-HEAD. The resulting `userData.buildRef` and `userData.buildCommit` identify its
-source. Orca's later worktree can use a different commit. Lifecycle operations
-use saved settings; editing YAML affects new workspaces only.
+`buildRef` selects the entire build checkout, including lifecycle commands. It is
+required for `orca-worktree`; choose the branch used as Orca's usual base, such
+as `main`. For devcontainer development, select the build branch independently
+of Orca's worktree base. `provisioned-root` may omit it to build directly from
+Orca's supplied start ref and commit. The resulting `userData.buildRef` and
+`userData.buildCommit` identify the build source. Lifecycle operations use saved
+settings; editing YAML affects new workspaces only.
 
 After a host reboot, run `orca-env-devsy reconnect` to restore enabled SSH
 connections and Server tunnels saved by this adapter under `${XDG_STATE_HOME:-$HOME/.local/state}`.

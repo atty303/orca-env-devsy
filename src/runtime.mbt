@@ -303,7 +303,7 @@ async fn notify(stage : String) -> Unit {
 }
 
 ///|
-async fn create_state() -> Json {
+async fn create_state(pinned_commit? : String) -> Json {
   let document = read_document(environment("ORCA_REPO_PATH") + "/orca.yaml")
   let id = environment("ORCA_RECIPE_ID")
   let config = resolve_settings(document, id, name => @env.get_env_var(name))
@@ -352,6 +352,15 @@ async fn create_state() -> Json {
       ),
     )
   }
+  let build_ref = match config.build_ref {
+    Some(value) if value != "" => value
+    None if mode == "provisioned-root" =>
+      @env.get_env_var("ORCA_REPO_REF")
+      .filter(value => value != "")
+      .unwrap_or(environment("ORCA_REPO_REF_HEAD"))
+    _ => raise AdapterError("devsy.buildRef is required for orca-worktree")
+  }
+  let task_build = mode == "provisioned-root" && config.build_ref is None
   let state : Json = {
     "adapterVersion": 1,
     "workspaceId": environment("ORCA_VM_INSTANCE_ID"),
@@ -428,14 +437,34 @@ async fn create_state() -> Json {
       raise AdapterError("Repository URL must not contain credentials")
     }
   }
-  let build_ref = config.build_ref.unwrap_or("HEAD")
-  let mut resolved_branch = None
-  let hash = if valid_commit(build_ref) {
+  let default_output = command(
+    "git",
+    ["ls-remote", "--symref", "--", repository, "HEAD"],
+    "resolve-default-branch",
+  )
+  let mut default_ref = None
+  for line in default_output.split("\n") {
+    if line.split_once("\t") is Some((reference, "HEAD")) &&
+      reference.has_prefix("ref: refs/heads/") {
+      default_ref = Some(reference[5:].to_owned())
+    }
+  }
+  let lookup_ref = if build_ref.has_prefix("refs/remotes/origin/") {
+    "refs/heads/" + build_ref[20:].to_owned()
+  } else if build_ref.has_prefix("origin/") {
+    "refs/heads/" + build_ref[7:].to_owned()
+  } else if build_ref == "HEAD" {
+    default_ref.unwrap_or("HEAD")
+  } else {
     build_ref
+  }
+  let mut resolved_branch = None
+  let mut hash = if valid_commit(lookup_ref) {
+    lookup_ref
   } else {
     let resolved = command(
         "git",
-        ["ls-remote", "--", repository, build_ref, build_ref + "^{}"],
+        ["ls-remote", "--", repository, lookup_ref, lookup_ref + "^{}"],
         "resolve-build-ref",
       )
       .trim()
@@ -459,8 +488,28 @@ async fn create_state() -> Json {
   guard valid_commit(hash) else {
     raise AdapterError("Invalid remote build commit")
   }
-  set_field(state, "buildRef", Json::string(build_ref))
+  if task_build && resolved_branch is None && default_ref is Some(reference) {
+    let tip = command(
+        "git",
+        ["ls-remote", "--", repository, reference],
+        "resolve-build-ref",
+      )
+      .trim()
+      .to_owned()
+    if tip.has_prefix(hash + "\t") {
+      resolved_branch = shallow_branch(reference)
+    }
+  }
+  if task_build && hash != environment("ORCA_REPO_REF_HEAD") {
+    hash = environment("ORCA_REPO_REF_HEAD")
+    resolved_branch = None
+  }
+  if pinned_commit is Some(commit) {
+    hash = commit
+    resolved_branch = None
+  }
   set_field(state, "buildCommit", Json::string(hash))
+  set_field(state, "buildRef", Json::string(build_ref))
   guard workspace(state) == None else {
     raise AdapterError("Workspace ID already exists")
   }
@@ -498,45 +547,57 @@ async fn create_state() -> Json {
     ] +
     config.up_args
   }
-  let args = create_args(repository + "@sha256:" + hash, "")
-  let shallow = if config.up_args
+  let pinned_args = create_args(repository + "@sha256:" + hash, "")
+  let native_source = match resolved_branch {
+    Some(branch) => {
+      ignore(
+        command(
+          "git",
+          ["check-ref-format", "refs/heads/" + branch],
+          "validate-build-branch",
+        ),
+      )
+      repository + "@" + branch
+    }
+    None => repository + "@sha256:" + hash
+  }
+  let automatic_shallow = resolved_branch is Some(branch) &&
+    (task_build || default_ref == Some("refs/heads/" + branch))
+  let overridden = config.up_args
     .iter()
     .any(arg => {
       arg == "--git-clone-strategy" || arg.has_prefix("--git-clone-strategy=")
-    }) {
-    None
-  } else {
-    resolved_branch
-  }
-  let output = if shallow is Some(branch) {
-    ignore(
-      command(
-        "git",
-        ["check-ref-format", "refs/heads/" + branch],
-        "validate-build-branch",
-      ),
-    )
-    let shallow_args = create_args(
-      repository + "@sha256:" + hash + "@" + branch,
-      "shallow",
-    )
-    let (status, output) = devsy_result(state, shallow_args, "workspace-create")
-    if status != 0 && missing_shallow_commit(output, hash) {
-      save_diagnostic("clone-fallback", "started")
-      progress_message(
-        "Pinned commit unavailable in shallow clone; retrying with a full clone…",
-      )
-      devsy(state, args, "workspace-create-full")
+    })
+  let strategy = if automatic_shallow && !overridden { "shallow" } else { "" }
+  save_diagnostic(
+    if overridden {
+      "clone-override"
+    } else if strategy == "shallow" {
+      "clone-shallow"
     } else {
-      guard status == 0 else {
-        raise AdapterError(
-          "workspace-create failed (exit \{status}); command output withheld",
-        )
-      }
-      output
-    }
+      "clone-full"
+    },
+    "started",
+  )
+  let (status, initial_output) = devsy_result(
+    state,
+    create_args(native_source, strategy),
+    "workspace-create",
+  )
+  let mut pinned_build = resolved_branch is None
+  let output = if status != 0 &&
+    strategy == "shallow" &&
+    missing_shallow_commit(initial_output, hash) {
+    save_diagnostic("clone-fallback", "started")
+    pinned_build = true
+    devsy(state, pinned_args, "workspace-create-full")
   } else {
-    devsy(state, args, "workspace-create")
+    guard status == 0 else {
+      raise AdapterError(
+        "workspace-create failed (exit \{status}); command output withheld",
+      )
+    }
+    initial_output
   }
   let created = workspace(state).unwrap()
   guard required(created, "uid") == uid else {
@@ -583,6 +644,7 @@ async fn create_state() -> Json {
   guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
     raise AdapterError("Invalid remote project root")
   }
+  ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
   let actual_commit = remote(
       state,
       "git -C " + quote(root) + " rev-parse HEAD",
@@ -590,7 +652,26 @@ async fn create_state() -> Json {
     )
     .trim()
     .to_owned()
-  guard actual_commit == hash else {
+  if !pinned_build && resolved_branch is Some(branch) {
+    hash = remote(
+        state,
+        "git -C " +
+        quote(root) +
+        " rev-parse " +
+        quote("refs/remotes/origin/" + branch + "^{commit}"),
+        "verify-build-source",
+      )
+      .trim()
+      .to_owned()
+  }
+  if task_build &&
+    actual_commit != environment("ORCA_REPO_REF_HEAD") &&
+    pinned_commit is None {
+    save_diagnostic("clone-fallback", "started")
+    discard_created_workspace(state)
+    return create_state(pinned_commit=environment("ORCA_REPO_REF_HEAD"))
+  }
+  guard valid_commit(hash) && actual_commit == hash else {
     raise AdapterError(
       "Remote build checkout does not match resolved build commit",
     )
@@ -622,6 +703,29 @@ async fn create_state() -> Json {
     )
   }
   state
+}
+
+///|
+fn git_object_storage_script(root : String) -> String {
+  // FUSE filesystems can transiently hide objects created via link/unlink. Git's rename
+  // mode avoids that sequence; retain an explicit user configuration.
+  "cd " +
+  quote(root) +
+  " && " +
+  (
+    #|filesystem=$(stat -f -c %T .) || exit
+    #|case "$filesystem" in virtiofs|fuseblk) ;; *) exit 0 ;; esac
+    #|for attempt in 1 2 3 4 5; do
+    #|  git config --global --includes --get core.createObject >/dev/null && exit 0
+    #|  status=$?
+    #|  test "$status" -eq 1 || exit "$status"
+    #|  git config --global core.createObject rename && exit 0
+    #|  status=$?
+    #|  test "$status" -eq 255 || exit "$status"
+    #|  test "$attempt" -lt 5 || exit "$status"
+    #|  sleep 1
+    #|done
+  )
 }
 
 ///|
@@ -670,9 +774,10 @@ async fn emit_connection(
   state : Json,
   install : Bool,
   existing? : Json,
+  wait_for_git~ : Bool = true,
 ) -> Unit {
   let connection = if required(state, "connection") == "ssh" {
-    ensure_ssh_worker(state, None)
+    ensure_ssh_worker(state, None, wait_for_git~)
     let target : Json = {
       "label": "Devsy",
       "host": required(state, "workspaceId") + ".devsy",
@@ -727,7 +832,7 @@ async fn execute_inner(mode : String) -> Unit {
     "create" => {
       errdefer discard_created_workspace(state)
       codex_addon(state)
-      emit_connection(state, true)
+      emit_connection(state, true, wait_for_git=false)
     }
     "resume" => {
       ignore(
@@ -983,6 +1088,11 @@ fn shallow_branch(build_ref : String) -> String? {
     build_ref[11:].to_owned()
   } else {
     build_ref
+  }
+  match branch.split("/").to_array() {
+    ["pull" | "merge-requests", number, "head"] if number != "" &&
+      number.iter().all(c => c >= '0' && c <= '9') => return None
+    _ => ()
   }
   if branch != "" &&
     branch

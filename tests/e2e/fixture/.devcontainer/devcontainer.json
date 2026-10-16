@@ -1,4 +1,5 @@
 {
-  "build": { "dockerfile": "Dockerfile", "context": "." },
-  "remoteUser": "developer"
+  "build": { "dockerfile": "Dockerfile", "context": ".." },
+  "remoteUser": "developer",
+  "postCreateCommand": "cat identity.txt > /tmp/orca-e2e-lifecycle-source"
 }

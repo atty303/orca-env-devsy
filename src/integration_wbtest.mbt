@@ -37,7 +37,8 @@ async fn fixture() -> (String, Map[String, String]) {
     #|esac
   let git =
     #|#!/bin/sh
-    #|remote=HEAD
+    #|case "$*" in *--symref*) printf 'ref: refs/heads/main\tHEAD\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tHEAD\n'; exit 0 ;; esac
+    #|remote=refs/heads/main
     #|for arg in "$@"; do case "$arg" in *'^{}') : ;; refs/heads/*) remote="$arg" ;; esac; done
     #|printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$remote"
   let ssh =
@@ -67,7 +68,8 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    if test ! -f "$FAKE_HOME/git-unrecoverable"; then rm -f "$FAKE_HOME/git-unavailable"; fi
     #|    while test -f "$control"; do sleep 0.01; done ;;
     #|  *'then printf present; else printf missing; fi'*) if test -f "$FAKE_HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
-    #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' ;;
+    #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
+    #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'pwd -P'*) printf '/workspace/repo\n' ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/reuse-running-server" && test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
     #|  *'--recipe-json'*) touch "$FAKE_HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
@@ -198,6 +200,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   let yaml =
     #|devsy:
     #|  connection: ssh
+    #|  buildRef: refs/heads/main
     #|  profile: cloud
     #|  profiles:
     #|    cloud:
@@ -221,7 +224,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   assert_eq(saved_command(state), ["devsy"])
   assert_eq(field(state, "upArgs"), None)
   let args = @fs.read_file(directory + "/args")
-  assert_true(args.text().contains("\n--git-clone-strategy=\n"))
+  assert_true(args.text().contains("\n--git-clone-strategy=shallow\n"))
   assert_true(args.text().contains("VALUE=two words; $(ignored)\n"))
   @fs.write_file(directory + "/orca.yaml", "deliberately invalid yaml: [")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
@@ -243,6 +246,7 @@ async test "required environment errors identify their setting and never invoke 
   let yaml =
     #|devsy:
     #|  connection: ssh
+    #|  buildRef: refs/heads/main
     #|  context: "${MISSING?}"
     #|environmentRecipes:
     #|  - id: test
@@ -260,6 +264,7 @@ async test "YAML anchors and recipe profiles parse without shell evaluation" {
   let source =
     #|devsy:
     #|  connection: ssh
+    #|  buildRef: refs/heads/main
     #|  profiles:
     #|    chosen: &chosen
     #|      context: "${CTX?}"
@@ -286,6 +291,7 @@ async test "server CLI emits pairing separately and reconnect does not install o
     let yaml =
       #|devsy:
       #|  connection: orca-server
+      #|  buildRef: refs/heads/main
       #|  addons:
       #|    codexAuth: true
       #|environmentRecipes:
@@ -341,6 +347,7 @@ async test "provisioned-root uses schema 2 and checks out the supplied task comm
   let yaml =
     #|devsy:
     #|  connection: ssh
+    #|  buildRef: refs/heads/main
     #|environmentRecipes:
     #|  - id: test
     #|    checkoutMode: provisioned-root
@@ -450,7 +457,7 @@ async test "Codex addon delivers synthetic access data only and excludes secrets
   @fs.write_file(directory + "/.codex/auth.json", auth.stringify())
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy:\n  connection: ssh\n  addons:\n    codexAuth: true\nenvironmentRecipes:\n  - id: test\n",
+    "devsy:\n  connection: ssh\n  buildRef: refs/heads/main\n  addons:\n    codexAuth: true\nenvironmentRecipes:\n  - id: test\n",
   )
   let before = @env.now().reinterpret_as_int64()
   let (status, output, errors) = invoke("create", env, directory)
@@ -511,7 +518,7 @@ async test "failed create removes its UID-owned workspace and permits retry" {
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy:\n  connection: ssh\nenvironmentRecipes:\n  - id: test\n",
+    "devsy:\n  connection: ssh\n  buildRef: refs/heads/main\nenvironmentRecipes:\n  - id: test\n",
   )
   @fs.write_file(directory + "/fail-root", "")
   let (status, output, _) = invoke("create", env, directory)
@@ -529,7 +536,7 @@ async test "failed provisioning cleans the requested UID before a recipe receipt
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy:\n  connection: ssh\nenvironmentRecipes:\n  - id: test\n",
+    "devsy:\n  connection: ssh\n  buildRef: refs/heads/main\nenvironmentRecipes:\n  - id: test\n",
   )
   @fs.write_file(directory + "/fail-up", "")
   let (status, output, _) = invoke("create", env, directory)
@@ -677,6 +684,7 @@ async test "configured command survives YAML and environment changes and real Op
   let document : Json = {
     "devsy": {
       "connection": "ssh",
+      "buildRef": "refs/heads/main",
       "command": Json::array(
         ["${LAUNCHER?}"] + invocation[1:].map(Json::string),
       ),
@@ -738,7 +746,7 @@ async test "invalid command is rejected before Devsy and errors retain only sett
     let (directory, env) = fixture()
     defer cleanup_fixture(directory)
     let document : Json = {
-      "devsy": { "connection": "ssh" },
+      "devsy": { "connection": "ssh", "buildRef": "refs/heads/main" },
       "environmentRecipes": [{ "id": "test", "devsy": { "command": invalid } }],
     }
     @fs.write_file(directory + "/orca.yaml", document.stringify())
@@ -756,7 +764,7 @@ async test "legacy saved state defaults to devsy and invalid saved commands fail
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let (status, output, errors) = invoke("create", env, directory)
   assert_eq(status, 0, msg=errors)
@@ -799,6 +807,7 @@ async test "command diagnostics distinguish process failure and exit failure wit
     let document : Json = {
       "devsy": {
         "connection": "ssh",
+        "buildRef": "refs/heads/main",
         "command": Json::array(invocation.map(Json::string)),
       },
       "environmentRecipes": [{ "id": "test" }],
@@ -818,6 +827,7 @@ async test "command diagnostics distinguish process failure and exit failure wit
     let document : Json = {
       "devsy": {
         "connection": "ssh",
+        "buildRef": "refs/heads/main",
         "command": [
           "/bin/sh",
           "-c",
@@ -883,6 +893,7 @@ async test "PATH executable beginning with a dash stays unchanged in direct and 
   let document : Json = {
     "devsy": {
       "connection": "ssh",
+      "buildRef": "refs/heads/main",
       "command": Json::array(invocation.map(Json::string)),
     },
     "environmentRecipes": [{ "id": "test" }],
@@ -930,7 +941,7 @@ async test "destroy succeeds repeatedly after external deletion" {
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let (status, output, errors) = invoke("create", env, directory)
   assert_eq(status, 0, msg=errors)
@@ -1034,11 +1045,7 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       msg="clone scenario \{failure}: \{errors}",
     )
     let shallow = @fs.read_file(directory + "/shallow-args").text()
-    assert_true(
-      shallow.contains(
-        "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@main\n",
-      ),
-    )
+    assert_true(shallow.contains("https://example.com/repo.git@main\n"))
     assert_true(shallow.contains("--git-clone-strategy=shallow\n"))
     let full = @fs.read_file(directory + "/args").text()
     assert_eq(full.contains("--git-clone-strategy=\n"), failure == "missing")
@@ -1063,6 +1070,8 @@ test "checkout input validation preserves supported user names and rejects contr
   assert_eq(shallow_branch("refs/heads/main"), Some("main"))
   assert_eq(shallow_branch("refs/tags/v1"), None)
   assert_eq(shallow_branch("HEAD"), None)
+  assert_eq(shallow_branch("refs/heads/pull/123/head"), None)
+  assert_eq(shallow_branch("refs/heads/merge-requests/123/head"), None)
 }
 
 ///|
@@ -1077,7 +1086,7 @@ async test "invalid provisioned branch is rejected before Devsy" {
   )
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
   )
   env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
   for branch in ["-option", "bad..branch", "bad\nbranch", "refs@{bad"] {
@@ -1142,7 +1151,7 @@ async test "near-expiry Codex auth refreshes once across concurrent creates and 
     fake_codex(directory)
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: ssh, addons: {codexAuth: true}}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: ssh, buildRef: refs/heads/main, addons: {codexAuth: true}}\nenvironmentRecipes: [{id: test}]\n",
     )
   }
   @async.with_task_group(async fn(group) {
@@ -1194,7 +1203,7 @@ async test "failed refresh forwards an unexpired short token but never an expire
     fake_codex(directory)
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: ssh, addons: {codexAuth: true}}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: ssh, buildRef: refs/heads/main, addons: {codexAuth: true}}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, _, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1210,7 +1219,7 @@ async test "Git relay loss recovers without replacing the Orca master and cleans
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1250,7 +1259,7 @@ async test "unrecoverable established Git relay retries while Orca remains avail
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1295,7 +1304,7 @@ async test "delayed primary Git readiness does not start a competing services ow
     @fs.write_file(directory + "/git-unavailable", "")
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = @async.with_task_group(async fn(group) {
       group.spawn_bg(async fn() {
@@ -1331,7 +1340,7 @@ async test "disabled Git forwarding retains primary services without Git readine
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1355,7 +1364,7 @@ async test "tunnel worker reconnects on the same port and remains running when s
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1443,7 +1452,7 @@ async test "automatic tunnel recovery refuses a replacement workspace UID" {
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1498,7 +1507,7 @@ async test "remote user and workspace folder validation rejects malformed metada
     @fs.write_file(directory + "/up-result", result.stringify() + "\n")
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, _) = invoke("create", env, directory)
     assert_eq(status == 0, user == "developer$")
@@ -1523,7 +1532,7 @@ async test "server create returns recipe JSON while the tunnel child retains std
     @fs.write_file(directory + "/keep-proxy-stderr", "")
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     @fs.write_file(directory + "/hold-proxy-setup", "")
     let ((status, output, errors), premature_check) = @async.with_timeout(
@@ -1583,7 +1592,7 @@ async test "destroy cancels and reaps a blocked worker UID query" {
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1621,7 +1630,7 @@ async test "resume reuses a Server that survives suspension instead of starting 
   @fs.write_file(directory + "/reuse-running-server", "")
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let mut recipe = Json::null()
   with_fake_tunnel(directory, async fn() {
@@ -1678,7 +1687,7 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     @fs.write_file(directory + "/fail-tunnel-cleanup", "")
     let (status, output, errors) = invoke("create", env, directory)
@@ -1722,7 +1731,7 @@ async test "diagnostics retain only known backend phases and fixed failure class
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let result =
     #|{"kind":"status","phase":"cloning_repository","state":"started","step":"private-step-secret"}
@@ -1760,6 +1769,7 @@ async test "binary stderr never changes command failure with recording enabled o
   let document : Json = {
     "devsy": {
       "connection": "ssh",
+      "buildRef": "refs/heads/main",
       "command": [
         "/bin/sh", "-c", "printf '\\377 Permission denied (publickey). private-binary-secret\\n' >&2; exit 7",
         "sh",
@@ -1793,6 +1803,7 @@ async test "bulk reconnect restores persistent XDG state without a receipt or cu
     let document : Json = {
       "devsy": {
         "connection": "orca-server",
+        "buildRef": "refs/heads/main",
         "command": Json::array(configured_launcher(directory).map(Json::string)),
       },
       "environmentRecipes": [{ "id": "test" }],
@@ -1849,7 +1860,7 @@ async test "bulk recovery skips disabled stopped and replaced workspaces and con
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -1912,7 +1923,7 @@ async test "lifecycle progress reaches stderr and diagnostics before workspace u
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   env.set("CUSTOM_SERVICE_TOKEN", "fixture-private-credential")
   @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
@@ -2051,7 +2062,7 @@ async test "failed streamed workspace up preserves exit failure and owned cleanu
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
   let wrapper =
@@ -2088,7 +2099,7 @@ async test "unavailable progress stderr preserves lifecycle result with recordin
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let executable = integration_binary()
   for recording in ["1", "0"] {
@@ -2160,7 +2171,7 @@ async test "SSH recipes retain a recovery worker without a server port and reap 
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let (status, output, errors) = invoke("create", env, directory)
   assert_eq(status, 0, msg=errors)
@@ -2201,7 +2212,7 @@ async test "adoption rejects stopped replaced or unqueryable workspaces and reap
     defer cleanup_fixture(directory)
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -2527,7 +2538,7 @@ async test "adoption publishes connected independently of pending Git options" {
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let (status, output, errors) = invoke("create", env, directory)
   assert_eq(status, 0, msg=errors)
@@ -2694,7 +2705,7 @@ async test "adopted primary is stopped before reconnecting after a failed health
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let (status, output, errors) = invoke("create", env, directory)
   assert_eq(status, 0, msg=errors)
@@ -2824,13 +2835,14 @@ async test "provisioned task checkout uses present commits without an available 
   env.set("ORCA_REPO_BRANCH", "task-branch")
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
   )
   @fs.write_file(directory + "/git-unavailable", "")
   let (status, output, errors) = @async.with_timeout(8000, async fn() {
     invoke("create", env, directory)
   })
   assert_eq(status, 0, msg=errors)
+  assert_false(errors.contains("readiness is unavailable"))
   let payload : Json = {
     "schemaVersion": 1,
     "recipeResult": @json.parse(output),
@@ -2852,7 +2864,7 @@ async test "provisioned task checkout waits beyond thirty seconds for primary Gi
   env.set("ORCA_REPO_BRANCH", "task-branch")
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
   )
   @fs.write_file(directory + "/task-commit-missing", "")
   @fs.write_file(directory + "/git-unavailable", "")
@@ -2897,7 +2909,7 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/orca.yaml",
-    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test}]\n",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let installed = directory + "/installed-adapter"
   @fs.write_file(
@@ -2968,6 +2980,7 @@ async test "process API failures retain numeric errno without private context" {
     "devsy": {
       "command": [directory + "/private-missing-command"],
       "connection": "ssh",
+      "buildRef": "refs/heads/main",
     },
     "environmentRecipes": [{ "id": "test" }],
   }
@@ -2982,4 +2995,148 @@ async test "process API failures retain numeric errno without private context" {
     directory + "/.local/state/orca-env-devsy/events.jsonl",
   ).text()
   assert_false(records.contains("private-missing-command"))
+}
+
+///|
+async test "orca-worktree requires buildRef before any external acquisition" {
+  for setting in ["", ", buildRef: ''"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh" +
+      setting +
+      "}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, _, errors) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_true(errors.contains("devsy.buildRef is required"))
+    assert_false(@fs.exists(directory + "/args"))
+  }
+}
+
+///|
+async test "branch build records the acquired tip rather than a stale preflight tip" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("FAKE_BUILD_COMMIT", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let result = @json.parse(output)
+  assert_eq(
+    field(field(result, "userData").unwrap(), "buildCommit"),
+    Some(Json::string("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")),
+  )
+  let args = @fs.read_file(directory + "/args").text()
+  assert_true(args.contains("https://example.com/repo.git@main\n"))
+  assert_false(args.contains("@sha256:"))
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
+}
+
+///|
+async test "provisioned-root builds the supplied start ref without buildRef" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("ORCA_REPO_REF", "refs/remotes/origin/main")
+  env.set("ORCA_REPO_REF_HEAD", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+  env.set("ORCA_REPO_BRANCH", "feature")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let result = @json.parse(output)
+  let args = @fs.read_file(directory + "/args").text()
+  assert_true(args.contains("https://example.com/repo.git@main\n"))
+  assert_true(args.contains("--git-clone-strategy=shallow\n"))
+  assert_false(args.contains("@sha256:"))
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  let (status, _, errors) = invoke("destroy", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
+}
+
+///|
+async test "FUSE Git object creation uses rename without replacing user settings" {
+  for
+    (filesystem, initial, expected) in [
+      ("virtiofs", None, Some("rename")),
+      ("fuseblk", None, Some("rename")),
+      ("virtiofs", Some("link"), Some("link")),
+      ("virtiofs", Some("include"), Some("link")),
+      ("virtiofs", Some("locked"), Some("link")),
+      ("ext2/ext3", None, None),
+    ] {
+    let directory = @fs.tmpdir(prefix="orca-git-storage-test")
+    defer @fs.rmdir(directory, recursive=true)
+    let root = directory + "/workspace 'quoted'"
+    @fs.mkdir(root)
+    @fs.mkdir(directory + "/bin")
+    @fs.write_file(
+      directory + "/bin/stat",
+      "#!/bin/sh\nprintf '%s\\n' \"$FAKE_FILESYSTEM\"\n",
+      permission=0o700,
+    )
+    let env = {
+      "HOME": directory,
+      "GIT_CONFIG_GLOBAL": directory + "/.gitconfig",
+      "GIT_CONFIG_NOSYSTEM": "1",
+      "GIT_CONFIG_COUNT": "0",
+      "GIT_CONFIG_PARAMETERS": "",
+      "FAKE_FILESYSTEM": filesystem,
+      "PATH": directory + "/bin:" + @env.get_env_var("PATH").unwrap(),
+    }
+    if initial is Some("locked") {
+      @fs.write_file(
+        directory + "/.gitconfig.lock",
+        "[core]\ncreateObject = link\n",
+      )
+    } else if initial is Some(value) {
+      let (key, value) = if value == "include" {
+        let included = directory + "/included.config"
+        @fs.write_file(included, "[core]\ncreateObject = link\n")
+        ("include.path", included)
+      } else {
+        ("core.createObject", value)
+      }
+      let (status, _, errors) = @process.collect_output(
+        "git",
+        ["config", "--global", key, value],
+        extra_env=env,
+      )
+      assert_eq(status, 0, msg=errors.text())
+    }
+    let (status, _, errors) = @async.with_task_group(async fn(group) {
+      if initial == Some("locked") {
+        group.spawn_bg(async fn() {
+          @async.sleep(200)
+          @fs.rename(directory + "/.gitconfig.lock", directory + "/.gitconfig")
+        })
+      }
+      @process.collect_output(
+        "sh",
+        ["-c", git_object_storage_script(root)],
+        extra_env=env,
+      )
+    })
+    assert_eq(status, 0, msg=errors.text())
+    let (status, output, _) = @process.collect_output(
+      "git",
+      ["config", "--global", "--includes", "--get", "core.createObject"],
+      extra_env=env,
+    )
+    match expected {
+      Some(value) => {
+        assert_eq(status, 0)
+        assert_eq(output.text().trim(), value)
+      }
+      None => assert_eq(status, 1)
+    }
+  }
 }

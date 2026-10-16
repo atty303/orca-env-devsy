@@ -105,7 +105,7 @@ export function processFailureCategory(output: string) {
     memory: ["out of memory", "cannot allocate memory", "memory allocation"],
     disk: ["no space left on device"],
     git_credentials: ["could not read username", "could not read password", "authentication failed", "invalid credentials", "terminal prompts disabled"],
-    git_objects: ["bad object", "bad tree", "not a valid object", "invalid object"],
+    git_objects: ["bad object", "bad tree", "not a valid object", "invalid object", "unable to read sha1 file", "nonexistent object"],
     ssh_host_key: ["host key verification failed", "remote host identification has changed", "no matching host key type found"],
     ssh_auth: ["permission denied (publickey"],
     ssh_mux: ["control socket", "controlsocket", "master is not running", "mux_client"],

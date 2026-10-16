@@ -8,6 +8,7 @@ import { diagnosticRun, sshStartupPhases } from "./diagnostics.ts";
 
 type Services = Awaited<ReturnType<typeof services>>;
 export const sshConnectionFailures: { workspace: number; restarting: boolean; sessions: { exitCode: number | null; signal: NodeJS.Signals | null; category: string; socketReady: boolean; truncated: boolean; phases: string[] }[] }[] = [];
+export const gitFailures: { workspace: number; session: number; operation: string; effective?: string; global?: string; unavailable?: boolean }[] = [];
 export const firstUseFailures: { workspace: number; run?: number; helper?: boolean; endpoint?: boolean; unavailable?: boolean }[] = [];
 export async function firstUse(runtime: Runtime, index: number, env: Environment, service: Services, signal?: AbortSignal) {
   const { run } = processScope(signal);
@@ -17,7 +18,7 @@ export async function firstUse(runtime: Runtime, index: number, env: Environment
   const base = ["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", saved.socketDirectory + "/socket"];
   const target = `${state.user}@${state.workspaceId}.devsy`;
   const forwarding = `18080:127.0.0.1:${service.port}`;
-  const accepted = service.requests.get("w-" + index) ?? 0;
+  const accepted = (await service.stats()).accepted["w-" + index] ?? 0;
   await run([...base, "-O", "forward", "-R", forwarding, target], { env, timeout: budgets.firstUse });
   try {
     try {
@@ -30,7 +31,7 @@ export async function firstUse(runtime: Runtime, index: number, env: Environment
       firstUseFailures.push({ workspace: index, ...(runOrdinal === undefined ? {} : { run: runOrdinal }), ...observed });
       throw error;
     }
-    assert((service.requests.get("w-" + index) ?? 0) > accepted, "First use must authenticate to the Git server");
+    assert(((await service.stats()).accepted["w-" + index] ?? 0) > accepted, "First use must authenticate to the Git server");
   } finally { await run([...base, "-O", "cancel", "-R", forwarding, target], { env, timeout: budgets.firstUse }); }
   console.log(`PASS workspace ${index}: first Git use within ${budgets.firstUse} ms`);
 }
@@ -81,7 +82,45 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     } finally { release(); }
     await withAbort(signal, connectionsReady);
     assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse HEAD")).trim(), index === 1 ? expected.task : expected.build);
-    assert.equal((await exec(0, "cat " + quote(path + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : "fixture-build");
+    assert.equal((await exec(0, "cat " + quote(path + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : index === 3 ? "fixture-devcontainer" : "fixture-build");
+    if (["virtiofs", "fuseblk"].includes((await exec(0, "stat -f -c %T " + quote(path))).trim())) {
+      for (const session of [0, 1, 2]) assert.equal((await exec(session, "git config --get core.createObject")).trim(), "rename", `Session ${session} must use safe Git object creation`);
+    }
+    if (!restarting) {
+      const buildIdentity = index === 1 ? "fixture-task" : index === 3 ? "fixture-devcontainer" : "fixture-build";
+      assert.equal((await exec(0, "cat /tmp/orca-e2e-image-source")).trim(), buildIdentity);
+      assert.equal((await exec(0, "cat /tmp/orca-e2e-lifecycle-source")).trim(), buildIdentity);
+      assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse --is-shallow-repository")).trim(), index === 3 ? "false" : "true");
+      if (index !== 3) assert.equal((await exec(0, "git -C " + quote(path) + " rev-list --all --count")).trim(), "1");
+      let created: { worktree: { id: string; path: string } };
+      if (runtime.recipeResult.connection.type === "ssh") {
+        assert(runtime.sshTargetId);
+        const added = await orca.call<{ repo?: { id: string; executionHostId: string }; error?: string }>("repos", "addRemote", { connectionId: runtime.sshTargetId, remotePath: path });
+        assert(added.repo, "Orca must register the actual SSH repository");
+        created = await orca.call("worktrees", index === 1 ? "adoptProvisionedRoot" : "create", {
+          repoId: added.repo.id, name: "feature-e2e", runHooks: false, activate: false, noParent: true, setupDecision: "skip",
+          ...(index === 1 ? { runtimeId: runtime.id, executionHostId: added.repo.executionHostId, branchNameOverride: "task", expectedPath: path, expectedRefHead: expected.task } : { baseBranch: "origin/main" }),
+        });
+      } else {
+        assert(runtime.runtimeEnvironmentId);
+        const call = async <T>(method: string, params: unknown) => {
+          const response = await orca.call<{ ok: boolean; result: T }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method, params, timeoutMs: budgets.operation });
+          assert(response.ok, "Orca runtime call failed: " + method);
+          return response.result;
+        };
+        await call("repo.add", { path });
+        created = await call("worktree.create", { repo: path, name: "feature-e2e", baseBranch: "origin/main", runHooks: false, activate: false, noParent: true, setupDecision: "skip" });
+      }
+      assert(created.worktree?.path, "Orca must create or adopt the actual workspace");
+      assert(created.worktree.id);
+      await orca.call("ephemeralVm", "attachWorkspace", { runtimeId: runtime.id, workspaceId: created.worktree.id });
+      runtime.workspaceId = created.worktree.id;
+      const worktreePath = created.worktree.path;
+      const taskHead = index === 1 ? expected.task : await exec(0, "git -C " + quote(path) + " rev-parse refs/remotes/origin/main");
+      assert.equal((await exec(0, "git -C " + quote(worktreePath) + " rev-parse HEAD")).trim(), taskHead.trim());
+      assert.equal((await exec(0, "cat " + quote(worktreePath + "/identity.txt"))).trim(), index === 1 ? "fixture-task" : "fixture-build");
+      await exec(0, "printf usable > " + quote(worktreePath + "/worktree-usable.txt"));
+    }
     if (!restarting) {
     await exec(0, `set -eu; cd ${quote(path)}; test -w .; test -w "$HOME"; git config --global credential.useHttpPath true; printf %s ${quote("workspace-" + index)} > isolation.txt; cp isolation.txt isolation-${index}.txt; mkdir -p "$HOME/e2e"; printf '%s\\n' ${quote(service.publicKey)} > "$HOME/e2e/authorized_keys"; printf '%s\\n' ${quote("e2e " + service.publicKey)} > "$HOME/e2e/allowed_signers"; ssh-keygen -q -t ed25519 -N '' -f "$HOME/e2e/hostkey"; printf '%s\\n' 'Port 2222' 'ListenAddress 127.0.0.1' 'PasswordAuthentication no' 'UsePAM yes' 'StrictModes no' "HostKey $HOME/e2e/hostkey" "AuthorizedKeysFile $HOME/e2e/authorized_keys" "PidFile $HOME/e2e/sshd.pid" > "$HOME/e2e/sshd_config"; sudo mkdir -p /run/sshd; sudo /usr/sbin/sshd -f "$HOME/e2e/sshd_config"`);
     const operations = await Promise.allSettled([0, 1, 2].map(async session => {
@@ -91,7 +130,18 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       assert.equal((await exec(session, "ssh -F /dev/null -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost id -un")).trim(), "developer");
       const cwd = path + "/" + directory;
       const command = (args: string[]) => exec(session, "cd " + quote(cwd) + " && " + args.map(quote).join(" "));
-      const git = (...args: string[]) => measure("git-" + (args[0] === "-C" ? args[2] : args[0]), budgets.operation, () => command(["git", ...args]), index);
+      const git = (...args: string[]) => measure("git-" + (args[0] === "-C" ? args[2] : args[0]), budgets.operation, async () => {
+        try { return await command(["git", ...args]); }
+        catch (error) {
+          if (env.ORCA_ENV_DEVSY_RECORDING !== "0") {
+            const mode = (value: string) => ["rename", "link", "unset"].includes(value) ? value : "other";
+            const observed = await exec(session, `cd ${quote(cwd)}; effective=$(git config --get core.createObject) || effective=unset; global=$(git config --global --includes --get core.createObject) || global=unset; printf '%s\\n%s\\n' "$effective" "$global"`)
+              .then(output => { const values = output.trim().split("\n"); return { effective: mode(values[0] ?? ""), global: mode(values[1] ?? "") }; }, () => ({ unavailable: true }));
+            gitFailures.push({ workspace: index, session, operation: args[0] === "-C" ? args[2] : args[0], ...observed });
+          }
+          throw error;
+        }
+      }, index);
       await exec(session, "mkdir " + quote(cwd));
       await exec(session, `cd ${quote(cwd)} && printf edit > first && mv first renamed && ln -s renamed link`);
       assert.equal(await command(["cat", "link"]), "edit");
@@ -110,12 +160,14 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       await git("push", "-q", "-u", "origin", "HEAD");
       await git("clone", "-q", "--branch", "task-" + session, url, "../clone-" + session);
       assert.equal(await command(["cat", "../clone-" + session + "/identity"]), `w-${index}-s-${session}`);
-      await exec(session, `printf update >> ${quote(cwd + "/identity")}`);
-      await git("commit", "-qam", "update", "-S");
-      await git("push", "-q");
-      await git("-C", "../clone-" + session, "fetch", "-q");
-      await git("-C", "../clone-" + session, "reset", "-q", "--hard", "origin/task-" + session);
-      assert.equal(await command(["cat", "../clone-" + session + "/identity"]), `w-${index}-s-${session}update`);
+      for (let round = 0; round < 20; round++) {
+        await exec(session, `printf update >> ${quote(cwd + "/identity")}`);
+        await git("commit", "-qam", "update-" + round, "-S");
+        await git("push", "-q");
+        await git("-C", "../clone-" + session, "fetch", "-q");
+        await git("-C", "../clone-" + session, "reset", "-q", "--hard", "origin/task-" + session);
+        assert.equal(await command(["cat", "../clone-" + session + "/identity"]), `w-${index}-s-${session}` + "update".repeat(round + 1));
+      }
       console.log(`PASS workspace ${index} SSH ${session}: signed Git round trip`);
     }));
     for (const operation of operations) if (operation.status === "rejected") throw operation.reason;
