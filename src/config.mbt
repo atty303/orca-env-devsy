@@ -18,6 +18,7 @@ pub struct Settings {
   build_ref : String?
   up_args : Array[String]
   codex_auth : Bool
+  gh_auth : Bool
 } derive(Eq, Debug)
 
 ///|
@@ -188,6 +189,7 @@ pub fn resolve_settings(
   let mut build_ref = None
   let mut connection = None
   let mut codex_auth = false
+  let mut gh_auth = false
   let args = []
   for index, layer in layers {
     let location = [
@@ -233,6 +235,12 @@ pub fn resolve_settings(
       Some(Json::False) => codex_auth = false
       _ => raise InvalidConfig("\{location}.addons.codexAuth must be a boolean")
     }
+    match field(addons, "ghAuth") {
+      None => ()
+      Some(Json::True) => gh_auth = true
+      Some(Json::False) => gh_auth = false
+      _ => raise InvalidConfig("\{location}.addons.ghAuth must be a boolean")
+    }
   }
   let connection = match connection {
     Some("orca-server") => Server
@@ -242,7 +250,16 @@ pub fn resolve_settings(
         "devsy.connection must explicitly select orca-server or ssh",
       )
   }
-  { connection, command, home, context, build_ref, up_args: args, codex_auth, }
+  {
+    connection,
+    command,
+    home,
+    context,
+    build_ref,
+    up_args: args,
+    codex_auth,
+    gh_auth,
+  }
 }
 
 ///|

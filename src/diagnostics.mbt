@@ -10,6 +10,9 @@ async fn save_diagnostic(
   retry_delay_ms? : Int32,
   os_errno? : Int32,
   source? : CreateEvidence,
+  gh_input? : Json,
+  operation_id? : String,
+  workspace_id? : String,
 ) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
@@ -43,6 +46,14 @@ async fn save_diagnostic(
     }
     if source is Some(evidence) {
       set_field(event, "source", evidence.to_json())
+    }
+    if gh_input is Some(value) {
+      set_field(event, "ghInput", value)
+    }
+    for pair in [("operationId", operation_id), ("workspaceId", workspace_id)] {
+      if pair.1 is Some(value) {
+        set_field(event, pair.0, Json::string(value))
+      }
     }
     if os_errno is Some(code) && code > 0 && code < 4096 {
       set_field(event, "osErrno", Json::number(code.to_double()))

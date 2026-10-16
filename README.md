@@ -19,6 +19,8 @@ mise use github:atty303/orca-env-devsy
 | Devcontainer, Server connection | Linux x86_64/arm64; `curl`, `uname`, `mkdir`, `mktemp`, `chmod`, `mv`, `rm`; [official Orca Linux runtime libraries](https://github.com/stablyai/orca/blob/v1.4.224/config/docker/cli-launch-contract/Dockerfile) |
 | Host, Codex addon refresh | Codex (`codex`) with managed ChatGPT file authentication |
 | Devcontainer, Codex addon enabled | `grep`, `cat`, `sha256sum`, `mkdir`, `mktemp`, `mv`, `rm` |
+| Host, GitHub addon enabled | GitHub CLI (`gh`) authenticated to `github.com`; GitHub API access |
+| Devcontainer, GitHub addon enabled | `gh`, `cat`, `wc`, `sha256sum`, `mkdir`, `rmdir`, `mktemp`, `chmod`, `mv`, `rm` |
 
 Host binaries support macOS 13+ on Apple Silicon and Linux with glibc 2.31+
 on x86_64/arm64.
@@ -93,6 +95,11 @@ data. Refresh failure warns and allows a still-valid token to be forwarded;
 expired or unavailable authentication warns and continues without delivery.
 Remote manually managed authentication is preserved. There is no ongoing
 background authentication synchronization.
+
+Enable `devsy.addons.ghAuth: true` to use the host's active `github.com`
+authentication with ordinary `gh` commands in the container. It transfers at
+create/resume and explicit reconnect, preserves manually managed authentication,
+and warns without blocking connection if delivery fails.
 
 See [configuration and contracts](docs/contracts.md) for the supported fields,
 connection constraints and local diagnostic controls.

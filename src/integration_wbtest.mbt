@@ -23,6 +23,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'context list'*) printf '[{"name":"fixture-context","default":true}]\n' ;;
     #|  *'context get'*) printf '{"SSH_INJECT_GIT_CREDENTIALS":{"default":"true","value":"%s"}}\n' "${FAKE_GIT_FORWARDING:-true}" ;;
     #|  *'workspace list'*)
+    #|    if test -f "$FAKE_HOME/list-result"; then cat "$FAKE_HOME/list-result"; exit; fi
     #|    if test -f "$FAKE_HOME/block-list"; then
     #|      printf '%s\n' "$$" > "$FAKE_HOME/blocked-list-pid"
     #|      while test ! -f "$FAKE_HOME/release-list"; do sleep 0.1; done
@@ -79,6 +80,11 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    fi
     #|    test -f "$control" ;;
     #|  *'-O exit'*) rm -f "$control" ;;
+    #|  *'orca-gh-auth'*)
+    #|    for last in "$@"; do :; done
+    #|    case "$*" in *'@second.devsy'*) test ! -f "$FAKE_HOME/fail-second-gh" || exit 22 ;; esac
+    #|    case "$last" in *'orca-gh-auth-publish'*) printf 'publish\n' >> "$FAKE_HOME/remote-gh-logins"; test ! -f "$FAKE_HOME/fail-remote-gh" || exit 22 ;; esac
+    #|    GH_TOKEN="${FAKE_REMOTE_GH_TOKEN:-}" GITHUB_TOKEN= GH_CONFIG_DIR="$FAKE_HOME/remote-gh" HOME="$FAKE_HOME/remote" FAKE_GH_REMOTE=1 /bin/sh -c "$last" ;;
     #|  *'cat >'* ) test ! -f "$FAKE_HOME/fail-addon"; cat > "$FAKE_HOME/delivered-auth" ;;
     #|  *'-L 127.0.0.1:'* )
     #|    while test "$1" != '-L'; do shift; done

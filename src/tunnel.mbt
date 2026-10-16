@@ -200,7 +200,7 @@ async fn ensure_ssh_worker(
   for
     name in [
       "workspaceId", "workspaceUid", "user", "command", "devsyEnv", "home", "context",
-      "connection",
+      "connection", "ghAuth",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)
@@ -303,6 +303,7 @@ async fn reconnect_all_inner() -> Unit {
           }
           set_field(state, "tunnelDirectory", Json::string(directory))
           ensure_ssh_worker(state, port)
+          gh_addon(state)
           save_diagnostic("reconnect", "success")
         } catch {
           AdapterError("Tunnel workspace ownership changed") =>
