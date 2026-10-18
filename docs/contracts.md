@@ -14,7 +14,6 @@ All settings below can appear in `devsy`, `devsy.profiles.<name>`, or
 | `buildRef` | Remote ref supplying the complete build checkout; required for `orca-worktree`, optional for `provisioned-root` |
 | `upArgs` | Array of native Devsy workspace-up arguments |
 | `addons.codexAuth` | Optional file-backed Codex ChatGPT authentication handoff; default false |
-| `addons.ghAuth` | Optional host GitHub CLI authentication handoff for `github.com`; default false |
 | `profile` | Select one common profile; recipe selection overrides common selection |
 | `profiles` | Named settings mappings, owned by the common `devsy` section |
 
@@ -183,40 +182,6 @@ refresh credentials. A private digest marker protects authentication subsequentl
 modified by the user. Delivery is bounded to 45 seconds and cannot fail core
 create/resume. Tokens and pairing data are excluded from saved adapter settings,
 recording, command arguments and public artifacts.
-
-The GitHub addon reads the host's active `github.com` token using
-`gh auth token --hostname github.com` at create, resume and explicit reconnect
-(including bulk reconnect). It uses the saved addon setting; YAML changes apply
-only to new workspaces. Automatic transport recovery does not refresh authentication.
-The host CLI's environment, configuration and keyring resolution remain authoritative.
-
-The host validates the captured token with `gh api user` and obtains its account.
-Delivery uses SSH stdin and publishes `hosts.yml` with mode `0600` in
-`GH_CONFIG_DIR`, or `${XDG_CONFIG_HOME:-$HOME/.config}/gh`. The token is stored
-in plaintext there. Existing YAML is merged in memory and written as JSON, which
-GitHub CLI accepts in `hosts.yml`. Other hosts are retained and `config.yml` is
-not replaced. The addon never invokes login, switch or logout, and does not
-modify the keyring, configure Git credential helpers or install `gh`.
-
-Nonempty container `GH_TOKEN` or `GITHUB_TOKEN`, an existing GitHub token or
-configured account, symlinked authentication files, and manual edits to an
-addon-managed `hosts.yml` prevent replacement. A private digest marker identifies
-the addon-managed file. Any manual edit to that file, including another host's
-settings, stops further updates. Removing the addon setting does not revoke or
-delete previously delivered credentials.
-
-Transfer is bounded to 45 seconds. Missing CLIs or authentication, failed account
-lookup, invalid YAML and delivery errors warn and leave the connection available.
-Incomplete transfers and files changed since the snapshot are not published. Local diagnostics distinguish
-disabled, host-token, snapshot, host-account, merge, delivery, preservation reasons
-and failures, with operation and workspace identifiers for bulk reconnect.
-They retain the delivered login, environment versus CLI-managed authentication
-source, guest configuration directory and install/update decision, without tokens
-or CLI output. CLI-managed file versus keyring selection is delegated to `gh`
-and is not distinguished in diagnostics. A delivery lock serializes addon writes; if an
-uncatchable interruption leaves `.orca-env-devsy-gh-lock` in the container's
-GitHub config directory, remove that directory after confirming no delivery is
-running, then reconnect.
 
 ## Upstream contracts
 

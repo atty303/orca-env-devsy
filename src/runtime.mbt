@@ -400,7 +400,6 @@ async fn create_state(pinned_commit? : String) -> Json {
     },
     "checkoutMode": mode,
     "codexAuth": config.codex_auth,
-    "ghAuth": config.gh_auth,
   }
   let locations = Json::empty_object()
   for name in location_variables {
@@ -925,7 +924,6 @@ async fn execute_inner(mode : String) -> Unit {
       create_recording.phase = "connection"
       errdefer discard_created_workspace(state)
       codex_addon(state)
-      gh_addon(state)
       emit_connection(state, true, wait_for_git=false)
     }
     "resume" => {
@@ -945,7 +943,6 @@ async fn execute_inner(mode : String) -> Unit {
         ),
       )
       codex_addon(state)
-      gh_addon(state)
       if required(state, "connection") == "orca-server" &&
         server_is_running(state) {
         emit_connection(state, false, existing=previous)
@@ -953,10 +950,7 @@ async fn execute_inner(mode : String) -> Unit {
         emit_connection(state, false)
       }
     }
-    "reconnect" => {
-      gh_addon(state)
-      emit_connection(state, false, existing=previous)
-    }
+    "reconnect" => emit_connection(state, false, existing=previous)
     "suspend" => {
       ignore(
         devsy(
