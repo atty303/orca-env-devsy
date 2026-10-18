@@ -99,7 +99,6 @@ fn control_socket(state : Json, directory : String) -> String {
 
 ///|
 async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
-  stop_git_management(state)
   @async.with_timeout(2000, async fn() {
     ignore(
       @process.collect_output(
@@ -111,18 +110,13 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
     _ => ()
   }
   if field(state, "socketDirectory") is Some(Json::String(socket_directory)) {
-    if @fs.exists(socket_directory + "/credential-socket") {
-      @fs.remove(socket_directory + "/credential-socket")
-    }
     if @fs.exists(socket_directory + "/socket") {
       @fs.remove(socket_directory + "/socket")
     }
     wait_ssh_proxy(state, "primary")
-    for role in ["primary", "management"] {
-      let lease = socket_directory + "/" + role + "-proxy.lock"
-      if @fs.exists(lease) {
-        @fs.remove(lease)
-      }
+    let lease = socket_directory + "/primary-proxy.lock"
+    if @fs.exists(lease) {
+      @fs.remove(lease)
     }
     @fs.rmdir(socket_directory) catch {
       _ => ()
@@ -399,7 +393,7 @@ async fn wait_tunnel(directory : String, wait_for_git~ : Bool = true) -> Unit {
   }
   if git_status != "ready" && git_status != "disabled" {
     @stdio.stderr.write(
-      "orca-env-devsy: Git credential relay readiness is unavailable; Orca remains connected. Recovery will retry; inspect local git-relay diagnostics.\n",
+      "orca-env-devsy: Git credential relay readiness is unavailable; Orca remains connected. Inspect local git-relay diagnostics.\n",
     ) catch {
       _ => ()
     }
@@ -507,7 +501,6 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   }
   if adopted {
     errdefer stop_tunnel_master(state, directory)
-    stop_git_management(state)
     let mut terminal = false
     @async.with_task_group(async fn(group) {
       // Both reads use the saved context; neither changes transport ownership.
@@ -571,9 +564,6 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   }
   let mut attempt = 0
   while @fs.exists(enabled) {
-    if @fs.exists(directory + "/git-established") {
-      @fs.remove(directory + "/git-established")
-    }
     git_relay_status(directory, "pending")
     tunnel_status(directory, "connecting")
     let mut terminal = false

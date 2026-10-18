@@ -116,13 +116,10 @@ follows Devsy's workspace/container lifecycle.
 ## Diagnostics and authentication
 
 Both connection modes monitor Devsy's Git credential relay without requesting
-credentials. If readiness is lost, one separately owned SSH management connection
-tries to restore it while the primary SSH connection stays connected. Failed recovery warns
-and retries with a delay; it does not fail create/resume. Suspend/destroy and
-transport reconnect reap the management connection. `SSH_INJECT_GIT_CREDENTIALS=false`
-disables this monitoring and recovery. The `git-relay` diagnostic status describes
-readiness, separately from the `orca-tunnel` connection status; neither verifies
-credential retrieval.
+credentials. Devsy owns relay recovery; loss of readiness does not disconnect
+Orca or fail create/resume. `SSH_INJECT_GIT_CREDENTIALS=false` disables this
+monitoring. The `git-relay` diagnostic status describes readiness, separately
+from the `orca-tunnel` connection status; neither verifies credential retrieval.
 
 Lifecycle stderr streams timestamped (UTC) stages and Devsy phase transitions,
 with stage duration and total elapsed time on completion or failure. It also

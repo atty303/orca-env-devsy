@@ -52,7 +52,6 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  previous="$arg"
     #|done
     #|case "$*" in
-    #|  *'credential-socket'*) : ;;
     #|  *'-N'*) case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
@@ -60,13 +59,6 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    touch "$FAKE_HOME/git-probed"
     #|    test -f "$control"
     #|    test ! -f "$FAKE_HOME/git-unavailable" ;;
-    #|  *'credential-socket'*'-O exit'*) rm -f "$control" ;;
-    #|  *'credential-socket'*'-N'*)
-    #|    trap 'rm -f "$control"' EXIT HUP INT TERM
-    #|    touch "$control"
-    #|    printf 'start\n' >> "$FAKE_HOME/git-management"
-    #|    if test ! -f "$FAKE_HOME/git-unrecoverable"; then rm -f "$FAKE_HOME/git-unavailable"; fi
-    #|    while test -f "$control"; do sleep 0.01; done ;;
     #|  *'then printf present; else printf missing; fi'*) if test -f "$FAKE_HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
@@ -1231,7 +1223,7 @@ async test "failed refresh forwards an unexpired short token but never an expire
 }
 
 ///|
-async test "Git relay loss recovers without replacing the Orca master and cleans up management" {
+async test "Git relay loss is monitored without opening another services connection" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
@@ -1248,69 +1240,39 @@ async test "Git relay loss recovers without replacing the Orca master and cleans
     defer ignore(invoke("destroy", env, directory, payload~))
     let starts = @fs.read_file(directory + "/ssh-args")
       .text()
-      .split("-L\n")
+      .split("-N\n")
       .count()
     @fs.write_file(directory + "/git-unavailable", "")
-    @async.with_timeout(15000, async fn() {
-      while @fs.exists(directory + "/git-unavailable") {
-        @async.sleep(100)
-      }
-    })
-    assert_true(@fs.exists(directory + "/git-management"))
-    assert_eq(
-      @fs.read_file(directory + "/ssh-args").text().split("-L\n").count(),
-      starts,
-    )
-    assert_true(worker_alive(worker))
-    let (status, _, errors) = invoke("suspend", env, directory, payload~)
-    assert_eq(status, 0, msg=errors)
-    assert_false(@fs.exists(worker))
-    let sockets = @fs.read_file(directory + "/ssh-args").text()
-    assert_true(sockets.contains("credential-socket"))
-  })
-}
-
-///|
-async test "unrecoverable established Git relay retries while Orca remains available" {
-  let (directory, env) = fixture()
-  defer cleanup_fixture(directory)
-  with_fake_tunnel(directory, async fn() {
-    @fs.write_file(
-      directory + "/orca.yaml",
-      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
-    )
-    let (status, output, errors) = invoke("create", env, directory)
-    assert_eq(status, 0, msg=errors)
-    @fs.write_file(directory + "/git-unavailable", "")
-    @fs.write_file(directory + "/git-unrecoverable", "")
-    let result = @json.parse(output)
-    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
-    defer ignore(invoke("destroy", env, directory, payload~))
-    let worker = required(field(result, "userData").unwrap(), "tunnelDirectory")
-    let starts = @fs.read_file(directory + "/ssh-args")
-      .text()
-      .split("-L\n")
-      .count()
-    @async.with_timeout(20000, async fn() {
-      while !@fs.exists(directory + "/git-management") ||
-            @fs.read_file(directory + "/git-management")
-            .text()
-            .split("start")
-            .count() <
-            3 {
-        @async.sleep(100)
+    @async.with_timeout(5000, async fn() {
+      while @fs.read_file(worker + "/git-status").text() != "unavailable" {
+        @async.sleep(10)
       }
     })
     assert_true(worker_alive(worker))
-    assert_eq(
-      @fs.read_file(directory + "/ssh-args").text().split("-L\n").count(),
-      starts,
-    )
+    assert_true(@fs.exists(directory + "/git-unavailable"))
     let events = @fs.read_file(
       directory + "/.local/state/orca-env-devsy/events.jsonl",
     ).text()
     assert_true(events.contains("readiness_unavailable"))
-    assert_true(events.contains("retryDelayMs"))
+    @fs.remove(directory + "/git-unavailable")
+    @async.with_timeout(5000, async fn() {
+      while @fs.read_file(worker + "/git-status").text() != "ready" {
+        @async.sleep(10)
+      }
+    })
+    assert_eq(
+      @fs.read_file(directory + "/ssh-args").text().split("-N\n").count(),
+      starts,
+    )
+    assert_false(
+      @fs.read_file(directory + "/ssh-args")
+      .text()
+      .contains("credential-socket"),
+    )
+    @fs.write_file(worker + "/git-established", "")
+    let (status, _, errors) = invoke("suspend", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_false(@fs.exists(worker))
   })
 }
 
@@ -1340,7 +1302,6 @@ async test "delayed primary Git readiness does not start a competing services ow
     let result = @json.parse(output)
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
-    assert_false(@fs.exists(directory + "/git-management"))
     assert_eq(@fs.read_file(directory + "/primary-services").text(), "enabled")
     let state = field(result, "userData").unwrap()
     assert_eq(
@@ -1365,7 +1326,6 @@ async test "disabled Git forwarding retains primary services without Git readine
     let result = @json.parse(output)
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
-    assert_false(@fs.exists(directory + "/git-management"))
     assert_eq(@fs.read_file(directory + "/primary-services").text(), "enabled")
     assert_false(
       @fs.read_file(directory + "/ssh-args")
@@ -2303,7 +2263,6 @@ async test "adoption rejects stopped replaced or unqueryable workspaces and reap
       ),
     )
     assert_false(@fs.exists(socket + "/socket"))
-    assert_false(@fs.exists(socket + "/credential-socket"))
     assert_false(worker_alive(worker))
     if condition == "replaced" {
       assert_eq(
@@ -2608,7 +2567,6 @@ async test "adoption publishes connected independently of pending Git options" {
   let socket = required(saved, "socketDirectory")
   @fs.mkdir(socket, recursive=true, allow_exist=true)
   @fs.write_file(socket + "/socket", "")
-  @fs.write_file(socket + "/credential-socket", "")
   @fs.write_file(worker + "/enabled", "")
   @fs.write_file(worker + "/status.json", "{}")
   @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
@@ -2653,7 +2611,6 @@ async test "adoption publishes connected independently of pending Git options" {
       _ => {
         let observed : Json = {
           "primarySocket": @fs.exists(socket + "/socket"),
-          "managementSocket": @fs.exists(socket + "/credential-socket"),
           "workspaceList": @fs.exists(directory + "/adoption-list"),
           "workspaceStatus": @fs.exists(directory + "/adoption-status"),
           "optionsRequested": @fs.exists(directory + "/adoption-options"),
@@ -2689,10 +2646,7 @@ async test "adoption publishes connected independently of pending Git options" {
               continue
             }
             let event = @json.parse(line.to_owned())
-            for
-              stage in [
-                "workspace-list", "workspace-status", "orca-tunnel", "git-relay-management",
-              ] {
+            for stage in ["workspace-list", "workspace-status", "orca-tunnel"] {
               if field(event, "stage") == Some(Json::string(stage)) {
                 for
                   status in [
@@ -2718,7 +2672,6 @@ async test "adoption publishes connected independently of pending Git options" {
         )
       }
     }
-    assert_false(@fs.exists(socket + "/credential-socket"))
     assert_false(@fs.exists(directory + "/options-blocked"))
     @fs.write_file(directory + "/allow-options-query", "")
     @async.with_timeout(5000, async fn() {
@@ -2788,7 +2741,6 @@ async test "adopted primary is stopped before reconnecting after a failed health
     #|  previous="$arg"
     #|done
     #|case "$*" in
-    #|  *'credential-socket'*) : ;;
     #|  *'-O check'*)
     #|    if test -f "$FAKE_HOME/fail-next-check"; then rm "$FAKE_HOME/fail-next-check"; exit 1; fi ;;
     #|  *'-N'*)
@@ -2815,11 +2767,6 @@ async test "adopted primary is stopped before reconnecting after a failed health
               "status",
             ) !=
             Some(Json::string("connected")) {
-        @async.sleep(10)
-      }
-      // The primary's earlier readiness survives supervisor replacement.
-      @fs.write_file(directory + "/git-unavailable", "")
-      while !@fs.exists(directory + "/git-management") {
         @async.sleep(10)
       }
       @fs.write_file(directory + "/fail-next-check", "")
@@ -2951,7 +2898,6 @@ async test "provisioned task checkout waits beyond thirty seconds for primary Gi
   defer ignore(invoke("destroy", env, directory, payload~))
   assert_false(@fs.exists(directory + "/checkout-before-ready"))
   assert_true(@fs.exists(directory + "/task-checkout"))
-  assert_false(@fs.exists(directory + "/git-management"))
   assert_false(errors.contains("readiness is unavailable"))
 }
 
@@ -2984,19 +2930,6 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
   )
   @fs.remove(installed)
   let worker = required(field(result, "userData").unwrap(), "tunnelDirectory")
-  @fs.write_file(directory + "/git-unavailable", "")
-  @async.with_timeout(5000, async fn() {
-    while !@fs.exists(directory + "/git-management") ||
-          @fs.read_file(worker + "/git-status").text() != "ready" {
-      @async.sleep(10)
-    }
-  }) catch {
-    _ =>
-      assert_true(
-        false,
-        msg="pruned adapter worker did not recover the Git relay",
-      )
-  }
   assert_true(worker_alive(worker))
   let (code, _, _) = @process.collect_output(
     "/bin/sh",

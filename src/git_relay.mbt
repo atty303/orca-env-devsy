@@ -68,31 +68,6 @@ async fn git_relay_ready(state : Json, directory : String) -> Bool {
 }
 
 ///|
-async fn stop_git_management(state : Json) -> Unit {
-  @async.protect_from_cancel(async fn() {
-    @async.with_timeout(2000, async fn() {
-      ignore(
-        @process.collect_output(
-          "ssh",
-          ["-o", "ProxyCommand=false"] +
-          ssh_args(state) +
-          [
-            "-S",
-            required(state, "socketDirectory") + "/credential-socket",
-            "-O",
-            "exit",
-          ],
-        ),
-      )
-    }) catch {
-      _ => ()
-    }
-    wait_ssh_proxy(state, "management")
-    save_diagnostic("git-relay-management", "stopped")
-  })
-}
-
-///|
 async fn monitor_git_relay(
   state : Json,
   directory : String,
@@ -125,90 +100,20 @@ async fn monitor_git_relay(
       }
   }
   let mut last = ""
-  let mut attempt = 0
-  // A cold primary can take arbitrarily long to start services. Only a relay
-  // that was previously ready can be lost; preserve that fact across adoption.
-  let established = directory + "/git-established"
-  let mut was_ready = @fs.exists(established)
+  let mut was_ready = false
   while @fs.exists(enabled) {
-    if git_relay_ready(state, directory) {
-      if !was_ready {
-        @fs.write_file(established, "", permission=0o600)
-        was_ready = true
-      }
-      if last != "ready" {
-        git_relay_status(directory, "ready")
-        last = "ready"
-      }
-      attempt = 0
-      @async.sleep(500)
-      continue
+    let status = if git_relay_ready(state, directory) {
+      was_ready = true
+      "ready"
+    } else if was_ready {
+      "unavailable"
+    } else {
+      "pending"
     }
-    if !was_ready {
-      if last != "pending" {
-        git_relay_status(directory, "pending")
-        last = "pending"
-      }
-      @async.sleep(100)
-      continue
+    if status != last {
+      git_relay_status(directory, status)
+      last = status
     }
-    git_relay_status(directory, "unavailable")
-    last = "unavailable"
-    @async.with_task_group(async fn(group) {
-      let sink = @process.redirect_to_file("/dev/null", shared=true)
-      defer sink.close()
-      let child = @process.spawn(
-        group,
-        "ssh",
-        ssh_args(
-          state,
-          lease=required(state, "socketDirectory") + "/management-proxy.lock",
-        ) +
-        [
-          "-M",
-          "-S",
-          required(state, "socketDirectory") + "/credential-socket",
-          "-N",
-          "-o",
-          "ServerAliveInterval=10",
-          "-o",
-          "ServerAliveCountMax=3",
-        ],
-        stdin=@process.redirect_from_file("/dev/null"),
-        stdout=sink,
-        stderr=sink,
-        no_wait=true,
-      )
-      defer child.cancel()
-      defer stop_git_management(state)
-      save_diagnostic("git-relay-management", "started")
-      let deadline = @env.now() + 10000
-      let mut recovered = false
-      while @fs.exists(enabled) && child.try_wait() is None {
-        let ready = git_relay_ready(state, directory)
-        if ready && !recovered {
-          recovered = true
-          attempt = 0
-          last = "ready"
-          git_relay_status(directory, "ready")
-        }
-        // 1.23.0 stops the losing service. Recreate only the management
-        // connection when the relay vanishes, never the Orca master.
-        if (!ready && recovered) || (!recovered && @env.now() >= deadline) {
-          break
-        }
-        @async.sleep(if recovered { 500 } else { 250 })
-      }
-    }) catch {
-      _ => save_diagnostic("git-relay-management", "process-error")
-    }
-    if @fs.exists(enabled) {
-      attempt = if attempt < 5 { attempt + 1 } else { 5 }
-      let delay = if attempt < 5 { 250 * (1 << (attempt - 1)) } else { 30000 }
-      git_relay_status(directory, "unavailable")
-      last = "unavailable"
-      save_diagnostic("git-relay", "retry", attempt~, retry_delay_ms=delay)
-      @async.sleep(delay)
-    }
+    @async.sleep(500)
   }
 }
