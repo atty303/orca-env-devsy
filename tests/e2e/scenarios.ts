@@ -4,7 +4,7 @@ import { run as cleanupRun, start, processScope, withAbort, terminate, quote, ty
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
 import { budgets, measure } from "./timing.ts";
-import { diagnosticRun, sshStartupPhases } from "./diagnostics.ts";
+import { DiagnosticError, diagnosticRun, sshStartupPhases } from "./diagnostics.ts";
 
 type Services = Awaited<ReturnType<typeof services>>;
 export const sshConnectionFailures: { workspace: number; restarting: boolean; sessions: { exitCode: number | null; signal: NodeJS.Signals | null; category: string; socketReady: boolean; truncated: boolean; phases: string[] }[] }[] = [];
@@ -92,25 +92,17 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       assert.equal((await exec(0, "cat /tmp/orca-e2e-lifecycle-source")).trim(), buildIdentity);
       assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse --is-shallow-repository")).trim(), index === 3 ? "false" : "true");
       if (index !== 3) assert.equal((await exec(0, "git -C " + quote(path) + " rev-list --all --count")).trim(), "1");
-      let created: { worktree: { id: string; path: string } };
-      if (runtime.recipeResult.connection.type === "ssh") {
-        assert(runtime.sshTargetId);
-        const added = await orca.call<{ repo?: { id: string; executionHostId: string }; error?: string }>("repos", "addRemote", { connectionId: runtime.sshTargetId, remotePath: path });
-        assert(added.repo, "Orca must register the actual SSH repository");
-        created = await orca.call("worktrees", index === 1 ? "adoptProvisionedRoot" : "create", {
-          repoId: added.repo.id, name: "feature-e2e", runHooks: false, activate: false, noParent: true, setupDecision: "skip",
-          ...(index === 1 ? { runtimeId: runtime.id, executionHostId: added.repo.executionHostId, branchNameOverride: "task", expectedPath: path, expectedRefHead: expected.task } : { baseBranch: "origin/main" }),
-        });
-      } else {
-        assert(runtime.runtimeEnvironmentId);
-        const call = async <T>(method: string, params: unknown) => {
-          const response = await orca.call<{ ok: boolean; result: T }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method, params, timeoutMs: budgets.operation });
-          assert(response.ok, "Orca runtime call failed: " + method);
-          return response.result;
-        };
-        await call("repo.add", { path });
-        created = await call("worktree.create", { repo: path, name: "feature-e2e", baseBranch: "origin/main", runHooks: false, activate: false, noParent: true, setupDecision: "skip" });
-      }
+      assert(runtime.runtimeEnvironmentId);
+      const call = async <T>(method: string, params: unknown) => {
+        const response = await orca.call<{ ok: true; result: T } | { ok: false; error: unknown }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method, params, timeoutMs: budgets.operation });
+        if (!response.ok) throw new DiagnosticError(response.error);
+        return response.result;
+      };
+      await call("repo.add", { path });
+      const created = await call<{ worktree: { id: string; path: string } }>(index === 1 ? "worktree.adoptProvisionedRoot" : "worktree.create", {
+        repo: path, name: "feature-e2e", runHooks: false, activate: false, noParent: true, setupDecision: "skip",
+        ...(index === 1 ? { branchNameOverride: "task", expectedPath: path, expectedRefHead: expected.task } : { baseBranch: "origin/main" }),
+      });
       assert(created.worktree?.path, "Orca must create or adopt the actual workspace");
       assert(created.worktree.id);
       await orca.call("ephemeralVm", "attachWorkspace", { runtimeId: runtime.id, workspaceId: created.worktree.id });

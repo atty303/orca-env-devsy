@@ -122,6 +122,7 @@ try {
     assert.equal(result.runtime.status, "running");
     if (definition.connection === "ssh") assert(result.sshTargetId);
     else assert(result.environment?.id);
+    assert(result.runtime.runtimeEnvironmentId, "Orca must serve every provisioned host through a runtime environment");
     await firstUse(result.runtime, index, env, shared!, phase.signal);
     return { runtime: result.runtime, index };
   }));
