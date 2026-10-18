@@ -672,24 +672,9 @@ async fn create_state(pinned_commit? : String) -> Json {
   let result = up_result(output)
   set_field(state, "user", Json::string(required(result, "remoteUser")))
   validate_state(state)
-  let root_script = match field(result, "remoteWorkspaceFolder") {
-    Some(Json::String(folder)) => {
-      guard folder == "" ||
-        (
-          folder.has_prefix("/") &&
-          !folder.contains("\n") &&
-          !folder.contains("\r")
-        ) else {
-        raise AdapterError("Invalid remote workspace folder")
-      }
-      if folder == "" {
-        ""
-      } else {
-        "cd " + quote(folder) + " && "
-      }
-    }
-    None => ""
-    _ => raise AdapterError("Invalid remote workspace folder")
+  let root = required(result, "remoteWorkspaceFolder")
+  guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
+    raise AdapterError("Invalid remote workspace folder")
   }
   // Transient probes must not own the shared credential relay. Establish the
   // persistent owner before checkout commands can need private Git access.
@@ -699,17 +684,6 @@ async fn create_state(pinned_commit? : String) -> Json {
     None
   }
   ensure_ssh_worker(state, port, wait_for_git=mode != "provisioned-root")
-  let root = remote(
-      state,
-      root_script +
-      "test \"$(pwd -P)\" = \"$(git rev-parse --show-toplevel)\" && pwd -P",
-      "resolve-root",
-    )
-    .trim()
-    .to_owned()
-  guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
-    raise AdapterError("Invalid remote project root")
-  }
   ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
   create_recording.phase = "checkout-verification"
   let actual_commit = remote(

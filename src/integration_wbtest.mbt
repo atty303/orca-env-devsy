@@ -70,7 +70,6 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'then printf present; else printf missing; fi'*) if test -f "$FAKE_HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
-    #|  *'pwd -P'*) printf '/workspace/repo\n' ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/reuse-running-server" && test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
     #|  *'--recipe-json'*) touch "$FAKE_HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
     #|  *'-O check'*)
@@ -1507,6 +1506,8 @@ async test "automatic tunnel recovery refuses a replacement workspace UID" {
 async test "remote user and workspace folder validation rejects malformed metadata and permits service users" {
   for
     pair in [
+      ("developer", Json::string("")),
+      ("developer", Json::null()),
       ("developer", Json::string("relative")),
       ("developer", Json::string("/path\rname")),
       ("developer", Json::string("/path\nname")),
@@ -1541,6 +1542,37 @@ async test "remote user and workspace folder validation rejects malformed metada
       assert_false(@fs.exists(directory + "/created"))
     }
   }
+}
+
+///|
+async test "create uses the Devsy workspace folder without an SSH root probe" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  let folder = "/workspace/repo/sub dir's $(literal)"
+  let result : Json = {
+    "kind": "result",
+    "outcome": "success",
+    "remoteUser": "developer",
+    "remoteWorkspaceFolder": folder,
+  }
+  @fs.write_file(directory + "/up-result", result.stringify() + "\n")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let recipe = @json.parse(output)
+  let payload : Json = { "schemaVersion": 1, "recipeResult": recipe }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  assert_eq(
+    field(field(recipe, "userData").unwrap(), "projectRoot"),
+    Some(Json::string(folder)),
+  )
+  let ssh = @fs.read_file(directory + "/ssh-args").text()
+  assert_false(ssh.contains("pwd -P"))
+  assert_false(ssh.contains("--show-toplevel"))
+  assert_true(ssh.contains("git -C " + quote(folder) + " rev-parse HEAD"))
 }
 
 ///|

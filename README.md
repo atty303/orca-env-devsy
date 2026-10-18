@@ -14,7 +14,7 @@ mise use github:atty303/orca-env-devsy
 
 | Where | Required commands |
 | --- | --- |
-| Host | Devsy (`devsy`), Git (`git`), OpenSSH (`ssh`), a POSIX shell and `env` supporting `-u` |
+| Host | Devsy 1.23.2+ (`devsy`), Git (`git`), OpenSSH (`ssh`), a POSIX shell and `env` supporting `-u` |
 | Devcontainer, both connections | Git, `stat` supporting `-f -c %T`, `sleep`, and a POSIX-compatible SSH command shell |
 | Devcontainer, Server connection | Linux x86_64/arm64; `curl`, `uname`, `mkdir`, `mktemp`, `chmod`, `mv`, `rm`; [official Orca Linux runtime libraries](https://github.com/stablyai/orca/blob/v1.4.224/config/docker/cli-launch-contract/Dockerfile) |
 | Host, Codex addon refresh | Codex (`codex`) with managed ChatGPT file authentication |
