@@ -52,7 +52,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  previous="$arg"
     #|done
     #|case "$*" in
-    #|  *'-N'*) case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
+    #|  *'-N'*) printf '%s\n' "$$" > "$FAKE_HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
     #|  *'orca-git-readiness'*)
@@ -133,7 +133,7 @@ async fn invoke(
   }
   let (status, stdout, stderr) = @process.collect_output(
     executable,
-    if mode == "reconnect" && payload is Some(_) {
+    if (mode == "reconnect" || mode == "restart") && payload is Some(_) {
       [mode, "--receipt"]
     } else {
       [mode]
@@ -1804,6 +1804,199 @@ async test "binary stderr never changes command failure with recording enabled o
   assert_true(records.contains("authentication_failed"))
   assert_true(records.contains("\"exitCode\":7"))
   assert_false(records.contains("private-binary-secret"))
+}
+
+///|
+async test "restart replaces live connections through bulk and receipt reconnect" {
+  for connection in ["ssh", "orca-server"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    with_fake_tunnel(directory, async fn() {
+      @fs.write_file(
+        directory + "/orca.yaml",
+        "devsy: {connection: " +
+        connection +
+        ", buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+      )
+      let (status, output, errors) = invoke("create", env, directory)
+      assert_eq(status, 0, msg=errors)
+      let result = @json.parse(output)
+      let state = field(result, "userData").unwrap()
+      let worker = required(state, "tunnelDirectory")
+      let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+      defer ignore(invoke("destroy", env, directory, payload~))
+      @fs.write_file(directory + "/orca.yaml", "invalid: [")
+      for receipt in [false, true] {
+        let before = @json.parse(@fs.read_file(worker + "/state.json").text())
+        let pid = @fs.read_file(directory + "/master-pid")
+          .text()
+          .trim()
+          .to_owned()
+        assert_true(worker_alive(worker))
+        @fs.write_file(directory + "/args", "")
+        @fs.write_file(directory + "/ssh-args", "")
+        let (status, output, errors) = invoke(
+          "restart",
+          env,
+          directory,
+          payload?=if receipt { Some(payload) } else { None },
+        )
+        assert_eq(status, 0, msg=errors)
+        if receipt {
+          let restarted = @json.parse(output)
+          assert_eq(field(restarted, "connection"), field(result, "connection"))
+          assert_eq(field(restarted, "userData"), Some(state))
+        } else {
+          assert_eq(output, "")
+        }
+        assert_true(worker_alive(worker))
+        assert_true(@fs.exists(worker + "/enabled"))
+        let after = @json.parse(@fs.read_file(worker + "/state.json").text())
+        assert_true(
+          field(after, "socketDirectory") != field(before, "socketDirectory"),
+        )
+        assert_eq(field(after, "localPort"), field(before, "localPort"))
+        assert_true(
+          @fs.read_file(directory + "/master-pid").text().trim() != pid,
+        )
+        let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
+        assert_true(alive != 0)
+        let commands = @fs.read_file(directory + "/args").text()
+        for operation in ["up", "stop", "delete"] {
+          assert_false(commands.contains("workspace\n" + operation + "\n"))
+        }
+        assert_false(
+          @fs.read_file(directory + "/ssh-args")
+          .text()
+          .contains("--recipe-json"),
+        )
+      }
+      let records = @fs.read_file(
+        directory + "/.local/state/orca-env-devsy/events.jsonl",
+      ).text()
+      assert_true(records.contains("\"stage\":\"ssh-tunnel-restart\""))
+      assert_true(records.contains("\"tunnelDirectory\":\"" + worker))
+    })
+  }
+}
+
+///|
+async test "restart refuses an SSH master that does not stop and preserves saved state" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  @fs.remove(worker + "/enabled")
+  @async.with_timeout(5000, async fn() {
+    while worker_alive(worker) {
+      @async.sleep(10)
+    }
+  })
+  let saved = @fs.read_file(worker + "/state.json").text()
+  let socket = required(@json.parse(saved), "socketDirectory")
+  @fs.mkdir(socket, allow_exist=true)
+  @fs.write_file(socket + "/socket", "")
+  @fs.write_file(worker + "/enabled", "")
+  @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|case "$*" in *'-O exit'*) exit 1 ;; esac
+    #|exec "$FAKE_HOME/bin/ssh-original" "$@"
+  @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
+  @fs.write_file(directory + "/ssh-args", "")
+  let (status, _, _) = invoke("restart", env, directory)
+  assert_true(status != 0)
+  assert_false(worker_alive(worker))
+  assert_eq(@fs.read_file(worker + "/state.json").text(), saved)
+  assert_false(@fs.read_file(directory + "/ssh-args").text().contains("-N\n"))
+  let records = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  let events : Array[Json] = []
+  for line in records.split("\n") {
+    if line != "" {
+      let event = @json.parse(line.to_owned())
+      if field(event, "stage") == Some(Json::string("ssh-tunnel-restart")) {
+        events.push(event)
+      }
+    }
+  }
+  let failure = events.last().unwrap()
+  assert_eq(field(failure, "status"), Some(Json::string("timeout")))
+  assert_eq(field(failure, "errorType"), Some(Json::string("shutdown_timeout")))
+  assert_eq(field(failure, "phase"), Some(Json::string("master")))
+  assert_eq(field(failure, "tunnelDirectory"), Some(Json::string(worker)))
+  assert_eq(field(failure, "runId"), field(events[0], "runId"))
+  @fs.rename(directory + "/bin/ssh-original", directory + "/bin/ssh")
+  let (status, _, errors) = invoke("restart", env, directory, payload~)
+  assert_eq(status, 0, msg=errors)
+  assert_true(worker_alive(worker))
+}
+
+///|
+async test "receipt restart stops legacy masters without worker state" {
+  for external in [false, true] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let result = @json.parse(output)
+    let state = field(result, "userData").unwrap()
+    let worker = required(state, "tunnelDirectory")
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    @fs.remove(worker + "/enabled")
+    @async.with_timeout(5000, async fn() {
+      while worker_alive(worker) {
+        @async.sleep(10)
+      }
+    })
+    let legacy = if external { directory + "/legacy" } else { worker }
+    @fs.mkdir(legacy, allow_exist=true)
+    if !external {
+      @fs.remove(worker + "/state.json")
+    }
+    let legacy_result = @json.parse(output)
+    set_field(
+      field(legacy_result, "userData").unwrap(),
+      "tunnelDirectory",
+      Json::string(legacy),
+    )
+    @fs.write_file(legacy + "/socket", "")
+    @fs.write_file(directory + "/ssh-args", "")
+    let (status, output, errors) = invoke("restart", env, directory, payload={
+      "schemaVersion": 1,
+      "recipeResult": legacy_result,
+    })
+    assert_eq(status, 0, msg=errors)
+    assert_false(@fs.exists(legacy + "/socket"))
+    let args = @fs.read_file(directory + "/ssh-args").text()
+    assert_true(args.contains("-O\nexit\n"))
+    let restarted = @json.parse(output)
+    let restarted_worker = required(
+      field(restarted, "userData").unwrap(),
+      "tunnelDirectory",
+    )
+    assert_true(worker_alive(restarted_worker))
+    let (status, _, errors) = invoke("destroy", env, directory, payload={
+      "schemaVersion": 1,
+      "recipeResult": restarted,
+    })
+    assert_eq(status, 0, msg=errors)
+  }
 }
 
 ///|

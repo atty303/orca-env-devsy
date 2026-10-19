@@ -863,9 +863,10 @@ async fn emit_connection(
   install : Bool,
   existing? : Json,
   wait_for_git~ : Bool = true,
+  restart~ : Bool = false,
 ) -> Unit {
   let connection = if required(state, "connection") == "ssh" {
-    ensure_ssh_worker(state, None, wait_for_git~)
+    ensure_ssh_worker(state, None, wait_for_git~, restart~)
     let target : Json = {
       "label": "Devsy",
       "host": required(state, "workspaceId") + ".devsy",
@@ -884,7 +885,7 @@ async fn emit_connection(
       Some(Json::Number(port, ..)) => port.to_int()
       _ => raise AdapterError("Missing saved tunnel port")
     }
-    ensure_ssh_worker(state, Some(port))
+    ensure_ssh_worker(state, Some(port), restart~)
     match field(result, "connection") {
       Some(value) => value
       None => raise AdapterError("Missing saved connection")
@@ -947,7 +948,13 @@ async fn execute_inner(mode : String) -> Unit {
         emit_connection(state, false)
       }
     }
-    "reconnect" => emit_connection(state, false, existing=previous)
+    "reconnect" | "restart" =>
+      emit_connection(
+        state,
+        false,
+        existing=previous,
+        restart=mode == "restart",
+      )
     "suspend" => {
       ignore(
         devsy(
@@ -1059,7 +1066,7 @@ fn valid_commit(value : String) -> Bool {
 ///|
 pub async fn usage_error() -> Unit {
   @stdio.stderr.write(
-    "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]>\n",
+    "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]|restart [--receipt]>\n",
   )
   raise AdapterError("Invalid command")
 }

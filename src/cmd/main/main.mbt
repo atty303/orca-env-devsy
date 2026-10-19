@@ -30,11 +30,13 @@ async fn main {
       @stdio.stdout.write("orca-env-devsy " + @adapter.version + "\n")
     [_, "reconnect"] => @adapter.reconnect_all()
     [_, "reconnect", "--receipt"] => @adapter.execute("reconnect")
+    [_, "restart"] => @adapter.reconnect_all(restart=true)
+    [_, "restart", "--receipt"] => @adapter.execute("restart")
     [_, "create" | "resume" | "suspend" | "destroy" as mode] =>
       @adapter.execute(mode)
     [_, "--help"] =>
       @stdio.stdout.write(
-        "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]>\n",
+        "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]|restart [--receipt]>\n",
       )
     _ => @adapter.usage_error()
   }

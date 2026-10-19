@@ -98,7 +98,11 @@ fn control_socket(state : Json, directory : String) -> String {
 }
 
 ///|
-async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
+async fn stop_tunnel_master(
+  state : Json,
+  directory : String,
+  verify~ : Bool = false,
+) -> Unit {
   @async.with_timeout(2000, async fn() {
     ignore(
       @process.collect_output(
@@ -108,6 +112,28 @@ async fn stop_tunnel_master(state : Json, directory : String) -> Unit {
     )
   }) catch {
     _ => ()
+  }
+  if verify {
+    @async.with_timeout(5000, async fn() {
+      while true {
+        let (code, _, _) = @process.collect_output(
+          "ssh",
+          ssh_args(state) +
+          [
+            "-o",
+            "ProxyCommand=false",
+            "-S",
+            control_socket(state, directory),
+            "-O",
+            "check",
+          ],
+        )
+        if code != 0 {
+          break
+        }
+        @async.sleep(100)
+      }
+    })
   }
   if field(state, "socketDirectory") is Some(Json::String(socket_directory)) {
     if @fs.exists(socket_directory + "/socket") {
@@ -129,6 +155,7 @@ async fn ensure_ssh_worker(
   state : Json,
   port : Int32?,
   wait_for_git~ : Bool = true,
+  restart~ : Bool = false,
 ) -> Unit {
   let base = adapter_state_home() + "/tunnels"
   @fs.mkdir(base, recursive=true, permission=0o700, allow_exist=true)
@@ -136,6 +163,31 @@ async fn ensure_ssh_worker(
     Some(Json::String(old)) if old.has_prefix(base + "/") && @fs.exists(old) =>
       old
     _ => {
+      if restart &&
+        field(state, "tunnelDirectory") is Some(Json::String(old)) &&
+        @fs.exists(old) {
+        let lease = @fs.open(
+          old + "/startup.lock",
+          mode=ReadWrite,
+          create_mode=OpenOrCreate,
+          permission=0o600,
+        )
+        defer lease.close()
+        @async.with_timeout(30000, async fn() {
+          while !lease.try_lock(Exclusive) {
+            @async.sleep(100)
+          }
+        })
+        let saved = if @fs.exists(old + "/state.json") {
+          @json.parse(@fs.read_file(old + "/state.json").text())
+        } else {
+          state
+        }
+        guard field(saved, "workspaceUid") == field(state, "workspaceUid") else {
+          raise AdapterError("Tunnel ownership changed")
+        }
+        restart_tunnel(saved, old)
+      }
       close_tunnel(state)
       let temporary = @fs.tmpdir(prefix="oe")
       let name = temporary.split("/").to_array().last().unwrap().to_owned()
@@ -165,6 +217,9 @@ async fn ensure_ssh_worker(
       port.map(value => Json::number(value.to_double())) else {
       raise AdapterError("Tunnel ownership changed")
     }
+    if restart {
+      restart_tunnel(saved, directory)
+    }
     if worker_alive(directory) {
       wait_tunnel(directory, wait_for_git~)
       return
@@ -188,6 +243,8 @@ async fn ensure_ssh_worker(
       return
     }
     stop_tunnel_master(saved, directory)
+  } else if restart {
+    restart_tunnel(state, directory)
   }
   let socket_directory = @fs.tmpdir(prefix="oe")
   let saved = Json::empty_object()
@@ -215,6 +272,54 @@ async fn ensure_ssh_worker(
 }
 
 ///|
+async fn restart_tunnel(state : Json, directory : String) -> Unit {
+  let mut phase = if worker_alive(directory) { "worker" } else { "master" }
+  save_diagnostic(
+    "ssh-tunnel-restart",
+    "started",
+    phase~,
+    tunnel_directory=directory,
+  )
+  let mut timed_out = false
+  errdefer save_diagnostic(
+    "ssh-tunnel-restart",
+    if timed_out {
+      "timeout"
+    } else {
+      "failed"
+    },
+    phase~,
+    error_type=if timed_out { "shutdown_timeout" } else { "shutdown_failed" },
+    tunnel_directory=directory,
+  )
+  try {
+    if @fs.exists(directory + "/enabled") {
+      @fs.remove(directory + "/enabled")
+    }
+    @async.with_timeout(15000, async fn() {
+      while worker_alive(directory) {
+        @async.sleep(100)
+      }
+    })
+    phase = "master"
+    save_diagnostic(
+      "ssh-tunnel-restart",
+      "stopping",
+      phase~,
+      tunnel_directory=directory,
+    )
+    stop_tunnel_master(state, directory, verify=true)
+  } catch {
+    @async.TimeoutError as error => {
+      timed_out = true
+      raise error
+    }
+    error => raise error
+  }
+  save_diagnostic("ssh-tunnel-restart", "success", tunnel_directory=directory)
+}
+
+///|
 async fn spawn_tunnel_worker(directory : String) -> Unit {
   let sink = @process.redirect_to_file("/dev/null", shared=true)
   defer sink.close()
@@ -230,8 +335,8 @@ async fn spawn_tunnel_worker(directory : String) -> Unit {
 }
 
 ///|
-pub async fn reconnect_all() -> Unit {
-  reconnect_all_inner() catch {
+pub async fn reconnect_all(restart~ : Bool = false) -> Unit {
+  reconnect_all_inner(restart~) catch {
     AdapterError(message) => {
       @stdio.stderr.write("orca-env-devsy: " + message + "\n")
       save_diagnostic("reconnect", "failed")
@@ -248,8 +353,8 @@ pub async fn reconnect_all() -> Unit {
 }
 
 ///|
-async fn reconnect_all_inner() -> Unit {
-  notify("reconnect")
+async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
+  notify(if restart { "restart" } else { "reconnect" })
   let base = adapter_state_home() + "/tunnels"
   if !@fs.exists(base) {
     save_diagnostic("reconnect", "success")
@@ -296,7 +401,7 @@ async fn reconnect_all_inner() -> Unit {
             _ => raise AdapterError("Invalid saved tunnel port")
           }
           set_field(state, "tunnelDirectory", Json::string(directory))
-          ensure_ssh_worker(state, port)
+          ensure_ssh_worker(state, port, restart~)
           save_diagnostic("reconnect", "success")
         } catch {
           AdapterError("Tunnel workspace ownership changed") =>
