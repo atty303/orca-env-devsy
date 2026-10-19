@@ -32,7 +32,7 @@ async fn command_result(
   args : Array[String],
   stage : String,
   environment? : Map[String, String],
-) -> (Int32, String) {
+) -> (Int32, String, String) {
   save_diagnostic(stage, "started")
   let started = @env.now()
   let progress = Progress::new(stage)
@@ -52,6 +52,8 @@ async fn command_result(
         error_type=failure_kind,
         os_errno?=failure_errno,
         phase?=failure_phase,
+        error_message=progress.failure_detail(),
+        details_truncated=progress.details_truncated,
       )
       progress_message(stage + ": failed (" + progress_timing(started) + ")")
     }
@@ -93,12 +95,22 @@ async fn command_result(
       @os_error.OSError(code, ..) as error => {
         failure_kind = "process_os"
         failure_errno = Some(code)
-        raise error
+        let message = progress
+          .safe_message(program + ": " + error.to_string())
+          .unwrap_or("subprocess OS error \{code}")
+        progress.remember(message, warning=true)
+        raise AdapterError(
+          "\{stage} failed (OS error \{code}); diagnostic run \{recording_run_id}:\n" +
+          message,
+        )
       }
-      @utf8.Malformed(_) as error => {
+      @utf8.Malformed(_) => {
         failure_kind = "process_utf8"
         failure_phase = Some("read")
-        raise error
+        progress.remember("subprocess output is not valid UTF-8", warning=true)
+        raise AdapterError(
+          "\{stage} failed: subprocess output is not valid UTF-8; diagnostic run \{recording_run_id}",
+        )
       }
       error => raise error
     }
@@ -120,6 +132,12 @@ async fn command_result(
     },
     exit_code=status,
     duration_ms=(@env.now() - started).to_double(),
+    error_message?=if status == 0 {
+      None
+    } else {
+      Some(progress.failure_detail())
+    },
+    details_truncated=progress.details_truncated,
     error_type?=if status == 0 ||
       @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
       None
@@ -127,7 +145,13 @@ async fn command_result(
       Some(process_error_type(output + "\n" + errors))
     },
   )
-  (status, output)
+  (status, output, progress.failure_detail())
+}
+
+///|
+fn command_failure(stage : String, status : Int32, detail : String) -> String {
+  "\{stage} failed (exit \{status}); diagnostic run \{recording_run_id}:\n" +
+  detail
 }
 
 ///|
@@ -137,11 +161,14 @@ async fn command(
   stage : String,
   environment? : Map[String, String],
 ) -> String {
-  let (status, output) = command_result(program, args, stage, environment?)
+  let (status, output, detail) = command_result(
+    program,
+    args,
+    stage,
+    environment?,
+  )
   guard status == 0 else {
-    raise AdapterError(
-      "\{stage} failed (exit \{status}); command output withheld",
-    )
+    raise AdapterError(command_failure(stage, status, detail))
   }
   output
 }
@@ -163,7 +190,7 @@ async fn devsy_result(
   state : Json,
   args : Array[String],
   stage : String,
-) -> (Int32, String) {
+) -> (Int32, String, String) {
   let environment = @env.get_env_vars()
   for name in location_variables {
     match field(field(state, "devsyEnv").unwrap(), name) {
@@ -188,11 +215,9 @@ async fn devsy_result(
 
 ///|
 async fn devsy(state : Json, args : Array[String], stage : String) -> String {
-  let (status, output) = devsy_result(state, args, stage)
+  let (status, output, detail) = devsy_result(state, args, stage)
   guard status == 0 else {
-    raise AdapterError(
-      "\{stage} failed (exit \{status}); command output withheld",
-    )
+    raise AdapterError(command_failure(stage, status, detail))
   }
   output
 }
@@ -643,7 +668,7 @@ async fn create_state(pinned_commit? : String) -> Json {
     "started",
     source=Clone(resolved_branch, hash, initial_args, None),
   )
-  let (status, initial_output) = devsy_result(
+  let (status, initial_output, detail) = devsy_result(
     state, initial_args, "workspace-create",
   )
   let mut pinned_build = resolved_branch is None
@@ -659,9 +684,7 @@ async fn create_state(pinned_commit? : String) -> Json {
     devsy(state, pinned_args, "workspace-create-full")
   } else {
     guard status == 0 else {
-      raise AdapterError(
-        "workspace-create failed (exit \{status}); command output withheld",
-      )
+      raise AdapterError(command_failure("workspace-create", status, detail))
     }
     initial_output
   }
@@ -984,7 +1007,11 @@ pub async fn execute(mode : String) -> Unit {
         mode + ": failed (" + progress_timing(progress_started) + ")",
       )
       save_diagnostic(mode, "failed")
-      raise AdapterError("Operation failed; private command output withheld")
+      raise AdapterError(
+        mode +
+        " failed: unexpected runtime error; diagnostic run " +
+        recording_run_id,
+      )
     }
   }
 }

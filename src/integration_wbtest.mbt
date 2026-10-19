@@ -787,6 +787,7 @@ async test "command diagnostics distinguish process failure and exit failure wit
   // Exercise the binary so recording uses its own HOME and run identity.
   let (fixture_dir, env) = fixture()
   defer @fs.rmdir(fixture_dir, recursive=true)
+  env.set("FIXTURE_PRIVATE_TOKEN", "private-argument-fixture")
   for
     invocation in [
       ["missing-command-fixture", "private-argument-fixture"],
@@ -845,7 +846,7 @@ async test "command diagnostics distinguish process failure and exit failure wit
   assert_true(records.contains("resolve-context"))
   assert_true(records.contains("vm_create"))
   assert_false(records.contains("private-argument-fixture"))
-  assert_false(records.contains("missing-command-fixture"))
+  assert_true(records.contains("missing-command-fixture"))
 }
 
 ///|
@@ -2958,7 +2959,7 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
 }
 
 ///|
-async test "process API failures retain numeric errno without private context" {
+async test "process API failures retain executable path and numeric errno without arguments" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   let document : Json = {
@@ -2975,11 +2976,12 @@ async test "process API failures retain numeric errno without private context" {
   assert_true(errors.contains("process_os"))
   assert_true(errors.contains("osErrno"))
   assert_false(errors.contains("\"phase\":\"spawn\""))
-  assert_false(errors.contains("private-missing-command"))
+  assert_true(errors.contains("private-missing-command"))
+  assert_true(errors.contains("resolve-context failed (OS error"))
   let records = @fs.read_file(
     directory + "/.local/state/orca-env-devsy/events.jsonl",
   ).text()
-  assert_false(records.contains("private-missing-command"))
+  assert_true(records.contains("private-missing-command"))
 }
 
 ///|
@@ -3537,4 +3539,108 @@ async test "clone override records the allowlisted strategy from the actual invo
     let (status, _, errors) = invoke("destroy", env, directory, payload~)
     assert_eq(status, 0, msg=errors)
   }
+}
+
+///|
+async test "failed workspace creation preserves credential error causes and masks only values" {
+  for recording in ["enabled", "disabled", "unwritable"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    env.set("CUSTOM_SERVICE_TOKEN", "fixture-private-environment")
+    let store = directory + "/.local/state/orca-env-devsy/events.jsonl"
+    if recording == "disabled" {
+      env.set("ORCA_ENV_DEVSY_RECORDING", "0")
+    } else if recording == "unwritable" {
+      @fs.mkdir(store, recursive=true)
+    }
+    @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
+    let wrapper =
+      #|#!/bin/sh
+      #|set -eu
+      #|case "$*" in
+      #| *'workspace up'*)
+      #|   "$FAKE_HOME/bin/devsy-original" "$@" >/dev/null
+      #|   printf '%s\n' '{"level":"error","msg":"get credentials: credential helper executable not found"}' >&2
+      #|   printf '%s\n' '{"kind":"error","message":"token exchange failed: API returned 403; token=fixture-private-token; operation=connect"}'
+      #|   printf '%s\n' '{"kind":"status","phase":"configuring_ssh","state":"failed","error":{"message":"SSH authorization failed: https://user:fixture-private-url@example.com/connect?signature=fixture-private-signature&region=apne1","hint":"check credential helper installation","context":{"token":"fixture-private-context"}}}'
+      #|   printf '%s\n' 'ERROR Authorization: Bearer fixture-private-header' 'request failed with token: fixture-private-colon' 'error --token fixture-private-flag' 'Cookie="fixture-private-cookie"; session=fixture-private-session' 'https://example.com/path?access%5Ftoken=fixture-private-query&region=apne1' >&2
+      #|   printf 'environment value: %s\n' "$CUSTOM_SERVICE_TOKEN" >&2
+      #|   printf '%s\n' '{"level":"info","msg":"deleting machine"}' '{"level":"info","msg":"deleted machine"}' >&2
+      #|   exit 9 ;;
+      #|esac
+      #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+    @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_eq(output, "")
+    assert_false(@fs.exists(directory + "/created"))
+    assert_false(errors.contains("fixture-private-"), msg=errors)
+    assert_false(errors.contains("command output withheld"), msg=errors)
+    assert_false(errors.contains("[credential output redacted]"), msg=errors)
+    for
+      cause in [
+        "credential helper executable not found", "token exchange failed: API returned 403",
+        "operation=connect", "SSH authorization failed", "region=apne1", "check credential helper installation",
+        "workspace-create failed (exit 9)", "diagnostic run ", "[redacted]",
+      ] {
+      assert_true(errors.contains(cause), msg=errors)
+    }
+    if recording == "enabled" {
+      let events = saved_create_events(directory)
+      let failure = events.filter(event => {
+          field(event, "stage") == Some(Json::string("workspace-create")) &&
+          field(event, "status") == Some(Json::string("exit-error"))
+        })[0]
+      let detail = required(failure, "errorMessage")
+      assert_true(
+        detail.contains("credential helper executable not found"),
+        msg=detail,
+      )
+      assert_true(
+        detail.contains("token exchange failed: API returned 403"),
+        msg=detail,
+      )
+      assert_true(detail.contains("SSH authorization failed"), msg=detail)
+      assert_false(@fs.read_file(store).text().contains("fixture-private-"))
+      assert_eq(field(failure, "detailsTruncated"), Some(Json::boolean(false)))
+      assert_true(errors.contains(required(failure, "runId")))
+    } else if recording == "disabled" {
+      assert_false(@fs.exists(store))
+    }
+  }
+}
+
+///|
+async test "non streaming command failures retain plain stderr and bounded diagnostics" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  let document : Json = {
+    "devsy": {
+      "connection": "ssh",
+      "buildRef": "refs/heads/main",
+      "command": [
+        "/bin/sh", "-c", "i=0; while test $i -lt 12; do printf 'credential helper attempt %s failed\\n' $i >&2; i=$((i+1)); done; printf 'get credentials: executable /opt/helper not found; password=fixture-private-password; cause=ENOENT\\n' >&2; exit 7",
+        "sh",
+      ],
+    },
+    "environmentRecipes": [{ "id": "test" }],
+  }
+  @fs.write_file(directory + "/orca.yaml", document.stringify())
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_true(status != 0)
+  assert_eq(output, "")
+  assert_true(errors.contains("resolve-context failed (exit 7)"))
+  assert_true(errors.contains("executable /opt/helper not found"), msg=errors)
+  assert_true(errors.contains("cause=ENOENT"), msg=errors)
+  assert_false(errors.contains("fixture-private-password"))
+  let records = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_true(records.contains("executable /opt/helper not found"), msg=records)
+  assert_true(records.contains("\"detailsTruncated\":true"), msg=records)
+  assert_false(records.contains("fixture-private-password"))
 }

@@ -105,6 +105,9 @@ priv struct Progress {
   mut phase_count : Int32
   mut private_key : Bool
   mut classic_build : Bool
+  recent : Array[String]
+  failures : Array[String]
+  mut details_truncated : Bool
 }
 
 ///|
@@ -141,6 +144,9 @@ fn Progress::new(stage : String) -> Progress {
     phase_count: 0,
     private_key: false,
     classic_build: false,
+    recent: [],
+    failures: [],
+    details_truncated: false,
   }
 }
 
@@ -179,65 +185,37 @@ fn terminal_text(text : String) -> String? {
 }
 
 ///|
-fn credential_prefix(text : String, prefix : String) -> Bool {
-  let parts = text.split(prefix).to_array()
-  for i in 0..<(parts.length() - 1) {
-    let previous = parts[i].iter().last()
-    let boundary = match previous {
-      None => true
-      Some(c) => !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')
-    }
-    if boundary {
-      return true
-    }
+fn Progress::remember(
+  self : Progress,
+  message : String,
+  warning~ : Bool,
+) -> Unit {
+  let lines = if warning { self.failures } else { self.recent }
+  if lines.last() == Some(message) {
+    return
   }
-  false
+  if lines.length() == 8 {
+    ignore(lines.remove(0))
+    self.details_truncated = true
+  }
+  lines.push(message)
 }
 
 ///|
-fn Progress::safe_message(self : Progress, text : String) -> String? {
-  guard terminal_text(text) is Some(text) else { return None }
-  let lower = text.to_lower()
-  if lower.contains("-----begin ") && lower.contains("private key-----") {
-    self.private_key = true
-    return Some("[credential output redacted]")
+fn Progress::failure_detail(self : Progress) -> String {
+  let lines = self.failures +
+    self.recent.filter(line => !self.failures.contains(line))
+  let detail = if lines.is_empty() {
+    "no readable error message from subprocess"
+  } else {
+    lines.join("\n")
   }
-  if self.private_key {
-    if lower.contains("-----end ") && lower.contains("private key-----") {
-      self.private_key = false
-    }
-    return None
-  }
-  let mut safe = text
-  for secret in self.secrets {
-    safe = safe.replace_all(old=secret, new="[redacted]")
-  }
-  // Free-text credential fields and URLs are not reliably delimited. Omit
-  // their whole line rather than risk showing an unmatched value or suffix.
-  let lower = safe.to_lower()
-  if [
-      "authorization", "cookie", "credential", "private_key", "private-key", "password",
-      "passwd", "access_token", "refresh_token", "id_token", "api_key", "api-key",
-      "apikey", "secret", "token", "bearer ", "basic ", "ghp_", "github_pat_", "age-secret-key-",
-      "eyj",
-    ]
-    .iter()
-    .any(marker => lower.contains(marker)) {
-    return Some("[credential output redacted]")
-  }
-  if credential_prefix(lower, "sk-") {
-    return Some("[credential output redacted]")
-  }
-  for word in safe.split(" ") {
-    if word.contains("://") &&
-      (word.contains("@") || word.contains("?") || word.contains("#")) {
-      return Some("[credential URL redacted]")
-    }
-  }
-  if safe.length() > 1024 {
-    safe = safe[:1024].to_owned() + "… [truncated]"
-  }
-  Some(safe)
+  detail +
+  (if self.details_truncated {
+    "\n[error details incomplete or truncated]"
+  } else {
+    ""
+  })
 }
 
 ///|
@@ -314,13 +292,23 @@ async fn Progress::message(
   text : String,
   debug~ : Bool,
   warning~ : Bool,
+  emit~ : Bool = true,
 ) -> Unit {
   for line in text.split("\n") {
     let text = line.trim().to_owned()
     if text == "" {
       continue
     }
-    guard self.safe_message(text) is Some(safe) else { continue }
+    guard self.safe_message(text) is Some(safe) else {
+      self.details_truncated = true
+      continue
+    }
+    if !debug || warning {
+      self.remember(safe, warning~)
+    }
+    if !emit {
+      continue
+    }
     if safe.has_prefix("#") {
       guard safe.split_once(" ") is Some((id, rest)) &&
         id.length() > 1 &&
@@ -330,8 +318,12 @@ async fn Progress::message(
       let detail = rest.trim().to_owned()
       guard detail.has_prefix("[") ||
         detail.has_prefix("DONE") ||
+        detail.has_prefix("ERROR") ||
         detail.has_prefix("CACHED") else {
         continue
+      }
+      if detail.has_prefix("ERROR") && debug && !warning {
+        self.remember(safe, warning=true)
       }
       if self.builds.get(id.to_owned()) == Some(detail) {
         continue
@@ -371,15 +363,22 @@ async fn Progress::line(
   }
   let event = @json.parse(line) catch { _ => Json::null() }
   if field(event, "kind") == Some(Json::string("status")) {
+    if field(event, "state") == Some(Json::string("failed")) &&
+      field(event, "error") is Some(error) {
+      for name in ["message", "hint"] {
+        if field(error, name) is Some(Json::String(text)) {
+          self.message(
+            text,
+            debug=false,
+            warning=true,
+            emit=messages || statuses,
+          )
+        }
+      }
+    }
     if statuses || messages {
       self.status(event)
     }
-    return
-  }
-  let kind = field(event, "kind")
-  if !messages &&
-    !(statuses &&
-    (kind == Some(Json::string("log")) || kind == Some(Json::string("error")))) {
     return
   }
   // Result envelopes and arbitrary structured responses are never log text.
@@ -406,6 +405,7 @@ async fn Progress::line(
       warning=kind == Some(Json::string("error")) ||
         level == Some(Json::string("warn")) ||
         level == Some(Json::string("error")),
+      emit=messages || (statuses && kind != None),
     )
   } else {
     if event != Json::null() {
@@ -414,6 +414,7 @@ async fn Progress::line(
     // Malformed JSON and binary output are not a safe free-text fallback.
     let text = line.trim().to_owned()
     if text.has_prefix("{") || text.has_prefix("[") {
+      self.details_truncated = true
       return
     }
     self.message(
@@ -426,6 +427,7 @@ async fn Progress::line(
         text.contains(" ERROR ") ||
         text.has_prefix("WARN ") ||
         text.has_prefix("ERROR "),
+      emit=messages,
     )
   }
 }
@@ -451,13 +453,15 @@ async fn Progress::read_output(
         tail = tail[tail.length() - 8192:].to_owned()
       }
     }
-    if !statuses && !messages {
-      continue
-    }
     for byte in chunk {
       if byte == b'\n' || byte == b'\r' {
         if !oversized && pending.length() > 0 {
-          let line = @utf8.decode(pending.to_bytes()) catch { _ => "" }
+          let line = @utf8.decode(pending.to_bytes()) catch {
+            _ => {
+              self.details_truncated = true
+              ""
+            }
+          }
           self.line(line, statuses~, messages~)
         }
         pending.reset()
@@ -466,6 +470,7 @@ async fn Progress::read_output(
         if pending.length() == 65536 {
           pending.reset()
           oversized = true
+          self.details_truncated = true
         } else {
           pending.write_byte(byte)
         }
@@ -473,7 +478,12 @@ async fn Progress::read_output(
     }
   }
   if !oversized && pending.length() > 0 {
-    let line = @utf8.decode(pending.to_bytes()) catch { _ => "" }
+    let line = @utf8.decode(pending.to_bytes()) catch {
+      _ => {
+        self.details_truncated = true
+        ""
+      }
+    }
     self.line(line, statuses~, messages~)
   }
   if capture {

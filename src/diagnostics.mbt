@@ -10,6 +10,8 @@ async fn save_diagnostic(
   retry_delay_ms? : Int32,
   os_errno? : Int32,
   source? : CreateEvidence,
+  error_message? : String,
+  details_truncated~ : Bool = false,
 ) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
@@ -40,6 +42,10 @@ async fn save_diagnostic(
         Json::number(create_recording.attempt.to_double()),
       )
       set_field(event, "createPhase", Json::string(create_recording.phase))
+    }
+    if error_message is Some(message) {
+      set_field(event, "errorMessage", Json::string(message))
+      set_field(event, "detailsTruncated", Json::boolean(details_truncated))
     }
     if source is Some(evidence) {
       set_field(event, "source", evidence.to_json())
