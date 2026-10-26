@@ -18,6 +18,8 @@ pub struct Settings {
   build_ref : String?
   up_args : Array[String]
   codex_auth : Bool
+  idle_timeout_ms : Int64?
+  idle_timeout_source : String?
 } derive(Eq, Debug)
 
 ///|
@@ -188,6 +190,8 @@ pub fn resolve_settings(
   let mut build_ref = None
   let mut connection = None
   let mut codex_auth = false
+  let mut idle_timeout_ms = None
+  let mut idle_timeout_source = None
   let args = []
   for index, layer in layers {
     let location = [
@@ -227,6 +231,15 @@ pub fn resolve_settings(
       )
     }
     let addons = object_field(layer, "addons", location)
+    if string_field(layer, "idleTimeout", location) is Some(raw) {
+      idle_timeout_ms = Some(
+        parse_idle_timeout(interpolate(raw, lookup, "\{location}.idleTimeout")) catch {
+          InvalidConfig(message) =>
+            raise InvalidConfig("\{location}.idleTimeout: " + message)
+        },
+      )
+      idle_timeout_source = Some(location + ".idleTimeout")
+    }
     match field(addons, "codexAuth") {
       None => ()
       Some(Json::True) => codex_auth = true
@@ -242,7 +255,17 @@ pub fn resolve_settings(
         "devsy.connection must explicitly select orca-server or ssh",
       )
   }
-  { connection, command, home, context, build_ref, up_args: args, codex_auth, }
+  {
+    connection,
+    command,
+    home,
+    context,
+    build_ref,
+    up_args: args,
+    codex_auth,
+    idle_timeout_ms,
+    idle_timeout_source,
+  }
 }
 
 ///|

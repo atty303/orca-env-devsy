@@ -48,13 +48,7 @@ async fn observe_activity(state : Json) -> Json {
   } else {
     ""
   }
-  let script = (if field(state, "orcaVolume") is Some(_) {
-      "ORCA_USER_DATA_PATH=/workspaces/.orca/.profile "
-    } else {
-      ""
-    }) +
-    "ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
-    quote(activity_probe_source())
+  let script = activity_command(state)
   let (input, writer) = @process.write_to_process()
   defer writer.close()
   let (output, reader) = @process.read_from_process()
@@ -100,6 +94,17 @@ async fn observe_activity(state : Json) -> Json {
       value
     })
   })
+}
+
+///|
+fn activity_command(state : Json) -> String {
+  (if field(state, "orcaVolume") is Some(_) {
+    "ORCA_USER_DATA_PATH=/workspaces/.orca/.profile "
+  } else {
+    ""
+  }) +
+  "ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
+  quote(activity_probe_source())
 }
 
 ///|
@@ -176,6 +181,7 @@ async fn bulk_one(mode : String, state : Json, options : BulkOptions) -> Json? {
   }
   let mut mutating = false
   try {
+    set_field(result, "autoStop", idle_status(state))
     let effective_context = bulk_context(state)
     guard required(state, "context") == effective_context else {
       save_diagnostic("bulk-workspace", "excluded", evidence={
@@ -245,7 +251,7 @@ async fn bulk_one(mode : String, state : Json, options : BulkOptions) -> Json? {
         mutating = true
         pause_tunnel(state)
         defer unpause_tunnel(state)
-        ignore(devsy(state, ["workspace", "stop", id], "workspace-stop"))
+        stop_workspace(state)
         set_field(result, "outcome", Json::string("success"))
       }
     } else if status == "Running" {
@@ -271,6 +277,7 @@ async fn bulk_one(mode : String, state : Json, options : BulkOptions) -> Json? {
         ),
       )
       set_field(result, "outcome", Json::string("success"))
+      idle_reset(state, "workspace_resumed")
     }
   } catch {
     error => {

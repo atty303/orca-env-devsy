@@ -4,51 +4,73 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../src/activity_probe.mbt", import.meta.url), "utf8").split("\n").filter(line => line.trimStart().startsWith("#|")).map(line => line.trimStart().slice(2)).join("\n");
 type Facts = { process?: string | null; children?: boolean; agent?: string; state?: string; program?: string; working?: boolean; queued?: number; prompts?: number; tasks?: number; truncated?: boolean; verdict?: string; nativeError?: boolean; emptyChats?: boolean; authoritative?: boolean; connected?: boolean; age?: number; pairing?: string; };
-async function probe(f: Facts = {}) {
+async function runProbe(f: Facts = {}, sequence?: Facts[]) {
   let output = "";
-  let finish!: () => void;
-  const done = new Promise<void>(resolve => finish = resolve);
+  let connections = 0;
+  let closes = 0;
+  let ipcCalls = 0;
+  let requests = 0;
+  let callbacks: { onResponse(r: unknown): void; onError(e: Error): void };
+  let end: (() => void) | undefined;
+  function rpc(method: string) {
+    const results: Record<string, unknown> = {
+      "status.get": { appVersion: "1.4.241", graphStatus: "ready" },
+      "terminal.list": { truncated: f.truncated ?? false, terminals: [{ handle: "t", worktreeId: "w", tabId: "tab", leafId: "leaf", connected: f.connected ?? true, agentIdentity: f.agent }] },
+      "worktree.ps": { truncated: false, worktrees: [{ worktreeId: "w", unverifiableTerminalCount: 0, agents: f.agent ? [{ paneKey: "tab:leaf", agentType: f.agent, state: f.state ?? "done", programStatus: { state: f.program ?? "idle" } }] : [] }] },
+      "terminal.inspectProcess": { process: { foregroundProcess: f.process ?? null, hasChildProcesses: f.children ?? false, foregroundProcessEvidence: { verdict: f.verdict ?? "live", capturedAgeMs: f.age ?? 2, observationEpoch: 1, ptyIncarnationId: "p" } } },
+    };
+    return results[method];
+  }
   class Client {
     remote = { endpoint: "unused" };
-    async call(method: string) {
-      const results: Record<string, unknown> = {
-        "status.get": { appVersion: "1.4.241", graphStatus: "ready" },
-        "terminal.list": { truncated: f.truncated ?? false, terminals: [{ handle: "t", worktreeId: "w", tabId: "tab", leafId: "leaf", connected: f.connected ?? true, agentIdentity: f.agent }] },
-        "worktree.ps": { truncated: false, worktrees: [{ worktreeId: "w", unverifiableTerminalCount: 0, agents: f.agent ? [{ paneKey: "tab:leaf", agentType: f.agent, state: f.state ?? "done", programStatus: { state: f.program ?? "idle" } }] : [] }] },
-        "terminal.inspectProcess": { process: { foregroundProcess: f.process ?? null, hasChildProcesses: f.children ?? false, foregroundProcessEvidence: { verdict: f.verdict ?? "live", capturedAgeMs: f.age ?? 2, observationEpoch: 1, ptyIncarnationId: "p" } } },
-      };
-      return { result: results[method] };
-    }
+    async call(method: string) { ipcCalls++; return { result: rpc(method) }; }
   }
   const remote = {
-    async subscribeRemoteRuntimeRequest(_r: unknown, _m: unknown, _p: unknown, _t: unknown, callbacks: { onResponse(r: unknown): void }) {
+    async subscribeRemoteRuntimeRequest(_r: unknown, _m: unknown, _p: unknown, _t: unknown, cb: typeof callbacks) {
+      connections++;
+      callbacks = cb;
       queueMicrotask(() => callbacks.onResponse({ ok: true, result: { type: "snapshot", sessions: [], namingActiveSessionIds: [] } }));
       queueMicrotask(() => callbacks.onResponse({ ok: true, result: { type: "snapshot", sessions: f.emptyChats ? [] : [{ sessionId: "s", workspaceId: "w", agent: "codex", latestPrompt: "private prompt" }] } }));
-      return { close() {} };
-    },
-    async sendRemoteRuntimeRequest(_r: unknown, method: string) {
-      if (f.nativeError) throw Object.assign(new Error("secret token must not escape"), { code: "rpc_timeout" });
-      return { ok: true, result: method === "session.tabs.listAll" ? { authoritative: f.authoritative ?? true } : { page: { working: f.working ?? false, queuedMessages: Array(f.queued ?? 0).fill({ text: "private" }), actionablePromptIds: Array(f.prompts ?? 0).fill("approval"), backgroundTasks: f.tasks ? { tasks: Array(f.tasks).fill({ command: "private" }) } : undefined } } };
+      let closed = false;
+      return { close() { if (!closed) closes++; closed = true; }, async sendRequest(method: string) {
+        requests++;
+        if (f.nativeError) throw Object.assign(new Error("secret token must not escape"), { code: "rpc_timeout" });
+        return { ok: true, result: rpc(method) ?? (method === "session.tabs.listAll" ? { authoritative: f.authoritative ?? true } : { page: { working: f.working ?? false, queuedMessages: Array(f.queued ?? 0).fill({ text: "private" }), actionablePromptIds: Array(f.prompts ?? 0).fill("approval"), backgroundTasks: f.tasks ? { tasks: Array(f.tasks).fill({ command: "private" }) } : undefined } }) };
+      } };
     },
   };
-  vm.runInNewContext(source, {
+  await vm.runInNewContext(source, {
     require(name: string) {
       if (name === "node:fs") return { readFileSync: () => JSON.stringify({ pairingCode: f.pairing ?? "private-credential" }) };
+      if (name === "node:readline") return { createInterface: () => (async function* () {
+        yield JSON.stringify({ pairingCode: "private-credential" });
+        for (const facts of sequence ?? []) { f = facts; yield "observe"; }
+        end?.();
+      })() };
       if (name.endsWith("/client.js")) return { RuntimeClient: Client };
       if (name.endsWith("/remote-runtime-client.js")) return remote;
       if (name.endsWith("/structured-agent-session-renderer-client-capabilities.js")) return { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: ["agent-session.structured.v1", "agent-session.structured.registered-agents.v1"] };
       throw Error("unexpected module");
     },
-    process: { env: { HOME: "/fixture" }, stdout: { write(s: string) { output += s; finish(); } } },
-    setTimeout, clearTimeout, queueMicrotask, Date, Promise,
+    process: { env: { HOME: "/fixture", ORCA_ENV_DEVSY_OBSERVER: sequence ? "1" : "0" }, stdin: { once(_name: string, fn: () => void) { end = fn; } }, stdout: { write(s: string) { output += s; } } },
+    setTimeout, clearTimeout, queueMicrotask, Date, Promise, Buffer,
   });
-  await done;
   expect(output).not.toContain("private");
   expect(output).not.toContain("secret token");
-  return JSON.parse(output);
+  return { frames: output.trim().split("\n").map(line => JSON.parse(line)), connections, closes, ipcCalls, requests };
 }
+async function probe(f: Facts = {}) { return (await runProbe(f)).frames[0]; }
 
 describe("VM activity observation", () => {
+  test("persistent observation shares one subscription across all RPCs and closes it on EOF", async () => {
+    const run = await runProbe({}, [{}, { process: "sleep", children: true }, {}, { working: true }, {}]);
+    expect(run.frames[0].ready).toBe(true);
+    expect(run.frames.slice(1).map(f => f.activity)).toEqual(["idle", "active", "idle", "active", "idle"]);
+    expect(run.connections).toBe(1);
+    expect(run.ipcCalls).toBe(0);
+    expect(run.requests).toBeGreaterThan(20);
+    expect(run.closes).toBe(1);
+  });
   test("silent foreground command stays active until the shell is restored", async () => {
     expect((await probe({ process: "sleep", children: true })).activity).toBe("active");
     expect((await probe()).activity).toBe("idle");

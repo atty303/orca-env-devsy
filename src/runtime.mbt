@@ -362,6 +362,15 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   let document = read_document(environment("ORCA_REPO_PATH") + "/orca.yaml")
   let id = environment("ORCA_RECIPE_ID")
   let config = resolve_settings(document, id, name => @env.get_env_var(name))
+  save_diagnostic("idle-configuration", "selected", evidence={
+    "enabled": config.idle_timeout_ms is Some(_),
+    "timeoutMs": config.idle_timeout_ms
+    .map(n => Json::number(n.to_double()))
+    .unwrap_or(Json::null()),
+    "source": config.idle_timeout_source
+    .map(Json::string)
+    .unwrap_or(Json::string("unset")),
+  })
   let recipes = match field(document, "environmentRecipes") {
     Some(Json::Array(items)) => items
     _ => []
@@ -446,6 +455,9 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     "codexAuth": config.codex_auth,
   }
   let locations = Json::empty_object()
+  if config.idle_timeout_ms is Some(timeout) {
+    set_field(state, "idleTimeoutMs", Json::number(timeout.to_double()))
+  }
   for name in location_variables {
     set_field(
       locations,
@@ -721,6 +733,13 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
       raise AdapterError("Created workspace identity does not match request")
     }
     remember_volume_cleanup(state, created)
+    if config.idle_timeout_ms is Some(_) {
+      let provider = required(field(created, "provider").unwrap(), "name")
+      guard valid_context(provider) else {
+        raise AdapterError("Invalid idle provider")
+      }
+      set_field(state, "idleProvider", Json::string(provider))
+    }
     creation_lock.close()
     creation_reserved = false
     let result = up_result(output)
@@ -929,6 +948,13 @@ async fn emit_connection(
   } else {
     server_connection(state, install, deadline?)
   }
+  if install && idle_timeout(state) is Some(_) {
+    @fs.write_file(
+      required(state, "tunnelDirectory") + "/idle-enabled",
+      "",
+      permission=0o600,
+    )
+  }
   write_connection(state, connection)
 }
 
@@ -1025,6 +1051,7 @@ async fn execute_inner(mode : String) -> Unit {
         ),
       )
       let expires = connection_deadline()
+      idle_reset(state, "workspace_resumed")
       connection_timeout(expires, async fn() {
         let port = if required(state, "connection") == "orca-server" {
           Some(reserve_server_port(state))
@@ -1047,13 +1074,7 @@ async fn execute_inner(mode : String) -> Unit {
     "suspend" => {
       pause_tunnel(state)
       defer unpause_tunnel(state)
-      ignore(
-        devsy(
-          state,
-          ["workspace", "stop", required(state, "workspaceId")],
-          "workspace-stop",
-        ),
-      )
+      stop_workspace(state)
     }
     "destroy" => {
       pause_tunnel(state)

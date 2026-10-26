@@ -65,6 +65,22 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'-N'*) if test -f "$FAKE_HOME/recover-on-master"; then rm -f "$FAKE_HOME/rpc-unavailable" "$FAKE_HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$FAKE_HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
+    #|  *'ORCA_ENV_DEVSY_OBSERVER=1'*)
+    #|    printf 'start\n' >> "$FAKE_HOME/idle-starts"
+    #|    printf '%s\n' "$$" > "$FAKE_HOME/idle-pid"
+    #|    trap 'printf "closed\n" >> "$FAKE_HOME/idle-closed"' EXIT
+    #|    read -r config
+    #|    if test -f "$FAKE_HOME/fail-idle-connect"; then exit 3; fi
+    #|    printf '{"schemaVersion":1,"ready":true}\n'
+    #|    count=0
+    #|    while read -r request; do
+    #|      count=$((count+1))
+    #|      printf '%s\n' "$request" >> "$FAKE_HOME/idle-requests"
+    #|      if test -f "$FAKE_HOME/drop-idle-once"; then rm "$FAKE_HOME/drop-idle-once"; exit 4; fi
+    #|      if test "$count" -ge 3 && test -f "$FAKE_HOME/idle-final-active"; then printf '{"schemaVersion":1,"activity":"active"}\n';
+    #|      elif test -f "$FAKE_HOME/activity"; then cat "$FAKE_HOME/activity"; printf '\n';
+    #|      else printf '{"schemaVersion":1,"activity":"idle"}\n'; fi
+    #|    done ;;
     #|  *'const fs = require'* )
     #|    cat >/dev/null
     #|    if test -f "$FAKE_HOME/activity"; then cat "$FAKE_HOME/activity"; else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}'; fi ;;

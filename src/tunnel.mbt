@@ -255,7 +255,8 @@ async fn ensure_ssh_worker(
   for
     name in [
       "workspaceId", "workspaceUid", "orcaVolume", "orcaVolumeCleanup", "user", "command",
-      "devsyEnv", "home", "context", "connection", "projectRoot",
+      "devsyEnv", "home", "context", "connection", "projectRoot", "idleTimeoutMs",
+      "idleProvider",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)
@@ -771,7 +772,8 @@ async fn close_tunnel(state : Json) -> Unit {
     name in [
       "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
       "socket", "git-status", "git-established", "probe-request", "recovery.lock",
-      "operation.lock", "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
+      "idle.json", "idle.tmp", "idle-state.lock", "idle-enabled", "operation.lock",
+      "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
     ] {
     if @fs.exists(directory + "/" + name) {
       @fs.remove(directory + "/" + name)
@@ -811,6 +813,11 @@ pub async fn tunnel_worker(directory : String) -> Unit {
     _ => false
   }
   set_field(state, "tunnelDirectory", Json::string(directory))
+  let idle_timer = if idle_timeout(state) is Some(_) {
+    Some(IdleTimer::{ elapsed: 0, seen: false, epoch: -1, previous: None, })
+  } else {
+    None
+  }
   let mut attempt = 0
   let mut monitoring = false
   let mut monitor_attempt = 0
@@ -819,6 +826,9 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   })
   while @fs.exists(enabled) {
     if pause_request(directory) is Some(request) {
+      if idle_timer is Some(timer) {
+        timer.previous = None
+      }
       stop_tunnel_master(state, directory)
       tunnel_status(directory, "paused")
       while @fs.exists(enabled) && pause_request(directory) == Some(request) {
@@ -834,6 +844,9 @@ pub async fn tunnel_worker(directory : String) -> Unit {
     git_relay_status(directory, "pending")
     let mut terminal = false
     @async.with_task_group(async fn(group) {
+      let idle_busy : Ref[Bool] = { val: false, }
+      let idle_done : Ref[Bool] = { val: false, }
+      let mut idle_started = false
       group.spawn_bg(no_wait=true, async fn() {
         while @fs.exists(enabled) && !@fs.exists(directory + "/paused") {
           @async.sleep(100)
@@ -872,6 +885,9 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         return
       }
       if status != "Running" {
+        if status == "Stopped" {
+          idle_reset(state, "workspace_stopped")
+        }
         monitoring = true
         tunnel_status(
           directory,
@@ -938,6 +954,14 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       let mut failures = 0
       let mut connected = false
       while @fs.exists(enabled) {
+        if idle_done.val {
+          monitoring = true
+          break
+        }
+        if idle_busy.val {
+          @async.sleep(100)
+          continue
+        }
         if child is Some(child) && child.try_wait() is Some(code) {
           save_diagnostic(
             "orca-tunnel",
@@ -997,6 +1021,23 @@ pub async fn tunnel_worker(directory : String) -> Unit {
                 @fs.remove(directory + "/probe-request")
               }
               next_probe = @env.now() + 10000
+              if !idle_started &&
+                idle_timer is Some(timer) &&
+                @fs.exists(directory + "/idle-enabled") {
+                idle_started = true
+                group.spawn_bg(no_wait=true, async fn() {
+                  idle_supervisor(state, timer, idle_busy, idle_done) catch {
+                    error =>
+                      save_diagnostic(
+                        "idle-monitor",
+                        "failed",
+                        error_type="monitor_failed",
+                        error_message=redact_credentials(error.to_string()),
+                        tunnel_directory=directory,
+                      )
+                  }
+                })
+              }
             }
             Unsupported => {
               terminal = true
@@ -1077,7 +1118,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       } else {
         4
       }
-      monitor_wait(directory, delay)
+      idle_retry_wait(state, idle_timer, delay)
       continue
     }
     if @fs.exists(enabled) {
@@ -1091,7 +1132,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         retry_delay_ms=delay,
         tunnel_directory=directory,
       )
-      monitor_wait(directory, delay)
+      idle_retry_wait(state, idle_timer, delay)
     }
   }
   tunnel_status(directory, "stopped")

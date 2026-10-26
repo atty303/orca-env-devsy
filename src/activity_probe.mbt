@@ -4,13 +4,65 @@ fn activity_probe_source() -> String {
     #|const fs = require('node:fs');
     #|const base = process.env.HOME + '/.local/share/orca-env-devsy/orca/current/resources/app.asar.unpacked/out';
     #|const { RuntimeClient } = require(base + '/cli/runtime/client.js');
-    #|const config = JSON.parse(fs.readFileSync(0, 'utf8'));
-    #|const client = new RuntimeClient(undefined, 5000, null, null);
-    #|const result = { schemaVersion: 1, observedAt: new Date().toISOString(), terminals: [], chats: [], errors: [] };
-    #|const errorCode = error => typeof error.code === 'string' && /^[a-z_]{1,80}$/.test(error.code) ? error.code : 'observation_failed';
-    #|function check(value, message) { if (!value) throw Object.assign(new Error(), { code: message }); }
-    #|async function call(method, params) { return (await client.call(method, params)).result; }
-    #|async function observe() {
+    #|const errorCode = error => typeof error?.code === 'string' && /^[a-z_]{1,80}$/.test(error.code) ? error.code : 'observation_failed';
+    #|function check(value, code) { if (!value) throw Object.assign(new Error(), { code }); }
+    #|function emit(value) {
+    #|  const output = JSON.stringify(value);
+    #|  check(Buffer.byteLength(output) <= 4194304, 'activity_response_too_large');
+    #|  process.stdout.write(output + '\n');
+    #|}
+    #|async function openChannel(config) {
+    #|  check(typeof config.pairingCode === 'string' && config.pairingCode.length > 0, 'missing_native_access');
+    #|  const { subscribeRemoteRuntimeRequest } = require(base + '/shared/remote-runtime-client.js');
+    #|  const { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: caps } = require(base + '/shared/structured-agent-session-renderer-client-capabilities.js');
+    #|  check(Array.isArray(caps) && caps.length > 0, 'unsupported_native_capabilities');
+    #|  const remote = new RuntimeClient(undefined, 5000, config.pairingCode, null).remote;
+    #|  remote.endpoint = 'ws://127.0.0.1:47121';
+    #|  let sub, timer, lost, settle, reject;
+    #|  const sessions = new Map();
+    #|  const snapshot = new Promise((resolve, fail) => { settle = resolve; reject = fail; });
+    #|  snapshot.catch(() => {});
+    #|  const fail = error => { if (lost) return; lost = error ?? Object.assign(new Error(), { code: 'native_connection_closed' }); reject(lost); sub?.close(); };
+    #|  timer = setTimeout(() => fail(Object.assign(new Error(), { code: 'native_snapshot_timeout' })), 5000);
+    #|  const request = async (method, params) => {
+    #|    if (lost) throw lost;
+    #|    const response = await sub.sendRequest(method, params, 5000);
+    #|    check(response.ok, errorCode(response.error));
+    #|    return response;
+    #|  };
+    #|  try {
+    #|    sub = await subscribeRemoteRuntimeRequest(remote, 'agentSession.subscribeStatus', undefined, 5000, {
+    #|      onResponse(response) {
+    #|        if (lost) return;
+    #|        try {
+    #|          check(response.ok, errorCode(response.error));
+    #|          const event = response.result;
+    #|          if (event?.type === 'snapshot' && !Object.hasOwn(event, 'namingActiveSessionIds')) {
+    #|            check(Array.isArray(event.sessions) && event.sessions.length <= 1000, 'invalid_native_snapshot');
+    #|            for (const s of event.sessions) sessions.set(s.sessionId, { sessionId: s.sessionId, workspaceId: s.workspaceId, agent: s.agent });
+    #|            settle();
+    #|          } else if (event?.type === 'status') {
+    #|            const s = event.session;
+    #|            check(s && typeof s.sessionId === 'string', 'invalid_native_status');
+    #|            sessions.set(s.sessionId, { sessionId: s.sessionId, workspaceId: s.workspaceId, agent: s.agent });
+    #|            check(sessions.size <= 1000, 'incomplete_native_listing');
+    #|          }
+    #|        } catch (error) { fail(error); }
+    #|      },
+    #|      onError: fail,
+    #|      onClose: () => fail(Object.assign(new Error(), { code: 'native_connection_closed' })),
+    #|    }, { clientCapabilities: caps });
+    #|    check(typeof sub.sendRequest === 'function', 'unsupported_shared_requests');
+    #|    const restored = await request('session.tabs.listAll');
+    #|    check(restored.result?.authoritative === true, 'native_restoration_unconfirmed');
+    #|    await snapshot;
+    #|    return { request, sessions: () => { if (lost) throw lost; check(sessions.size <= 1000, 'incomplete_native_listing'); return [...sessions.values()]; }, close: () => sub.close(), healthy: () => !lost };
+    #|  } catch (error) { sub?.close(); throw error; }
+    #|  finally { clearTimeout(timer); }
+    #|}
+    #|async function observe(call, native, nativeError) {
+    #|  const result = { schemaVersion: 1, observedAt: new Date().toISOString(), terminals: [], chats: [], errors: [] };
+    #|  try {
     #|  const status = await call('status.get');
     #|  result.orcaVersion = status.appVersion;
     #|  check(status.graphStatus === 'ready', 'graph_not_ready');
@@ -47,39 +99,15 @@ fn activity_probe_source() -> String {
     #|      }
     #|    }
     #|  }
-    #|  try {
-    #|    check(typeof config.pairingCode === 'string' && config.pairingCode.length > 0, 'missing_native_access');
-    #|    const { subscribeRemoteRuntimeRequest, sendRemoteRuntimeRequest } = require(base + '/shared/remote-runtime-client.js');
-    #|    const remote = new RuntimeClient(undefined, 5000, config.pairingCode, null).remote;
-    #|    remote.endpoint = 'ws://127.0.0.1:47121';
-    #|    const { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: caps } = require(base + '/shared/structured-agent-session-renderer-client-capabilities.js');
-    #|    check(Array.isArray(caps) && caps.length > 0, 'unsupported_native_capabilities');
-    #|    const restored = await sendRemoteRuntimeRequest(remote, 'session.tabs.listAll', undefined, 5000, undefined, undefined, caps);
-    #|    check(restored.ok && restored.result?.authoritative === true, 'native_restoration_unconfirmed');
-    #|    let sub, timer;
-    #|    let settle, reject;
-    #|    const snapshot = new Promise((resolve, fail) => { settle = resolve; reject = fail; });
-    #|    timer = setTimeout(() => reject(Object.assign(new Error(), { code: 'native_snapshot_timeout' })), 5000);
+    #|
     #|    try {
-    #|      sub = await subscribeRemoteRuntimeRequest(remote, 'agentSession.subscribeStatus', undefined, 5000, {
-    #|        onResponse(response) {
-    #|          if (!response.ok) { reject(Object.assign(new Error(), { code: response.error?.code })); return; }
-    #|          const event = response.result;
-    #|          if (event?.type === 'snapshot' && !Object.hasOwn(event, 'namingActiveSessionIds')) {
-    #|            if (!Array.isArray(event.sessions)) { reject(Object.assign(new Error(), { code: 'invalid_native_snapshot' })); return; }
-    #|            settle(event.sessions);
-    #|          }
-    #|        },
-    #|        onError: reject,
-    #|      }, { clientCapabilities: caps });
-    #|      const sessions = await snapshot;
-    #|      check(Array.isArray(sessions), 'native_restoration_unconfirmed');
-    #|      check(sessions.length <= 1000, 'incomplete_native_listing');
+    #|      if (nativeError) throw nativeError;
+    #|      const sessions = native.sessions();
     #|      for (const session of sessions) {
     #|        const row = { sessionId: session.sessionId, workspaceId: session.workspaceId, agent: session.agent, observedAt: new Date().toISOString() };
     #|        result.chats.push(row);
     #|        try {
-    #|          const response = await sendRemoteRuntimeRequest(remote, 'agentSession.history', { sessionId: session.sessionId, direction: 'tail', limit: 1 }, 5000, undefined, undefined, caps);
+    #|          const response = await native.request('agentSession.history', { sessionId: session.sessionId, direction: 'tail', limit: 1 });
     #|          check(response.ok, 'native_history_failed');
     #|          const page = response.result.page;
     #|          check(typeof page.working === 'boolean' && Array.isArray(page.queuedMessages) && Array.isArray(page.actionablePromptIds), 'incomplete_native_history');
@@ -92,13 +120,43 @@ fn activity_probe_source() -> String {
     #|          row.activity = row.working || row.queuedMessages || row.actionablePrompts || row.backgroundTasks ? 'active' : 'idle';
     #|        } catch (error) { row.activity = 'unknown'; row.error = errorCode(error); }
     #|      }
-    #|    } finally { clearTimeout(timer); sub?.close(); }
-    #|  } catch (error) { result.errors.push({ source: 'native-chat', code: errorCode(error) }); }
-    #|}
-    #|observe().catch(error => result.errors.push({ source: 'orca', code: errorCode(error) })).finally(() => {
+    #|
+    #|    } catch (error) { result.errors.push({ source: 'native-chat', code: errorCode(error) }); }
+    #|  } catch (error) { result.errors.push({ source: 'orca', code: errorCode(error) }); }
     #|  const all = [...result.terminals, ...result.chats];
     #|  result.activity = all.some(row => row.activity === 'active') ? 'active' : result.errors.length || all.some(row => row.activity !== 'idle') ? 'unknown' : 'idle';
-    #|  process.stdout.write(JSON.stringify(result));
-    #|});
+    #|  return result;
+    #|}
+    #|async function main() {
+    #|  let channel;
+    #|  const close = () => channel?.close();
+    #|  process.once?.('SIGTERM', () => { close(); process.exit(0); });
+    #|  process.stdin?.once('end', close);
+    #|  try {
+    #|    if (process.env.ORCA_ENV_DEVSY_OBSERVER === '1') {
+    #|      const lines = require('node:readline').createInterface({ input: process.stdin, crlfDelay: Infinity });
+    #|      let initialized = false;
+    #|      for await (const line of lines) {
+    #|        check(line.length <= 65536, 'observer_input_too_large');
+    #|        if (!initialized) {
+    #|          channel = await openChannel(JSON.parse(line));
+    #|          initialized = true;
+    #|          emit({ schemaVersion: 1, ready: true });
+    #|        } else {
+    #|          check(line === 'observe', 'invalid_observer_request');
+    #|          emit(await observe(async (m, p) => (await channel.request(m, p)).result, channel));
+    #|          check(channel.healthy(), 'native_connection_closed');
+    #|        }
+    #|      }
+    #|    } else {
+    #|      const config = JSON.parse(fs.readFileSync(0, 'utf8'));
+    #|      let nativeError;
+    #|      try { channel = await openChannel(config); } catch (error) { nativeError = error; }
+    #|      const client = new RuntimeClient(undefined, 5000, null, null);
+    #|      emit(await observe(async (m, p) => (await client.call(m, p)).result, channel, nativeError));
+    #|    }
+    #|  } finally { close(); }
+    #|}
+    #|main().catch(error => { emit({ schemaVersion: 1, activity: 'unknown', errors: [{ source: 'observer', code: errorCode(error) }] }); process.exitCode = 1; });
   source
 }
