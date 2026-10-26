@@ -2643,7 +2643,7 @@ async test "SSH owner death terminates managed transports even when stdin remain
           "/bin/sh",
           [
             "-c",
-            "\"$1\" --ssh-proxy \"$HOME/primary-proxy.lock\" \"$2\" \"$3\" <&0 & wait",
+            "exec 3<&0; \"$1\" --ssh-proxy \"$HOME/primary-proxy.lock\" \"$2\" \"$3\" <&3 3<&- & wait",
             "sh",
             integration_binary(),
             directory + "/transport",

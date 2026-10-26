@@ -205,7 +205,7 @@ async test "supervisor crash preserves transport streams and recover resumes cle
         "/bin/sh",
         [
           "-c",
-          "\"$1\" --ssh-proxy \"$HOME/primary-proxy.lock\" \"$2\" <&0 & wait $!",
+          "exec 3<&0; \"$1\" --ssh-proxy \"$HOME/primary-proxy.lock\" \"$2\" <&3 3<&- & wait $!",
           "sh",
           integration_binary(),
           directory + "/transport",
@@ -420,7 +420,7 @@ async test "detached SSH ownership retains transport until its final input write
         "/bin/sh",
         [
           "-c",
-          "\"$1\" --ssh-proxy '' \"$2\" <&0 & while test ! -f \"$HOME/detach\"; do sleep 0.01; done",
+          "exec 3<&0; \"$1\" --ssh-proxy '' \"$2\" <&3 3<&- & while test ! -f \"$HOME/detach\"; do sleep 0.01; done",
           "sh",
           integration_binary(),
           directory + "/transport",
