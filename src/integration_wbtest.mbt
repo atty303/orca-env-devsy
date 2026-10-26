@@ -22,20 +22,23 @@ async fn fixture() -> (String, Map[String, String]) {
     #|previous=
     #|for arg in "$@"; do
     #|  if test "$previous" = --uid; then printf '%s' "$arg" > "$FAKE_HOME/uid"; fi
+    #|  if test "$previous" = --id; then printf '%s' "$arg" > "$FAKE_HOME/workspace-id"; fi
     #|  previous="$arg"
     #|done
     #|case "$*" in
     #|  *'context list'*) printf '[{"name":"fixture-context","default":true}]\n' ;;
     #|  *'context get'*) printf '{"SSH_INJECT_GIT_CREDENTIALS":{"default":"true","value":"%s"}}\n' "${FAKE_GIT_FORWARDING:-true}" ;;
+    #|  *'provider list'*) if test -f "$FAKE_HOME/providers"; then cat "$FAKE_HOME/providers"; else printf '{"fixture-provider":{"config":{"agent":{"local":"true","driver":"apple","apple":{"path":"%s/bin/runtime"}}}}}' "$FAKE_HOME"; fi ;;
     #|  *'workspace list'*)
     #|    if test -f "$FAKE_HOME/block-list"; then
     #|      printf '%s\n' "$$" > "$FAKE_HOME/blocked-list-pid"
     #|      while test ! -f "$FAKE_HOME/release-list"; do sleep 0.1; done
     #|    fi
-    #|    if test -f "$FAKE_HOME/created"; then printf '[{"id":"test-id","uid":"%s"}]\n' "$(cat "$FAKE_HOME/uid")"; else printf '[]\n'; fi ;;
+    #|    if test -f "$FAKE_HOME/created"; then printf '[{"id":"%s","uid":"%s","provider":{"name":"fixture-provider"}}]\n' "$(cat "$FAKE_HOME/workspace-id")" "$(cat "$FAKE_HOME/uid")"; else printf '[]\n'; fi ;;
     #|  *'workspace status'*) test ! -f "$FAKE_HOME/fail-status"; if test -f "$FAKE_HOME/busy"; then printf '{"state":"Busy"}\n'; elif test -f "$FAKE_HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
-    #|  *'workspace up'*) rm -f "$FAKE_HOME/stopped"; touch "$FAKE_HOME/created"; test ! -f "$FAKE_HOME/fail-up"
+    #|  *'workspace up'*) rm -f "$FAKE_HOME/stopped"; touch "$FAKE_HOME/created" "$FAKE_HOME/volume-present"; test ! -f "$FAKE_HOME/fail-up"
     #|    if test -f "$FAKE_HOME/up-result"; then cat "$FAKE_HOME/up-result"; else printf '{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}\n'; fi ;;
+    #|  *'workspace ssh'*'/proc/self/mountinfo'*) test ! -f "$FAKE_HOME/fail-storage" ;;
     #|  *'workspace stop'*) test ! -f "$FAKE_HOME/fail-stop"; touch "$FAKE_HOME/stopped" ;;
     #|  *'workspace delete'*) test ! -f "$FAKE_HOME/fail-delete"; rm -f "$FAKE_HOME/created" ;;
     #|  *) exit 2 ;;
@@ -75,7 +78,12 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'then printf present; else printf missing; fi'*) if test -f "$FAKE_HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
+    #|  *'then printf installed; else printf missing; fi'*) if test -f "$FAKE_HOME/missing-orca"; then printf missing; else printf installed; fi ;;
+    #|  *'./orca.AppImage --appimage-extract'*) rm -f "$FAKE_HOME/missing-orca" ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
+    #|  *'repo add --json'*) test ! -f "$FAKE_HOME/fail-project"; printf '{"ok":true,"result":{}}\n' ;;
+    #|  *'project setups'*) printf '{"ok":true,"result":{"setups":[{"id":"fixture-setup","path":"/workspace/repo"}]}}\n' ;;
+    #|  *'project setup-update'*) test ! -f "$FAKE_HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/workspaces/.orca"}}}}\n' ;;
     #|  *'--recipe-json'*) test ! -f "$FAKE_HOME/fail-serve"; printf 'serve\n' >> "$FAKE_HOME/serve-count"; touch "$FAKE_HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
     #|  *'-O check'*)
     #|    if test -f "$FAKE_HOME/fail-tunnel-cleanup"; then
@@ -109,7 +117,18 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    while test -f "$control" && test -f "$FAKE_HOME/created"; do sleep 0.01; done ;;
     #|  *) : ;;
     #|esac
-  for pair in [("devsy", devsy), ("git", git), ("ssh", ssh)] {
+  let runtime =
+    #|#!/bin/sh
+    #|set -eu
+    #|printf '%s\n' "$@" >> "$FAKE_HOME/volume-args"
+    #|if test -f "$FAKE_HOME/fail-volume-list"; then echo 'runtime unavailable' >&2; exit 9; fi
+    #|case "$*" in
+    #|  'volume ls --format json') if test -f "$FAKE_HOME/volume-list"; then cat "$FAKE_HOME/volume-list"; elif test -f "$FAKE_HOME/volume-present"; then printf '[{"configuration":{"name":"orca-env-devsy-%s"}}]' "$(cat "$FAKE_HOME/uid")"; else printf '[]'; fi ;;
+    #|  'volume rm '*) test ! -f "$FAKE_HOME/created"; if test -f "$FAKE_HOME/fail-volume-remove"; then echo 'volume is in use' >&2; exit 7; fi; test "$3" = "orca-env-devsy-$(cat "$FAKE_HOME/uid")"; rm -f "$FAKE_HOME/volume-present" ;;
+    #|  *) exit 2 ;;
+    #|esac
+  for
+    pair in [("devsy", devsy), ("git", git), ("ssh", ssh), ("runtime", runtime)] {
     let (name, script) = pair
     @fs.write_file(directory + "/bin/" + name, script + "\n", permission=0o700)
   }
@@ -221,6 +240,10 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   assert_eq(field(result, "schemaVersion"), Some(Json::number(1)))
   let state = field(result, "userData").unwrap()
   assert_eq(field(state, "context"), Some(Json::string("fixture-context")))
+  assert_eq(field(state, "orcaInstanceId"), Some(Json::string("test-id")))
+  assert_true(required(state, "workspaceId").has_prefix("repo-"))
+  assert_true(valid_workspace_id(required(state, "workspaceId")))
+  assert_true(required(state, "workspaceId") != "test-id")
   assert_eq(
     field(state, "buildCommit"),
     Some(Json::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
@@ -315,6 +338,24 @@ async test "server CLI emits pairing separately and recover reuses a responding 
     defer ignore(invoke("suspend", env, directory, payload~))
     assert_true(warnings.contains("addon failed at"))
     let state = field(result, "userData").unwrap()
+    let volume = required(state, "orcaVolume")
+    assert_eq(volume, "orca-env-devsy-" + required(state, "workspaceUid"))
+    let worker = @json.parse(
+      @fs.read_file(required(state, "tunnelDirectory") + "/state.json").text(),
+    )
+    assert_eq(field(worker, "orcaVolume"), field(state, "orcaVolume"))
+    assert_true(
+      @fs.read_file(directory + "/args")
+      .text()
+      .contains("type=volume,source=" + volume + ",target=/workspaces/.orca"),
+    )
+    let ssh = @fs.read_file(directory + "/ssh-args").text()
+    assert_true(ssh.contains("ORCA_USER_DATA_PATH=/workspaces/.orca/.profile"))
+    assert_true(
+      ssh.contains(
+        "project setup-update --json --host local --setup 'fixture-setup' --worktree-base-path /workspaces/.orca",
+      ),
+    )
     assert_eq(field(state, "pairingCode"), None)
     assert_false(state.stringify().contains("fixture-pairing"))
     assert_eq(saved_command(state), invocation)
@@ -4344,4 +4385,153 @@ async test "invalid connection budgets fail before resuming a workspace" {
   assert_false(
     @fs.read_file(directory + "/args").text().contains("workspace\nup\n"),
   )
+}
+
+///|
+async test "storage and project configuration failures do not publish a recipe" {
+  for failure in ["fail-storage", "fail-project"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    with_fake_tunnel(directory, async fn() {
+      @fs.write_file(
+        directory + "/orca.yaml",
+        "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+      )
+      @fs.write_file(directory + "/" + failure, "")
+      let (status, output, _) = invoke("create", env, directory)
+      assert_true(status != 0)
+      assert_eq(output, "")
+      assert_false(@fs.exists(directory + "/created"))
+      let events = @fs.read_file(
+        directory + "/.local/state/orca-env-devsy/events.jsonl",
+      ).text()
+      assert_true(
+        events.contains(
+          if failure == "fail-storage" {
+            "orca-storage"
+          } else {
+            "orca-project-register"
+          },
+        ),
+      )
+      assert_false(events.contains("fixture-pairing"))
+    })
+  }
+}
+
+///|
+async test "worker recovery reinstalls a missing server into the retained profile" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let payload : Json = {
+      "schemaVersion": 1,
+      "recipeResult": @json.parse(output),
+    }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    @fs.remove(directory + "/served")
+    @fs.write_file(directory + "/missing-orca", "")
+    @fs.write_file(directory + "/ssh-args", "")
+    let (status, _, errors) = invoke("recover", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let commands = @fs.read_file(directory + "/ssh-args").text()
+    assert_true(commands.contains("releases/latest"))
+    assert_true(
+      commands.contains("ORCA_USER_DATA_PATH=/workspaces/.orca/.profile"),
+    )
+    assert_false(@fs.exists(directory + "/missing-orca"))
+  })
+}
+
+///|
+async test "volume cleanup respects the saved target and never changes destroy success" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let result = @json.parse(output)
+    let state = field(result, "userData").unwrap()
+    let volume = required(state, "orcaVolume")
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    let plan = field(state, "orcaVolumeCleanup").unwrap()
+    assert_eq(optional_text(plan, "mode"), "local")
+    assert_eq(required(plan, "program"), directory + "/bin/runtime")
+    @fs.write_file(directory + "/fail-delete", "")
+    let (status, _, _) = invoke("destroy", env, directory, payload~)
+    assert_true(status != 0)
+    assert_false(@fs.exists(directory + "/volume-args"))
+    @fs.remove(directory + "/fail-delete")
+    for failure in ["fail-volume-list", "fail-volume-remove"] {
+      @fs.write_file(directory + "/" + failure, "")
+      let (status, output, errors) = invoke("destroy", env, directory, payload~)
+      assert_eq(status, 0, msg=errors)
+      assert_eq(output, "")
+      assert_true(errors.contains("warning: Orca volume " + volume))
+      assert_true(@fs.exists(directory + "/volume-present"))
+      @fs.remove(directory + "/" + failure)
+    }
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_false(@fs.exists(directory + "/volume-present"))
+    @fs.remove(directory + "/volume-args")
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_eq(
+      @fs.read_file(directory + "/volume-args").text(),
+      "volume\nls\n--format\njson\n",
+    )
+    for runtime in ["docker", "podman"] {
+      set_field(plan, "runtime", Json::string(runtime))
+      @fs.write_file(directory + "/volume-present", "")
+      @fs.write_file(
+        directory + "/volume-list",
+        if runtime == "docker" {
+          "{\"Name\":\"unrelated\"}\n{\"Name\":\"" + volume + "\"}\n"
+        } else {
+          "[{\"Name\":\"unrelated\"},{\"Name\":\"" + volume + "\"}]"
+        },
+      )
+      let (status, _, errors) = invoke("destroy", env, directory, payload~)
+      assert_eq(status, 0, msg=errors)
+      assert_false(@fs.exists(directory + "/volume-present"))
+    }
+    @fs.remove(directory + "/volume-args")
+    set_field(state, "orcaVolume", Json::string("foreign-volume"))
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_true(errors.contains("does not match the saved workspace UID"))
+    assert_false(@fs.exists(directory + "/volume-args"))
+    let events = @fs.read_file(
+      env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(events.contains("runtime unavailable"))
+    assert_true(events.contains("volume is in use"))
+  })
+}
+
+///|
+async test "failed server creation reclaims only the assigned volume" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  @fs.write_file(directory + "/fail-up", "")
+  let (status, _, _) = invoke("create", env, directory)
+  assert_true(status != 0)
+  assert_false(@fs.exists(directory + "/created"))
+  assert_false(@fs.exists(directory + "/volume-present"))
+  assert_true(@fs.read_file(directory + "/volume-args").text().contains("rm\n"))
 }

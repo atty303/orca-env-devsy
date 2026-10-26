@@ -4,12 +4,12 @@ import { run as cleanupRun, start, processScope, withAbort, terminate, quote, ty
 import { resolve } from "node:path";
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
-import { budgets, measure } from "./timing.ts";
+import { budgets, measure, timings, bufferMs } from "./timing.ts";
 import { DiagnosticError, diagnosticRun, sshStartupPhases } from "./diagnostics.ts";
 
 type Services = Awaited<ReturnType<typeof services>>;
 export const sshConnectionFailures: { workspace: number; restarting: boolean; sessions: { exitCode: number | null; signal: NodeJS.Signals | null; category: string; socketReady: boolean; truncated: boolean; phases: string[] }[] }[] = [];
-export const gitFailures: { workspace: number; session: number; operation: string; effective?: string; global?: string; unavailable?: boolean }[] = [];
+export const gitFailures: { workspace: number; session: number; operation: string; round?: number | null; exitCode?: number; timedOut?: boolean; category?: string; effective?: string; global?: string; unavailable?: boolean }[] = [];
 export const firstUseFailures: { workspace: number; run?: number; helper?: boolean; endpoint?: boolean; unavailable?: boolean }[] = [];
 export async function firstUse(runtime: Runtime, index: number, env: Environment, service: Services, signal?: AbortSignal) {
   const { run } = processScope(signal);
@@ -117,49 +117,15 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     if (!restarting) {
     await exec(0, `set -eu; cd ${quote(path)}; test -w .; test -w "$HOME"; git config --global credential.useHttpPath true; printf %s ${quote("workspace-" + index)} > isolation.txt; cp isolation.txt isolation-${index}.txt; mkdir -p "$HOME/e2e"; printf '%s\\n' ${quote(service.publicKey)} > "$HOME/e2e/authorized_keys"; printf '%s\\n' ${quote("e2e " + service.publicKey)} > "$HOME/e2e/allowed_signers"; ssh-keygen -q -t ed25519 -N '' -f "$HOME/e2e/hostkey"; printf '%s\\n' 'Port 2222' 'ListenAddress 127.0.0.1' 'PasswordAuthentication no' 'UsePAM yes' 'StrictModes no' "HostKey $HOME/e2e/hostkey" "AuthorizedKeysFile $HOME/e2e/authorized_keys" "PidFile $HOME/e2e/sshd.pid" > "$HOME/e2e/sshd_config"; sudo mkdir -p /run/sshd; sudo /usr/sbin/sshd -f "$HOME/e2e/sshd_config"`);
     const operations = await Promise.allSettled([0, 1, 2].map(async session => {
-      const directory = `dev-${session}`;
-      assert.equal(await exec(session, `cat ${quote(path + "/isolation.txt")}`), "workspace-" + index);
-      assert((await exec(session, "ssh-add -L")).split("\n").includes(service.publicKey));
-      assert.equal((await exec(session, "ssh -F /dev/null -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost id -un")).trim(), "developer");
-      const cwd = path + "/" + directory;
-      const command = (args: string[]) => exec(session, "cd " + quote(cwd) + " && " + args.map(quote).join(" "));
-      const git = (...args: string[]) => measure("git-" + (args[0] === "-C" ? args[2] : args[0]), budgets.operation, async () => {
-        try { return await command(["git", ...args]); }
-        catch (error) {
-          if (env.ORCA_ENV_DEVSY_RECORDING !== "0") {
-            const mode = (value: string) => ["rename", "link", "unset"].includes(value) ? value : "other";
-            const observed = await exec(session, `cd ${quote(cwd)}; effective=$(git config --get core.createObject) || effective=unset; global=$(git config --global --includes --get core.createObject) || global=unset; printf '%s\\n%s\\n' "$effective" "$global"`)
-              .then(output => { const values = output.trim().split("\n"); return { effective: mode(values[0] ?? ""), global: mode(values[1] ?? "") }; }, () => ({ unavailable: true }));
-            gitFailures.push({ workspace: index, session, operation: args[0] === "-C" ? args[2] : args[0], ...observed });
-          }
-          throw error;
-        }
-      }, index);
-      await exec(session, "mkdir " + quote(cwd));
-      await exec(session, `cd ${quote(cwd)} && printf edit > first && mv first renamed && ln -s renamed link`);
-      assert.equal(await command(["cat", "link"]), "edit");
-      await exec(session, `cd ${quote(cwd)} && printf '#!/bin/sh\\nprintf executable' > executable && chmod +x executable`);
-      assert.equal(await command(["./executable"]), "executable");
-      await command(["rm", "link", "renamed"]);
-      assert(!(await command(["ls"])).split("\n").includes("renamed"));
-      await git("init", "-q", "-b", "task-" + session);
-      for (const [key, value] of Object.entries({ "user.name": "E2E", "user.email": "e2e@example.invalid", "gpg.format": "ssh", "user.signingkey": service.publicKey, "gpg.ssh.allowedSignersFile": "/home/developer/e2e/allowed_signers" })) await git("config", key, value);
-      await exec(session, `printf %s ${quote(`w-${index}-s-${session}`)} > ${quote(cwd + "/identity")}`);
-      await git("add", "identity", "executable");
-      await git("commit", "-qm", "initial", "-S");
-      await git("verify-commit", "HEAD");
-      const url = `http://127.0.0.1:18080/w-${index}.git`;
-      await git("remote", "add", "origin", url);
-      await git("push", "-q", "-u", "origin", "HEAD");
-      await git("clone", "-q", "--branch", "task-" + session, url, "../clone-" + session);
-      assert.equal(await command(["cat", "../clone-" + session + "/identity"]), `w-${index}-s-${session}`);
-      for (let round = 0; round < 20; round++) {
-        await exec(session, `printf update >> ${quote(cwd + "/identity")}`);
-        await git("commit", "-qam", "update-" + round, "-S");
-        await git("push", "-q");
-        await git("-C", "../clone-" + session, "fetch", "-q");
-        await git("-C", "../clone-" + session, "reset", "-q", "--hard", "origin/task-" + session);
-        assert.equal(await command(["cat", "../clone-" + session + "/identity"]), `w-${index}-s-${session}` + "update".repeat(round + 1));
+      const output = await measure("git-session-batch", 605_000, () => run(["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", socketRoot + "/" + session, target,
+        ["timeout", "--kill-after=1s", "600s", "python3", path + "/.devcontainer/git-scenario.py", path, String(index), String(session), service.publicKey, String(budgets.operation)].map(quote).join(" ")], { env, timeout: 605_000 }), index);
+      const result = JSON.parse(output) as { timings: { operation: string; elapsedMs: number; ok: boolean }[]; failure?: { operation: string; round: number | null; exitCode?: number; timedOut?: boolean; stderr?: string; effective?: string; global?: string; unavailable?: boolean } };
+      for (const timing of result.timings) timings.push({ ...timing, workspace: index, targetMs: budgets.operation - bufferMs, budgetMs: budgets.operation });
+      if (result.failure) {
+        const { stderr, ...observed } = result.failure;
+        const failure = { ...observed, ...(stderr === undefined ? {} : { category: processFailureCategory(stderr) }) };
+        if (env.ORCA_ENV_DEVSY_RECORDING !== "0") gitFailures.push({ workspace: index, session, ...failure });
+        throw new Error(`Workspace ${index} SSH ${session}: ${JSON.stringify(failure)}`);
       }
       console.log(`PASS workspace ${index} SSH ${session}: signed Git round trip`);
     }));
@@ -214,9 +180,11 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
     const check = () => measure("workspace-check", budgets.operation, async () => {
       assert.equal(await (await fetch(`http://127.0.0.1:${port}/isolation.txt`, { signal: AbortSignal.any([AbortSignal.timeout(budgets.operation), ...signal ? [signal] : []]) })).text(), "workspace-" + index);
       await Promise.all([0, 1, 2].map(async session => {
-        assert.equal(await exec(session, "cat " + quote(path + "/isolation.txt")), "workspace-" + index);
-        assert(/^[a-f0-9]{40}\s+refs\/heads\/task-0/.test(await exec(session, `git ls-remote http://127.0.0.1:18080/w-${index}.git refs/heads/task-0`)));
-        assert.equal((await exec(session, "ssh -F /dev/null -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost id -un")).trim(), "developer");
+        const output = await exec(session, `set -eu; cat ${quote(path + "/isolation.txt")}; printf '\n'; git ls-remote http://127.0.0.1:18080/w-${index}.git refs/heads/task-0; ssh -F /dev/null -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost id -un`);
+        const [marker, head, user] = output.trim().split("\n");
+        assert.equal(marker, "workspace-" + index);
+        assert(/^[a-f0-9]{40}\s+refs\/heads\/task-0$/.test(head ?? ""));
+        assert.equal(user, "developer");
       }));
       await checkClient();
     }, index);

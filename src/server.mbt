@@ -39,7 +39,24 @@ async fn recover_server(
     Json::null()
   } else {
     save_diagnostic("recover-server", "start", tunnel_directory=directory)
-    launch_server(state)
+    if field(state, "orcaVolume") is Some(_) {
+      prepare_orca_storage(state)
+      let installation = remote(
+          state, "if test -x \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\"; then printf installed; else printf missing; fi",
+          "orca-install-probe",
+        )
+        .trim()
+        .to_owned()
+      match installation {
+        "installed" => ()
+        "missing" =>
+          ignore(remote(state, server_install_script(), "orca-install"))
+        _ => raise AdapterError("Invalid Orca installation probe result")
+      }
+    }
+    let output = launch_server(state)
+    configure_orca_project(state)
+    output
   }
   @fs.write_file(directory + "/server-enabled", "", permission=0o600)
   output
@@ -49,7 +66,12 @@ async fn recover_server(
 async fn launch_server(state : Json) -> Json {
   let root = required(state, "projectRoot")
   let port = reserve_server_port(state)
-  let script = server_launch_script(root, port)
+  let script = (if field(state, "orcaVolume") is Some(_) {
+      "export ORCA_USER_DATA_PATH=/workspaces/.orca/.profile; "
+    } else {
+      ""
+    }) +
+    server_launch_script(root, port)
   let result = @json.parse(remote(state, script, "orca-serve"))
   let connection = match field(result, "connection") {
     Some(value) => value

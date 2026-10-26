@@ -254,8 +254,8 @@ async fn ensure_ssh_worker(
   let saved = Json::empty_object()
   for
     name in [
-      "workspaceId", "workspaceUid", "user", "command", "devsyEnv", "home", "context",
-      "connection", "projectRoot",
+      "workspaceId", "workspaceUid", "orcaVolume", "orcaVolumeCleanup", "user", "command",
+      "devsyEnv", "home", "context", "connection", "projectRoot",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)

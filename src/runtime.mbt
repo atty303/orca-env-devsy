@@ -436,7 +436,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   )
   let state : Json = {
     "adapterVersion": 1,
-    "workspaceId": environment("ORCA_VM_INSTANCE_ID"),
+    "orcaInstanceId": environment("ORCA_VM_INSTANCE_ID"),
     "connection": if config.connection == Server {
       "orca-server"
     } else {
@@ -616,9 +616,10 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   create_recording.phase = "build"
   set_field(state, "buildCommit", Json::string(hash))
   set_field(state, "buildRef", Json::string(build_ref))
-  guard workspace(state) == None else {
-    raise AdapterError("Workspace ID already exists")
-  }
+  let creation_lock = workspace_creation_lock()
+  let mut creation_reserved = true
+  defer (if creation_reserved { creation_lock.close() })
+  select_workspace_name(state, repository)
   for argument in config.up_args {
     guard ![
         "--id", "--uid", "--home", "--context", "--result-format", "--ide-launch",
@@ -635,6 +636,11 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     @env.now().to_string()
   @fs.rmdir(reservation)
   set_field(state, "workspaceUid", Json::string(uid))
+  if config.connection == Server {
+    let volume = "orca-env-devsy-" + uid
+    set_field(state, "orcaVolume", Json::string(volume))
+    save_diagnostic("orca-volume", "selected", source=Storage(volume, ""))
+  }
   errdefer discard_created_workspace(state)
   let create_args = fn(source : String, strategy : String) raise {
     [
@@ -651,7 +657,8 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
       "skip",
       "--git-clone-strategy=" + strategy,
     ] +
-    config.up_args
+    config.up_args +
+    orca_storage_args(state)
   }
   let pinned_args = create_args(repository + "@sha256:" + hash, "")
   let native_source = match resolved_branch {
@@ -713,6 +720,9 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     guard required(created, "uid") == uid else {
       raise AdapterError("Created workspace identity does not match request")
     }
+    remember_volume_cleanup(state, created)
+    creation_lock.close()
+    creation_reserved = false
     let result = up_result(output)
     set_field(state, "user", Json::string(required(result, "remoteUser")))
     validate_state(state)
@@ -1009,7 +1019,8 @@ async fn execute_inner(mode : String) -> Unit {
             required(state, "workspaceId"),
             "--ide-launch",
             "skip",
-          ],
+          ] +
+          orca_storage_args(state),
           "workspace-resume",
         ),
       )
@@ -1059,6 +1070,7 @@ async fn execute_inner(mode : String) -> Unit {
           "workspace-delete",
         ),
       )
+      cleanup_orca_volume(state)
       close_tunnel(state)
     }
     _ => raise AdapterError("Unknown command")
@@ -1167,6 +1179,9 @@ async fn discard_created_workspace(state : Json) -> Unit {
           field(current, "uid") == field(state, "workspaceUid") else {
           return
         }
+        if field(state, "orcaVolumeCleanup") is None {
+          remember_volume_cleanup(state, current)
+        }
         if field(state, "user") is Some(_) {
           @async.with_timeout(15000, async fn() { close_tunnel(state) }) catch {
             _ => {
@@ -1193,6 +1208,7 @@ async fn discard_created_workspace(state : Json) -> Unit {
             "create-cleanup",
           ),
         )
+        cleanup_orca_volume(state)
       })
       save_diagnostic("create-cleanup", "success")
     } catch {

@@ -186,6 +186,9 @@ let create_recording : CreateRecording = {
 ///|
 priv enum CreateEvidence {
   Inputs
+  IdentitySelection(String, String)
+  Storage(String, String)
+  VolumeCleanup(String, Json)
   Configuration(String, String, String?)
   Request(String, Bool)
   Lookup(String)
@@ -268,6 +271,21 @@ fn diagnostic_ref(text : String) -> Bool {
 ///|
 fn CreateEvidence::to_json(self : CreateEvidence) -> Json {
   match self {
+    VolumeCleanup(volume, plan) => { "volume": volume, "cleanup": plan }
+    IdentitySelection(slug, id) =>
+      { "repositorySlug": redact_credentials(slug), "workspaceId": id }
+    Storage(volume, root) =>
+      {
+        "projectRoot": if root == "" {
+          Json::null()
+        } else {
+          Json::string(redact_credentials(root))
+        },
+        "volume": volume,
+        "mountPath": "/workspaces/.orca",
+        "profilePath": "/workspaces/.orca/.profile",
+        "worktreeBasePath": "/workspaces/.orca",
+      }
     Inputs => {
       let inputs = Json::empty_object()
       for

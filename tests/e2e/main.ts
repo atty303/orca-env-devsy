@@ -42,7 +42,22 @@ const versions: Record<string, string> = {};
 const pending = new Set<string>();
 const provisionFailures: ({ workspace: number } & ReturnType<typeof provisionFailure>)[] = [];
 
+const phases: { phase: string; elapsedMs: number; ok: boolean }[] = [];
+let activePhase: { name: string; started: number } | undefined;
+function finishPhase(ok = true) {
+  if (!activePhase) return;
+  const entry = { phase: activePhase.name, elapsedMs: Math.round(performance.now() - activePhase.started), ok };
+  phases.push(entry);
+  console.log("E2E phase:", JSON.stringify(entry));
+  activePhase = undefined;
+}
+function beginPhase(name: string) {
+  finishPhase();
+  activePhase = { name, started: performance.now() };
+}
+
 try {
+  beginPhase("setup");
   assert(devsy, "Devsy must be provided by the mise task");
   for (const path of ["home", "run", "config", "state"]) await mkdir(root + "/" + path, { recursive: true, mode: 0o700 });
   await mkdir(env.HOME + "/.ssh", { recursive: true, mode: 0o700 });
@@ -101,6 +116,7 @@ try {
     if (++readyCount === definitions.length) connected.resolve();
     await connected.promise;
   };
+  beginPhase("provision-and-first-use");
   const provisioned = await Promise.allSettled(definitions.map(async (definition, index) => {
     const provisionId = "provision-" + index;
     pending.add(provisionId);
@@ -128,6 +144,7 @@ try {
     return { runtime: result.runtime, index };
   }));
   for (const result of provisioned) if (result.status === "rejected") throw result.reason;
+  beginPhase("initial-workloads");
   const connectedWorkspaces = await Promise.allSettled(provisioned.map(async result => {
     assert.equal(result.status, "fulfilled");
     const { runtime, index } = (result as PromiseFulfilledResult<{ runtime: Runtime; index: number }>).value;
@@ -158,9 +175,11 @@ try {
     assert((gitStats.accepted["w-" + i] ?? 0) > 0);
     assert.deepEqual(gitStats.refs["w-" + i], ["refs/heads/task-0", "refs/heads/task-1", "refs/heads/task-2"]);
   }
+  beginPhase("relay-recovery");
   for (const current of workspaces) {
     await Promise.all([current.recoverRelay(), ...workspaces.filter(w => w !== current).map(w => w.check())]);
   }
+  beginPhase("worker-receipt-server-recovery");
   const crashed = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
   await measure("worker-recovery", budgets.recovery, async () => {
     await crashed.crashWorker();
@@ -177,6 +196,7 @@ try {
     await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover"], { env, timeout: budgets.lifecycle });
     await crashed.checkClient();
   }, crashed.index);
+  beginPhase("suspend-resume");
   await writeFile(env.CODEX_HOME + "/auth.json", auth(access(2)), { mode: 0o600 });
   // Interleave each workspace lifecycle with live operations in all peers.
   for (const current of workspaces) {
@@ -203,11 +223,39 @@ try {
   }
   for (const [key, count] of Object.entries((await shared.stats()).rejected)) assert(!key.endsWith(":invalid") || count === 0, "Shared credentials must not cross workspace repositories");
   assert.equal(await Bun.file(env.CODEX_HOME + "/refresh-count").text(), "refresh\n", "Lifecycle operations must reuse the valid shared auth");
+  beginPhase("recreate-persistence");
+  const persistent = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
+  const state = persistent.runtime.recipeResult.userData;
+  const volume = state.orcaVolume;
+  assert.equal(typeof volume, "string");
+  assert.match(state.workspaceId as string, /^[a-z0-9-]+-[a-z]+-[a-z0-9]{2}$/);
+  const worktreePath = `/workspaces/.orca/${persistent.path.split("/").at(-1)}/feature-e2e`;
+  await persistent.exec(0, `set -eu; test -f ${quote(worktreePath + "/worktree-usable.txt")}; test -f /workspaces/.orca/.profile/orca-profile-index.json; printf preserved > /workspaces/.orca/.profile/e2e-marker; printf volatile > "$HOME/e2e-volatile"`);
+  await persistent.close();
+  const receipt = JSON.stringify({ schemaVersion: 1, recipeResult: persistent.runtime.recipeResult });
+  await run([adapter, "suspend"], { env, timeout: budgets.lifecycle, input: receipt });
+  await measure("recreate-persistent-server", budgets.provision, () => d(["workspace", "up", state.workspaceId as string, "--recreate", "--ide-launch", "skip", "--mount", `type=volume,source=${volume},target=/workspaces/.orca`]), persistent.index);
+  await run([adapter, "recover", "--receipt"], { env, timeout: budgets.lifecycle, input: receipt });
+  const checkPersistence = async () => {
+    await d(["workspace", "ssh", state.workspaceId as string, "--start-services=false", "--agent-forwarding=false", "--user", state.user as string, "--command", `set -eu; test ! -e "$HOME/e2e-volatile"; test "$(cat /workspaces/.orca/.profile/e2e-marker)" = preserved; test "$(cat ${quote(worktreePath + "/worktree-usable.txt")})" = usable; git -C ${quote(worktreePath)} rev-parse --is-inside-work-tree`]);
+    await persistent.checkClient();
+    const response = await orca!.call<{ ok: boolean; result: { worktrees: { id: string; path: string }[] } }>("runtimeEnvironments", "call", { selector: persistent.runtime.runtimeEnvironmentId, method: "worktree.list", params: { repo: persistent.path }, timeoutMs: budgets.operation });
+    assert(response.ok);
+    assert(response.result.worktrees.some(w => w.id === persistent.runtime.workspaceId && w.path === worktreePath), "Remote profile must retain the existing worktree registration");
+  };
+  await checkPersistence();
+  workspaces[workspaces.indexOf(persistent)] = { ...persistent, check: checkPersistence, close: async () => {} };
+  console.log("PASS devcontainer recreation: checkout, worktree, profile and existing client registration");
+  beginPhase("destroy");
   const live = [...workspaces];
   for (const current of workspaces) {
     await current.close();
     const cleaned: Runtime = await orca.call<Runtime>("ephemeralVm", "cleanup", { runtimeId: current.runtime.id });
     assert.equal(cleaned.status, "cleaned");
+    if ((provider === "apple" || provider === "docker" || provider === "podman") && typeof current.runtime.recipeResult.userData.orcaVolume === "string") {
+      const listed = await run([provider === "apple" ? "container" : provider, "volume", "ls", "--format", "json"], { env, timeout: budgets.operation });
+      assert(!volumeNames(listed).includes(current.runtime.recipeResult.userData.orcaVolume), "Adapter destroy must remove its dedicated volume");
+    }
     live.splice(live.indexOf(current), 1);
     assert.equal(await orca.call("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), null, "Deleted workspace must not resume through stale Orca mapping");
     await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover", "--receipt"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
@@ -219,6 +267,8 @@ try {
 } catch (error) {
   failure = error;
 } finally {
+  finishPhase(failure === undefined);
+  beginPhase("cleanup");
   phase.beginCleanup();
   const cleanup = cleanupDeadline(cleanupErrors);
   await Orca.settleLaunches(cleanup.signal).catch(() => cleanupErrors.push("orca-launch"));
@@ -232,7 +282,7 @@ try {
   }
   await Promise.all(workspaces.map(active => active.close(cleanup.signal).catch(() => cleanupErrors.push("ssh-sessions"))));
   const remainingRuntimes = orca ? await orca.call<Runtime[]>("ephemeralVm", "listRuntimes", undefined, cleanup.signal).catch(() => runtimes) : [];
-  await Promise.all(remainingRuntimes.map(async runtime => {
+  await Promise.all(remainingRuntimes.filter(runtime => runtime.status !== "cleaned").map(async runtime => {
     try {
       const cleaned = await orca!.call<Runtime>("ephemeralVm", "cleanup", { runtimeId: runtime.id }, cleanup.signal);
       assert.equal(cleaned.status, "cleaned");
@@ -244,12 +294,29 @@ try {
   // Reap creations that failed before Orca could persist their receipts as well.
   try {
     const remaining = source ? JSON.parse(await cleanDevsy(["--result-format", "json", "workspace", "list", "--skip-pro"], budgets.operation)) as { id: string }[] : [];
-    for (const item of remaining) assert(/^orca-[a-f0-9-]+$/.test(item.id));
+    for (const item of remaining) assert(/^[a-z0-9-]+-[a-z]+-[a-z0-9]{2}$/.test(item.id));
     await Promise.all(remaining.map(async item => {
       await cleanDevsy(["workspace", "delete", item.id, "--force", "--ignore-not-found"], budgets.lifecycle).catch(() => cleanupErrors.push("devsy-cleanup"));
       cleanupErrors.push("unreleased-workspace");
     }));
   } catch { cleanupErrors.push("devsy-cleanup"); }
+  if (provider === "apple" || provider === "docker" || provider === "podman") {
+    const volumes = new Set(runtimes.map(runtime => runtime.recipeResult.userData.orcaVolume).filter((value): value is string => typeof value === "string"));
+    const rawEvents = await Bun.file(env.XDG_STATE_HOME + "/orca-env-devsy/events.jsonl").text().catch(() => "");
+    for (const line of rawEvents.split("\n").filter(Boolean)) {
+      try { const event = JSON.parse(line); if (typeof event.source?.volume === "string") volumes.add(event.source.volume); } catch {}
+    }
+    for (const volume of volumes) {
+      if (!/^orca-env-devsy-oe-create-[a-zA-Z0-9.-]+$/.test(volume)) { cleanupErrors.push("orca-volume-ownership"); continue; }
+      try {
+        const listed = await cleanupRun([provider === "apple" ? "container" : provider, "volume", "ls", "--format", "json"], { env, timeout: budgets.operation, signal: cleanup.signal });
+        if (volumeNames(listed).includes(volume)) {
+          cleanupErrors.push("unreleased-orca-volume");
+          await cleanupRun([provider === "apple" ? "container" : provider, "volume", "rm", volume], { env, timeout: budgets.operation, signal: cleanup.signal });
+        }
+      } catch { cleanupErrors.push("orca-volume"); }
+    }
+  }
   if (podmanStoreOwned) {
     // Both stores were verified inside this disposable run before provisioning.
     // Reset also reaps the daemonless runtime's pause process and storage mounts.
@@ -259,10 +326,20 @@ try {
   await Promise.all([...children].map(child => terminate(child).catch(() => cleanupErrors.push("child-process"))));
   if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: gitStats, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  finishPhase(cleanupErrors.length === 0);
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: gitStats, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();
+}
+
+function volumeNames(output: string): string[] {
+  const items = output.trim().startsWith("[") ? JSON.parse(output) : output.split("\n").filter(Boolean).map(line => JSON.parse(line));
+  return items.map((item: { configuration?: { name: string }; Name?: string }) => {
+    const name = provider === "apple" ? item.configuration?.name : item.Name;
+    assert.equal(typeof name, "string");
+    return name!;
+  });
 }
 if (failure) throw failure;
 assert(!phase.interrupted, "E2E interrupted");
