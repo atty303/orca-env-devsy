@@ -266,150 +266,6 @@ async fn stop_workspace(state : Json) -> Unit {
 }
 
 ///|
-priv struct IdleSession {
-  child : @process.Process
-  writer : @process.WriteToProcess
-  reader : @process.ReadFromProcess
-  stderr : @process.ReadFromProcess
-  errors : Ref[String]
-  mut closed : Bool
-}
-
-///|
-async fn IdleSession::read(self : IdleSession) -> Json {
-  let buffer = @buffer.Buffer()
-  let bytes = FixedArray::make(4096, b'\x00')
-  while true {
-    let count = self.reader.read(bytes)
-    guard count > 0 else {
-      raise AdapterError("Idle observer disconnected: " + self.errors.val)
-    }
-    guard buffer.length() + count <= 4194304 else {
-      raise AdapterError("Idle observer response too large")
-    }
-    buffer.write_bytes(Bytes::from_array(bytes[:count].to_owned()))
-    if bytes[count - 1] == b'\n' {
-      break
-    }
-  }
-  @json.parse(@utf8.decode(buffer.to_bytes()))
-}
-
-///|
-async fn IdleSession::observe(self : IdleSession) -> Json {
-  @async.with_timeout(30000, async fn() {
-    self.writer.write("observe\n")
-    let value = self.read()
-    guard field(value, "schemaVersion") == Some(Json::number(1)) &&
-      ["idle", "active", "unknown"].contains(required(value, "activity")) else {
-      raise AdapterError("Invalid idle observer result")
-    }
-    value
-  })
-}
-
-///|
-async fn IdleSession::close(self : IdleSession) -> Unit {
-  if self.closed {
-    return
-  }
-  self.closed = true
-  self.writer.close()
-  self.reader.close()
-  self.stderr.close()
-  self.child.cancel()
-  @async.with_timeout(2000, async fn() { ignore(self.child.wait()) }) catch {
-    _ => ()
-  }
-}
-
-///|
-async fn[X] open_idle_session(
-  group : @async.TaskGroup[X],
-  state : Json,
-) -> IdleSession {
-  let directory = required(state, "tunnelDirectory")
-  guard @fs.exists(directory + "/pairing-code") else {
-    raise AdapterError("Native access unavailable for idle observer")
-  }
-  let pairing = @fs.read_file(directory + "/pairing-code").text()
-  let (input, writer) = @process.write_to_process()
-  errdefer writer.close()
-  let (reader, output) = @process.read_from_process()
-  errdefer reader.close()
-  let (stderr, sink) = @process.read_from_process()
-  errdefer stderr.close()
-  let errors : Ref[String] = { val: "", }
-  group.spawn_bg(no_wait=true, async fn() {
-    let buffer = @buffer.Buffer()
-    let chunk = FixedArray::make(2048, b'\x00')
-    let mut truncated = false
-    try {
-      while true {
-        let count = stderr.read(chunk)
-        if count == 0 {
-          break
-        }
-        let available = 8192 - buffer.length()
-        let keep = if count > available { available } else { count }
-        if keep > 0 {
-          buffer.write_bytes(Bytes::from_array(chunk[:keep].to_owned()))
-        }
-        if keep < count {
-          truncated = true
-        }
-        errors.val = redact_credentials(@utf8.decode_lossy(buffer.to_bytes())) +
-          (if truncated { " [stderr truncated]" } else { "" })
-      }
-    } catch {
-      _ => ()
-    }
-  })
-  let script = "ORCA_ENV_DEVSY_OBSERVER=1 " + activity_command(state)
-  let child = @process.spawn(
-    group,
-    workspace_program(state, "ssh"),
-    extra_env=workspace_environment(state),
-    cwd?=workspace_directory(state).map(path => path[:]),
-    inherit_env=false,
-    ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
-    ssh_args(state, services=false) +
-    ["-S", control_socket(state, directory), script],
-    stdin=input,
-    stdout=output,
-    stderr=sink,
-    no_wait=true,
-  )
-  let session = { child, writer, reader, stderr, errors, closed: false, }
-  errdefer @async.protect_from_cancel(async fn() { session.close() })
-  @async.with_timeout(30000, async fn() {
-    writer.write(({ "pairingCode": pairing } : Json).stringify() + "\n")
-    let ready = session.read()
-    guard field(ready, "ready") == Some(Json::boolean(true)) else {
-      let codes = match field(ready, "errors") {
-        Some(Json::Array(items)) =>
-          Json::array(
-            items.map(item => {
-              field(item, "code").unwrap_or(Json::string("unknown"))
-            }),
-          ).stringify()
-        _ => "unknown"
-      }
-      raise AdapterError(
-        "Idle observer initialization failed: " + redact_credentials(codes),
-      )
-    }
-  })
-  save_diagnostic(
-    "idle-connection",
-    "connected",
-    tunnel_directory=directory,
-    recording=workspace_recording(state),
-  )
-  session
-}
-
-///|
 async fn idle_supervisor(
   state : Json,
   timer : IdleTimer,
@@ -428,8 +284,6 @@ async fn idle_supervisor(
         @fs.exists(required(state, "tunnelDirectory") + "/idle-enabled") {
     retry_reason = "observer_reconnecting"
     let outcome = @async.with_task_group(async fn(group) {
-      let session = open_idle_session(group, state)
-      defer @async.protect_from_cancel(async fn() { session.close() })
       group.spawn_bg(no_wait=true, async fn() {
         while @fs.exists(required(state, "tunnelDirectory") + "/idle-enabled") {
           @async.sleep(100)
@@ -438,7 +292,7 @@ async fn idle_supervisor(
       })
       while true {
         let started = @async.now()
-        let evidence = session.observe()
+        let evidence = observe_activity(state)
         let activity = required(evidence, "activity")
         attempt = 0
         idle_tick(
@@ -466,7 +320,7 @@ async fn idle_supervisor(
           guard scope && identity && workspace_status(state) == "Running" else {
             raise AdapterError("Idle stop identity or running state changed")
           }
-          let fresh = session.observe()
+          let fresh = observe_activity(state)
           let current = required(fresh, "activity")
           idle_tick(
             state,
@@ -492,7 +346,6 @@ async fn idle_supervisor(
               evidence=fresh,
               recording=workspace_recording(state),
             )
-            session.close()
             let failure = try {
               stop_workspace(state)
               None

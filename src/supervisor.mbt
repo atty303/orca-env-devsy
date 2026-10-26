@@ -277,13 +277,22 @@ async fn supervise_transport(directory : String) -> Unit {
   let recording = field(state, "recording") != Some(Json::boolean(false))
   let pid = @string.parse_int(required(state, "pid"))
   guard pid > 1 else { raise AdapterError("Invalid transport owner") }
-  let owner = @fs.open(directory + "/owner.lock", mode=ReadWrite)
-  defer owner.close()
+  let owner = @string.parse_int(required(state, "ownerPid"))
+  let owner_start = @string.parse_int64(required(state, "ownerStart"))
+  guard owner > 1 && owner_start > 0 else {
+    raise AdapterError("Invalid SSH owner identity")
+  }
   let start = @string.parse_int64(required(state, "start"))
   save_diagnostic(
     "supervisor-transport",
     "started",
-    evidence={ "pid": pid },
+    evidence={
+      "pid": pid,
+      "start": start.to_string(),
+      "ownerPid": owner,
+      "ownerStart": owner_start.to_string(),
+      "lease": field(state, "lease").unwrap_or(Json::null()),
+    },
     recording~,
   )
   let reason : Ref[String] = { val: "supervisor_shutdown", }
@@ -302,31 +311,14 @@ async fn supervise_transport(directory : String) -> Unit {
         })
       }
     }
-    let exit_code = if @fs.exists(directory + "/exited") {
-      Some(@string.parse_int(@fs.read_file(directory + "/exited").text()))
-    } else {
-      None
-    }
     save_diagnostic(
       "ssh-proxy",
-      if reason.val != "transport_exited" {
-        "cancelled"
-      } else if exit_code == Some(0) {
-        "success"
-      } else {
-        "failed"
-      },
-      exit_code?,
-      error_type?=exit_code
-        .filter(code => code != 0)
-        .map(code => if code < 0 { "process_signal" } else { "process_exit" }),
+      "cleaned",
       evidence={ "pid": pid, "transport": directory, "reason": reason.val },
       recording~,
     )
     publish_file(directory + "/done", reason.val)
-    if owner.try_lock(Exclusive) {
-      @fs.rmdir(directory, recursive=true)
-    }
+    @fs.rmdir(directory, recursive=true)
     save_diagnostic(
       "supervisor-transport",
       "stopped",
@@ -335,21 +327,16 @@ async fn supervise_transport(directory : String) -> Unit {
     )
   })
   while true {
-    let abandoned = owner.try_lock(Exclusive)
-    let exited = @fs.exists(directory + "/exited")
-    let eof = if @fs.exists(directory + "/eof") {
-      @env.now() >=
-      @string.parse_uint64(@fs.read_file(directory + "/eof").text()) + 1000
-    } else {
-      false
+    let owner_current = process_start(owner)
+    let transport_current = process_start(pid)
+    guard owner_current >= 0 && transport_current >= 0 else {
+      raise AdapterError("Cannot inspect SSH transport identity")
     }
-    if abandoned || exited || eof {
-      reason.val = if abandoned {
-        "owner_exited"
-      } else if exited {
+    if owner_current != owner_start || transport_current != start {
+      reason.val = if transport_current != start {
         "transport_exited"
       } else {
-        "stdin_eof"
+        "owner_exited"
       }
       return
     }

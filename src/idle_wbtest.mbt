@@ -109,7 +109,7 @@ async fn idle_wait_for(predicate : async () -> Bool) -> Unit {
 }
 
 ///|
-async test "worker stops only its idle VM and reuses the observer until cleanup" {
+async test "worker stops only its idle VM with completed one-shot mux observations" {
   let (directory, env, state) = idle_fixture(120)
   defer cleanup_fixture(directory)
   let saved = required(state, "tunnelDirectory")
@@ -126,7 +126,12 @@ async test "worker stops only its idle VM and reuses the observer until cleanup"
       no_wait=true,
     )
     idle_wait_for(async fn() { @fs.exists(directory + "/stopped") })
-    assert_eq(@fs.read_file(directory + "/idle-starts").text(), "start\n")
+    let starts = @fs.read_file(directory + "/idle-starts").text()
+    assert_true(starts.split("\n").count() > 3)
+    assert_eq(
+      @fs.read_file(directory + "/idle-closed").text().split("\n").count(),
+      starts.split("\n").count(),
+    )
     assert_true(
       @fs.read_file(directory + "/idle-requests").text().split("\n").count() > 3,
     )
@@ -469,5 +474,54 @@ async test "one VM observer failure does not block another VM from stopping" {
     @fs.remove(second_saved + "/enabled")
     assert_eq(failed.wait(), 0)
     assert_eq(healthy.wait(), 0)
+  })
+}
+
+///|
+async test "failed one-shot observations retain distinct native causes without authorizing idle stop" {
+  let (directory, env, state) = idle_fixture(1)
+  defer cleanup_fixture(directory)
+  @fs.write_file(directory + "/activity-exit", "1")
+  let saved = required(state, "tunnelDirectory")
+  let write = async fn(code : String) {
+    @fs.write_file(
+      directory + "/activity.tmp",
+      (
+        {
+          "schemaVersion": 1,
+          "activity": "unknown",
+          "errors": [{ "source": "observer", "code": code }],
+        } : Json).stringify(),
+    )
+    @fs.rename(
+      directory + "/activity.tmp",
+      directory + "/activity",
+      replace=true,
+    )
+  }
+  write("missing_native_access")
+  @async.with_task_group(async fn(group) {
+    let child = @process.spawn(
+      group,
+      integration_binary(),
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
+      extra_env=env,
+      no_wait=true,
+    )
+    for code in ["missing_native_access", "native_restoration_unconfirmed"] {
+      write(code)
+      idle_wait_for(async fn() {
+        let path = env.get("XDG_STATE_HOME").unwrap() +
+          "/orca-env-devsy/events.jsonl"
+        @fs.exists(path) && @fs.read_file(path).text().contains(code)
+      })
+      assert_false(@fs.exists(directory + "/stopped"))
+    }
+    @fs.remove(saved + "/enabled")
+    assert_eq(child.wait(), 0)
   })
 }

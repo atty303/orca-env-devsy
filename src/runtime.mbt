@@ -345,11 +345,18 @@ async fn ssh_args(
 ) -> Array[String] {
   [
     "-o",
+    "ProxyCommand=" + proxy(state, adapter_executable(), services~, lease~),
+  ] +
+  ssh_target_args(state)
+}
+
+///|
+fn ssh_target_args(state : Json) -> Array[String] raise {
+  [
+    "-o",
     "BatchMode=yes",
     "-o",
     "ConnectTimeout=15",
-    "-o",
-    "ProxyCommand=" + proxy(state, adapter_executable(), services~, lease~),
     "-o",
     "StrictHostKeyChecking=no",
     "-o",
@@ -361,31 +368,70 @@ async fn ssh_args(
 }
 
 ///|
+fn ssh_mux_options(state : Json, directory : String) -> Array[String] raise {
+  [
+    "-o",
+    "ProxyCommand=false",
+    "-o",
+    "ControlMaster=no",
+    "-S",
+    control_socket(state, directory),
+  ] +
+  ssh_target_args(state)
+}
+
+///|
+async fn mux_ssh_args(state : Json) -> Array[String] {
+  let directory = required(state, "tunnelDirectory")
+  let mut waiting = false
+  @async.with_timeout(connection_timeout_ms(state~), async fn() {
+    while true {
+      let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
+      guard field(saved, "workspaceUid") == field(state, "workspaceUid") else {
+        raise AdapterError("SSH master ownership changed")
+      }
+      if field(state, "executionEnvironment") is Some(environment) {
+        set_field(saved, "executionEnvironment", environment)
+      }
+      let ready = try {
+        check_tunnel(saved, directory)
+        true
+      } catch {
+        _ => false
+      }
+      if ready {
+        if waiting {
+          save_diagnostic(
+            "ssh-channel",
+            "recovered",
+            tunnel_directory=directory,
+            recording=workspace_recording(state),
+          )
+        }
+        return ssh_mux_options(saved, directory)
+      }
+      if !waiting {
+        waiting = true
+        save_diagnostic(
+          "ssh-channel",
+          "waiting",
+          tunnel_directory=directory,
+          recording=workspace_recording(state),
+        )
+      }
+      @async.sleep(500)
+    } nobreak {
+      abort("unreachable")
+    }
+  })
+}
+
+///|
 async fn remote(state : Json, script : String, stage : String) -> String {
-  if field(state, "tunnelDirectory") is Some(Json::String(directory)) &&
-    @fs.exists(directory + "/state.json") {
-    let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
-    let reusable = try {
-      check_tunnel(saved, directory)
-      true
-    } catch {
-      _ => false
-    }
-    if reusable {
-      return command(
-        workspace_program(state, "ssh"),
-        ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
-        ssh_args(state, services=false) +
-        ["-S", control_socket(saved, directory), script],
-        stage,
-        environment=workspace_environment(state),
-        cwd?=workspace_directory(state).map(path => path[:]),
-      )
-    }
-  }
+  let args = mux_ssh_args(state)
   command(
     workspace_program(state, "ssh"),
-    ssh_args(state, services=false) + [script],
+    args + [script],
     stage,
     environment=workspace_environment(state),
     cwd?=workspace_directory(state).map(path => path[:]),

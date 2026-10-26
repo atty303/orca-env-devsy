@@ -115,8 +115,7 @@ async fn stop_tunnel_master(
           extra_env=workspace_environment(state),
           cwd?=workspace_directory(state).map(path => path[:]),
           inherit_env=false,
-          ssh_args(state) +
-          ["-S", control_socket(state, directory), "-O", "exit"],
+          ssh_mux_options(state, directory) + ["-O", "exit"],
         ),
       )
     }) catch {
@@ -130,15 +129,7 @@ async fn stop_tunnel_master(
             extra_env=workspace_environment(state),
             cwd?=workspace_directory(state).map(path => path[:]),
             inherit_env=false,
-            ssh_args(state) +
-            [
-              "-o",
-              "ProxyCommand=false",
-              "-S",
-              control_socket(state, directory),
-              "-O",
-              "check",
-            ],
+            ssh_mux_options(state, directory) + ["-O", "check"],
           )
           if code != 0 {
             break
@@ -791,7 +782,7 @@ async fn close_tunnel(state : Json) -> Unit {
         extra_env=workspace_environment(state),
         cwd?=workspace_directory(state).map(path => path[:]),
         inherit_env=false,
-        ssh_args(state) + ["-S", control_socket(state, directory), "-O", "exit"],
+        ssh_mux_options(state, directory) + ["-O", "exit"],
       ),
     )
   }
@@ -960,6 +951,9 @@ async fn tunnel_worker(
         return
       }
       monitoring = false
+      if !adopted {
+        stop_tunnel_master(state, directory, verify=true)
+      }
       @fs.mkdir(
         required(state, "socketDirectory"),
         permission=0o700,
@@ -1257,7 +1251,7 @@ async fn check_tunnel(state : Json, directory : String) -> Unit {
       extra_env=workspace_environment(state),
       cwd?=workspace_directory(state).map(path => path[:]),
       inherit_env=false,
-      ssh_args(state) + ["-S", control_socket(state, directory), "-O", "check"],
+      ssh_mux_options(state, directory) + ["-O", "check"],
     )
     guard status == 0 else { raise AdapterError("Tunnel not ready") }
     match field(state, "localPort") {

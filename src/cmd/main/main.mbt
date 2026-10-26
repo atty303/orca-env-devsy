@@ -3,17 +3,11 @@ extern "C" fn proxy_exit(code : Int32) -> Unit = "exit"
 
 ///|
 fn init {
-  // exec must precede the async runtime, which blocks termination signals.
   let args = @env.args()
   if args.length() > 1 &&
-    args[1] == "--supervisor" &&
+    (args[1] == "--supervisor" || args[1] == "--ssh-proxy") &&
     !@adapter.prepare_ssh_proxy() {
     proxy_exit(127)
-  }
-  match args {
-    [_, "--ssh-transport", lease, .. command] =>
-      proxy_exit(@adapter.ssh_transport(command.to_owned(), lease))
-    _ => ()
   }
 }
 

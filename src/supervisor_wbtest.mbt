@@ -202,8 +202,14 @@ async test "supervisor crash preserves transport streams and recover resumes cle
       defer reader.close()
       let proxy = @process.spawn(
         group,
-        integration_binary(),
-        ["--ssh-proxy", "", directory + "/transport"],
+        "/bin/sh",
+        [
+          "-c",
+          "\"$1\" --ssh-proxy \"\" \"$2\" <&0 & wait $!",
+          "sh",
+          integration_binary(),
+          directory + "/transport",
+        ],
         extra_env=env,
         stdin=input,
         stdout=output,
@@ -220,10 +226,16 @@ async test "supervisor crash preserves transport streams and recover resumes cle
       assert_eq(code, 0, msg=errors)
       assert_false(supervisor_pid(root) == pid)
       let transport = @fs.read_file(directory + "/transport-pid").text()
+      assert_eq(
+        @process.collect_output("kill", ["-TERM", proxy.pid.to_string()]).0,
+        0,
+      )
+      assert_eq(proxy.wait(), -15)
       writer.close()
-      assert_eq(proxy.wait(), 0)
       assert_eq(reader.read_some(max_len=1), None)
-      assert_true(@process.collect_output("kill", ["-0", transport]).0 != 0)
+      idle_wait_for(async fn() {
+        @process.collect_output("kill", ["-0", transport]).0 != 0
+      })
     })
   })
 }
@@ -245,12 +257,14 @@ async test "transport cleanup reaps descendants after their launcher exits witho
   assert_eq(code, 37, msg=errors.text())
   let child = output.text()
   assert_true(@string.parse_int(child) > 1)
-  assert_true(@process.collect_output("kill", ["-0", child]).0 != 0)
-  let records = @fs.read_file(
-    directory + "/.local/state/orca-env-devsy/events.jsonl",
-  ).text()
-  assert_true(records.contains("\"exitCode\":37"))
-  assert_true(records.contains("\"status\":\"failed\""))
+  idle_wait_for(async fn() {
+    @process.collect_output("kill", ["-0", child]).0 != 0
+  })
+  idle_wait_for(async fn() {
+    @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
+    .text()
+    .contains("transport_exited")
+  })
 }
 
 ///|
@@ -274,7 +288,7 @@ async test "workspace registration deletion cannot stop a peer supervisor task" 
 }
 
 ///|
-async test "transport ownership survives proxy termination until cleanup completes" {
+async test "direct exec preserves PID and transport ownership until group cleanup completes" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(
@@ -303,16 +317,17 @@ async test "transport ownership survives proxy termination until cleanup complet
       writer.write(b"ready")
       assert_eq(reader.read_exactly(5), b"ready")
       let transport = @fs.read_file(directory + "/transport-pid").text()
-      assert_eq(
-        @process.collect_output("kill", ["-KILL", proxy.pid.to_string()]).0,
-        0,
-      )
-      assert_eq(proxy.wait(), -9)
+      assert_eq(transport, proxy.pid.to_string())
       let pending = owned_transports(
         env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
         @fs.realpath(directory + "/primary-proxy.lock"),
       )
       assert_false(pending.is_empty())
+      assert_eq(
+        @process.collect_output("kill", ["-KILL", proxy.pid.to_string()]).0,
+        0,
+      )
+      assert_eq(proxy.wait(), -9)
       wait_transport_cleanup(pending)
       assert_true(@process.collect_output("kill", ["-0", transport]).0 != 0)
       assert_eq(reader.read_some(max_len=1), None)
@@ -338,4 +353,53 @@ test "workspace runtime options do not inherit another task's timeout or recordi
   assert_eq(connection_timeout_ms(state=second), 5000)
   assert_false(workspace_recording(first))
   assert_true(workspace_recording(second))
+}
+
+///|
+async test "short SSH operations wait for the owned master and never launch an independent transport" {
+  let (directory, _, state) = idle_fixture(3600000)
+  defer cleanup_fixture(directory)
+  set_field(state, "executionEnvironment", {
+    "ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS": "50",
+    "ORCA_ENV_DEVSY_RECORDING": "0",
+  })
+  let failed = try {
+    ignore(remote(state, "printf connected", "mux-test"))
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(failed)
+  assert_false(@fs.exists(directory + "/ssh-args"))
+  @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
+  @fs.write_file(
+    directory + "/bin/ssh",
+    "#!/bin/sh\ntest \"$WORKSPACE_PRIVATE_TOKEN\" = fixture-secret || exit 78\nexec \"$HOME/bin/ssh-original\" \"$@\"\n",
+    permission=0o700,
+  )
+  set_field(state, "executionEnvironment", {
+    "ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS": "2000",
+    "ORCA_ENV_DEVSY_RECORDING": "0",
+    "WORKSPACE_PRIVATE_TOKEN": "fixture-secret",
+  })
+  @async.with_task_group(async fn(group) {
+    group.spawn_bg(async fn() {
+      @async.sleep(50)
+      @fs.mkdir(required(state, "socketDirectory"))
+      @fs.write_file(
+        control_socket(state, required(state, "tunnelDirectory")),
+        "",
+      )
+    })
+    ignore(remote(state, "printf connected", "mux-test"))
+  })
+  let args = @fs.read_file(directory + "/ssh-args").text()
+  assert_true(args.contains("ProxyCommand=false"))
+  assert_true(args.contains("ControlMaster=no"))
+  assert_true(
+    args.contains(
+      "-S\n" + control_socket(state, required(state, "tunnelDirectory")),
+    ),
+  )
+  assert_false(args.contains("--ssh-proxy"))
 }

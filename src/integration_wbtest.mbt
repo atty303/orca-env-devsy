@@ -65,25 +65,20 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'-N'*) if test -f "$HOME/recover-on-master"; then rm -f "$HOME/rpc-unavailable" "$HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$HOME/primary-services" ;; *) printf enabled > "$HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
-    #|  *'ORCA_ENV_DEVSY_OBSERVER=1'*)
+    #|  *'const fs = require'* )
+    #|    test -n "$control" && test -f "$control"
     #|    printf 'start\n' >> "$HOME/idle-starts"
     #|    printf '%s\n' "$$" > "$HOME/idle-pid"
     #|    trap 'printf "closed\n" >> "$HOME/idle-closed"' EXIT
-    #|    read -r config
-    #|    if test -f "$HOME/fail-idle-connect"; then exit 3; fi
-    #|    printf '{"schemaVersion":1,"ready":true}\n'
-    #|    count=0
-    #|    while read -r request; do
-    #|      count=$((count+1))
-    #|      printf '%s\n' "$request" >> "$HOME/idle-requests"
-    #|      if test -f "$HOME/drop-idle-once"; then rm "$HOME/drop-idle-once"; exit 4; fi
-    #|      if test "$count" -ge 3 && test -f "$HOME/idle-final-active"; then printf '{"schemaVersion":1,"activity":"active"}\n';
-    #|      elif test -f "$HOME/activity"; then cat "$HOME/activity"; printf '\n';
-    #|      else printf '{"schemaVersion":1,"activity":"idle"}\n'; fi
-    #|    done ;;
-    #|  *'const fs = require'* )
     #|    cat >/dev/null
-    #|    if test -f "$HOME/activity"; then cat "$HOME/activity"; else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}'; fi ;;
+    #|    printf 'observe\n' >> "$HOME/idle-requests"
+    #|    if test -f "$HOME/fail-idle-connect"; then exit 3; fi
+    #|    if test -f "$HOME/drop-idle-once"; then rm "$HOME/drop-idle-once"; exit 4; fi
+    #|    count=$(wc -l < "$HOME/idle-requests")
+    #|    if test "$count" -ge 3 && test -f "$HOME/idle-final-active"; then printf '{"schemaVersion":1,"activity":"active"}\n';
+    #|    elif test -f "$HOME/activity"; then cat "$HOME/activity"; printf '\n';
+    #|    else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}\n'; fi
+    #|    if test -f "$HOME/activity-exit"; then exit "$(cat "$HOME/activity-exit")"; fi ;;
     #|  *'orca-relay-readiness'*)
     #|    touch "$HOME/relay-probed"
     #|    test -f "$control"
@@ -381,7 +376,17 @@ async test "server CLI emits pairing separately and recover reuses a responding 
     assert_true(
       @fs.read_file(directory + "/ssh-args")
       .text()
-      .contains("ProxyCommand=" + proxy(state, integration_binary())),
+      .contains(
+        "ProxyCommand=" +
+        proxy(
+          state,
+          @fs.realpath(
+            env.get("XDG_STATE_HOME").unwrap() +
+            "/orca-env-devsy/ssh-proxy-adapter",
+          ),
+          lease=required(worker, "socketDirectory") + "/primary-proxy.lock",
+        ),
+      ),
     )
     @fs.write_file(directory + "/orca.yaml", "invalid: [")
     @fs.write_file(directory + "/ssh-args", "")
@@ -392,11 +397,8 @@ async test "server CLI emits pairing separately and recover reuses a responding 
       field(result, "connection"),
     )
     let commands = @fs.read_file(directory + "/ssh-args")
-    assert_true(
-      commands
-      .text()
-      .contains("ProxyCommand=" + proxy(state, integration_binary())),
-    )
+    assert_true(commands.text().contains("ProxyCommand=false"))
+    assert_false(commands.text().contains("--ssh-proxy"))
     assert_false(commands.text().contains("--recipe-json"))
     assert_false(commands.text().contains("releases/latest"))
   })
@@ -2561,68 +2563,7 @@ async test "adoption rejects stopped or replaced workspaces and reaps the old ma
 }
 
 ///|
-async test "SSH proxy preserves binary input and reaps its child on EOF or signals" {
-  for termination in ["eof", "HUP", "TERM"] {
-    let (directory, env) = fixture()
-    defer cleanup_fixture(directory)
-    @fs.write_file(
-      directory + "/transport",
-      "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\ncat\nwhile :; do :; done\n",
-      permission=0o700,
-    )
-    @async.with_timeout(5000, async fn() {
-      @async.with_task_group(async fn(group) {
-        let (input, writer) = @process.write_to_process()
-        defer writer.close()
-        let (reader, output) = @process.read_from_process()
-        defer reader.close()
-        let sink = @process.redirect_to_file("/dev/null", shared=true)
-        defer sink.close()
-        let proxy = @process.spawn(
-          group,
-          integration_binary(),
-          extra_env=env,
-          [
-            "--ssh-proxy",
-            "",
-            directory + "/transport",
-            directory + "/child-pid",
-          ],
-          stdin=input,
-          stdout=output,
-          stderr=sink,
-        )
-        let payload = b"\x00\x80\xff\r\nSSH"
-        writer.write(payload)
-        assert_eq(reader.read_exactly(payload.length()), payload)
-        let pid = @fs.read_file(directory + "/child-pid")
-          .text()
-          .trim()
-          .to_owned()
-        assert_true(@string.parse_int(pid) > 1)
-        if termination == "eof" {
-          writer.close()
-        } else {
-          ignore(
-            @process.collect_output("kill", [
-              "-" + termination,
-              proxy.pid.to_string(),
-            ]),
-          )
-        }
-        let code = proxy.wait()
-        if termination == "eof" {
-          assert_eq(code, 0)
-        }
-        let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
-        assert_true(alive != 0, msg="Proxy child must be reaped before exit")
-      })
-    })
-  }
-}
-
-///|
-async test "SSH proxy retains early and drained exit codes and closes launcher descendants" {
+async test "direct transport retains early and drained exit codes" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(directory + "/input", "x".repeat(1000000))
@@ -2636,23 +2577,6 @@ async test "SSH proxy retains early and drained exit codes and closes launcher d
     assert_eq(code, 37)
     assert_eq(output.text(), if script == "exit 37" { "" } else { "tail" })
   }
-  @async.with_timeout(2500, async fn() {
-    let (code, output, _) = @process.collect_output(
-      integration_binary(),
-      extra_env=env,
-      [
-        "--ssh-proxy", "", "/bin/sh", "-c", "sleep 30 & printf '%s' \"$!\"; wait",
-      ],
-      stdin=@process.redirect_from_file("/dev/null"),
-    )
-    assert_eq(code, 0)
-    assert_true(@string.parse_int(output.text().trim().to_owned()) > 1)
-    let (alive, _, _) = @process.collect_output("kill", ["-0", output.text()])
-    assert_true(
-      alive != 0,
-      msg="Launcher descendants must not survive proxy cleanup",
-    )
-  })
 }
 
 ///|
@@ -2665,7 +2589,7 @@ async test "SSH transport retains default signals and launcher termination traps
     ["--ssh-proxy", "", "/bin/sh", "-c", "kill -TERM $$; exit 37"],
     stdin=@process.redirect_from_file("/dev/null"),
   )
-  assert_eq(code, 143)
+  assert_eq(code, -15)
   @async.with_timeout(2500, async fn() {
     @async.with_task_group(async fn(group) {
       let (input, writer) = @process.write_to_process()
@@ -2697,146 +2621,74 @@ async test "SSH transport retains default signals and launcher termination traps
 }
 
 ///|
-async test "SSH proxy caller group death closes streams and reaps the transport" {
-  let (directory, env) = fixture()
-  defer cleanup_fixture(directory)
-  @fs.write_file(
-    directory + "/transport",
-    "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\ncat\nwhile :; do :; done\n",
-    permission=0o700,
-  )
-  @fs.write_file(directory + "/outer-group.lock", "")
-  @fs.write_file(directory + "/outer-group.lock.ready", "")
-  @async.with_timeout(3500, async fn() {
-    @async.with_task_group(async fn(group) {
-      let (input, writer) = @process.write_to_process()
-      defer writer.close()
-      let (reader, output) = @process.read_from_process()
-      defer reader.close()
-      let sink = @process.redirect_to_file("/dev/null", shared=true)
-      defer sink.close()
-      let proxy = @process.spawn(
-        group,
-        integration_binary(),
-        extra_env=env,
-        [
-          "--ssh-transport",
-          directory + "/outer-group.lock",
-          integration_binary(),
-          "--ssh-proxy",
-          "",
-          directory + "/transport",
-          directory + "/child-pid",
-        ],
-        stdin=input,
-        stdout=output,
-        stderr=sink,
-      )
-      writer.write(b"ready")
-      assert_eq(reader.read_exactly(5), b"ready")
-      let pid = @fs.read_file(directory + "/child-pid").text()
-      let (code, pgid, _) = @process.collect_output("ps", [
-        "-o",
-        "pgid=",
-        "-p",
-        proxy.pid.to_string(),
-      ])
-      assert_eq(code, 0)
-      assert_eq(pgid.text().trim(), proxy.pid.to_string())
-      let (killed, _, _) = @process.collect_output("kill", [
-        "-KILL",
-        "--",
-        "-" + proxy.pid.to_string(),
-      ])
-      assert_eq(killed, 0)
-      ignore(proxy.wait())
-      // The original caller still holds stdin open; termination must close
-      // inherited output streams without waiting for that caller's EOF.
-      assert_eq(reader.read_some(max_len=1), None)
-      let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
-      assert_true(
-        alive != 0,
-        msg="Transport must be reaped after caller group death",
-      )
-    })
-  })
-}
-
-///|
-async test "SSH proxy caller death reaps a transport with blocked stdin" {
-  let (directory, env) = fixture()
-  defer cleanup_fixture(directory)
-  @fs.write_file(
-    directory + "/transport",
-    "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\nwhile :; do :; done\n",
-    permission=0o700,
-  )
-  @fs.write_file(directory + "/outer-group.lock", "")
-  @fs.write_file(directory + "/outer-group.lock.ready", "")
-  @async.with_timeout(3500, async fn() {
-    @async.with_task_group(async fn(group) {
-      let (input, writer) = @process.write_to_process()
-      defer writer.close()
-      let (reader, output) = @process.read_from_process()
-      defer reader.close()
-      let sink = @process.redirect_to_file("/dev/null", shared=true)
-      defer sink.close()
-      let proxy = @process.spawn(
-        group,
-        integration_binary(),
-        extra_env=env,
-        [
-          "--ssh-transport",
-          directory + "/outer-group.lock",
+async test "SSH owner death reaps direct transports even when stdin remains open or blocked" {
+  for blocked in [false, true] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    @fs.write_file(
+      directory + "/transport",
+      "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\n" +
+      (if blocked { "" } else { "cat\n" }) +
+      "while :; do :; done\n",
+      permission=0o700,
+    )
+    @async.with_timeout(10000, async fn() {
+      @async.with_task_group(async fn(group) {
+        let (input, writer) = @process.write_to_process()
+        defer writer.close()
+        let (reader, output) = @process.read_from_process()
+        defer reader.close()
+        let owner = @process.spawn(
+          group,
           "/bin/sh",
-          "-c",
-          "\"$1\" --ssh-proxy '' \"$2\" \"$3\" <&0 & wait",
-          "sh",
-          integration_binary(),
-          directory + "/transport",
-          directory + "/child-pid",
-        ],
-        stdin=input,
-        stdout=output,
-        stderr=sink,
-      )
-      while !@fs.exists(directory + "/child-pid") {
-        @async.sleep(10)
-      }
-      group.spawn_bg(no_wait=true, async fn() {
-        for _ in 0..<128 {
-          writer.write(Bytes::make(65536, 0)) catch {
-            _ => break
-          }
+          [
+            "-c",
+            "\"$1\" --ssh-proxy '' \"$2\" \"$3\" <&0 & wait",
+            "sh",
+            integration_binary(),
+            directory + "/transport",
+            directory + "/child-pid",
+          ],
+          extra_env=env,
+          stdin=input,
+          stdout=output,
+        )
+        idle_wait_for(async fn() { @fs.exists(directory + "/child-pid") })
+        let pid = @fs.read_file(directory + "/child-pid").text()
+        let root = env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy"
+        let receipts = @fs.readdir(root + "/transports")
+        assert_eq(receipts.length(), 1)
+        let receipt = @json.parse(
+          @fs.read_file(root + "/transports/" + receipts[0] + "/state.json").text(),
+        )
+        assert_eq(required(receipt, "pid"), pid)
+        assert_eq(required(receipt, "ownerPid"), owner.pid.to_string())
+        if blocked {
+          group.spawn_bg(no_wait=true, async fn() {
+            for _ in 0..<128 {
+              writer.write(Bytes::make(65536, 0)) catch {
+                _ => break
+              }
+            }
+          })
+          @async.sleep(100)
+        } else {
+          let payload = b"\x00\x80\xff\r\nSSH"
+          writer.write(payload)
+          assert_eq(reader.read_exactly(payload.length()), payload)
         }
+        assert_eq(
+          @process.collect_output("kill", ["-KILL", owner.pid.to_string()]).0,
+          0,
+        )
+        assert_eq(owner.wait(), -9)
+        assert_eq(reader.read_some(max_len=1), None)
+        idle_wait_for(async fn() {
+          @process.collect_output("kill", ["-0", pid]).0 != 0
+        })
       })
-      @async.sleep(100)
-      let pid = @fs.read_file(directory + "/child-pid").text()
-      let (code, pgid, _) = @process.collect_output("ps", [
-        "-o",
-        "pgid=",
-        "-p",
-        proxy.pid.to_string(),
-      ])
-      assert_eq(code, 0)
-      assert_eq(pgid.text().trim(), proxy.pid.to_string())
-      let (killed, _, _) = @process.collect_output("kill", [
-        "-KILL",
-        "--",
-        "-" + proxy.pid.to_string(),
-      ])
-      assert_eq(killed, 0)
-      ignore(proxy.wait())
-      // Data forwarding is blocked. Parent liveness must still reap the
-      // transport and close the inherited output streams.
-      assert_eq(reader.read_some(max_len=1), None)
-      let (alive, _, _) = @process.collect_output("kill", ["-0", pid])
-      assert_true(
-        alive != 0,
-        msg="Transport must be reaped after caller group death",
-      )
     })
-  })
+  }
 }
 
 ///|

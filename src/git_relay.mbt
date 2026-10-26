@@ -70,9 +70,7 @@ async fn relay_readiness(
       extra_env=workspace_environment(state),
       cwd?=workspace_directory(state).map(path => path[:]),
       inherit_env=false,
-      ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
-      ssh_args(state) +
-      ["-S", control_socket(state, directory), script],
+      ssh_mux_options(state, directory) + [script],
     )
     if code != 0 {
       return RelayReadiness::Retry(
@@ -124,9 +122,7 @@ async fn relay_readiness(
         extra_env=workspace_environment(state),
         cwd?=workspace_directory(state).map(path => path[:]),
         inherit_env=false,
-        ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
-        ssh_args(state) +
-        ["-S", control_socket(state, directory), helper],
+        ssh_mux_options(state, directory) + [helper],
       )
       if code == 1 {
         return RelayReadiness::WaitingForGitHelper

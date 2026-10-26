@@ -40,80 +40,42 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
 
 ///|
 #borrow(path)
-extern "C" fn transport_open(path : Bytes, flags : Int32) -> Int32 = "open"
-
-///|
-extern "C" fn transport_flock(fd : Int32, operation : Int32) -> Int32 = "flock"
-
-///|
-extern "C" fn transport_close(fd : Int32) -> Int32 = "close"
-
-///|
-#borrow(path)
 extern "C" fn transport_access(path : Bytes, mode : Int32) -> Int32 = "access"
 
 ///|
-#borrow(command, args)
-extern "C" fn proxy_exec(command : Bytes, args : FixedArray[Bytes?]) -> Int32 = "execvp"
+extern "C" fn proxy_parent() -> Int32 = "getppid"
 
 ///|
-pub fn ssh_transport(args : Array[String], lease : String) -> Int32 {
-  if args.is_empty() || !prepare_ssh_proxy() {
-    return 127
-  }
-  let owner = transport_open(@utf8.encode(lease + "\u0000"), 0)
-  if owner < 0 {
-    return 127
-  }
-  if transport_flock(owner, 1) != 0 ||
-    transport_access(@utf8.encode(lease + ".ready\u0000"), 0) != 0 {
-    ignore(transport_close(owner))
-    return 127
-  }
-  ignore(transport_close(owner))
-  let encoded : FixedArray[Bytes?] = FixedArray::makei(args.length() + 1, i => {
-    if i == args.length() {
-      None
-    } else {
-      Some(@utf8.encode(args[i] + "\u0000"))
-    }
-  })
-  ignore(proxy_exec(encoded[0].unwrap(), encoded))
-  127
-}
+extern "C" fn prepare_proxy() -> Int32 = "orca_prepare_proxy"
+
+///|
+#borrow(command, args)
+extern "C" fn proxy_exec(command : Bytes, args : FixedArray[Bytes?]) -> Int32 = "orca_transport_exec"
 
 ///|
 pub fn prepare_ssh_proxy() -> Bool {
-  proxy_group() == proxy_pid() || proxy_process_group(0, 0) == 0
+  prepare_proxy() == 0 &&
+  (proxy_group() == proxy_pid() || proxy_process_group(0, 0) == 0)
 }
 
 ///|
 pub async fn ssh_proxy(args : Array[String], lease~ : String = "") -> Int32 {
   guard args.length() > 0 else { raise AdapterError("Missing SSH transport") }
+  let pid = proxy_pid()
+  let start = process_start(pid)
+  let parent = proxy_parent()
+  let parent_start = process_start(parent)
+  guard parent > 1 && start > 0 && parent_start > 0 else {
+    raise AdapterError("SSH transport owner is unavailable")
+  }
   ensure_supervisor()
   let base = adapter_state_home() + "/transports"
   @fs.mkdir(base, recursive=true, permission=0o700, allow_exist=true)
-  let directory = base +
-    "/" +
-    proxy_pid().to_string() +
-    "." +
-    @env.now().to_string()
+  let directory = base + "/" + pid.to_string() + "." + start.to_string()
   @fs.mkdir(directory, permission=0o700)
-  defer @async.protect_from_cancel(async fn() {
-    if !@fs.exists(directory + "/state.json") && @fs.exists(directory) {
-      @fs.rmdir(directory, recursive=true)
-    }
+  errdefer (if !@fs.exists(directory + "/state.json") {
+    @fs.rmdir(directory, recursive=true)
   })
-  let owner = @fs.open(
-    directory + "/owner.lock",
-    mode=ReadWrite,
-    create_mode=OpenOrCreate,
-    permission=0o600,
-  )
-  defer owner.close()
-  guard owner.try_lock(Exclusive) else {
-    raise AdapterError("Transport owner is busy")
-  }
   let lock = if lease == "" {
     None
   } else {
@@ -132,90 +94,32 @@ pub async fn ssh_proxy(args : Array[String], lease~ : String = "") -> Int32 {
       raise AdapterError("SSH proxy is closing")
     }
   }
-  let code = @async.with_task_group(async fn(group) {
-    let (input, writer) = @process.write_to_process()
-    defer writer.close()
-    let startup = @fs.open(
-      directory + "/group.lock",
-      mode=ReadWrite,
-      create_mode=OpenOrCreate,
-      permission=0o600,
-    )
-    defer startup.close()
-    guard startup.try_lock(Exclusive) else {
-      raise AdapterError("Transport startup is busy")
-    }
-    let child = @process.spawn(
-      group,
-      adapter_executable(),
-      ["--ssh-transport", directory + "/group.lock"] + args,
-      stdin=input,
-      cancel_handler=@process.CancellationHandler(async fn(pid) {
-        if proxy_signal(-pid, 15) != 0 {
-          ignore(proxy_signal(pid, 15))
-        }
-        @async.sleep(500)
-        if proxy_signal(-pid, 9) != 0 {
-          ignore(proxy_signal(pid, 9))
-        }
-      }),
-    )
-    @async.with_timeout(2000, async fn() {
-      while process_group(child.pid) != child.pid {
-        guard child.try_wait() is None else {
-          raise AdapterError("Transport exited before group setup")
-        }
-        @async.sleep(1)
-      }
-    })
-    let start = process_start(child.pid)
-    guard start > 0 else {
-      raise AdapterError("Transport exited before registration")
-    }
-    let state : Json = {
-      "pid": child.pid.to_string(),
-      "start": start.to_string(),
-      "recording": @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") != Some("0"),
-      "lease": if lease == "" {
-        ""
-      } else {
-        @fs.realpath(lease)
-      },
-    }
-    @fs.write_file(
-      directory + "/state.tmp",
-      state.stringify(),
-      permission=0o600,
-    )
-    @fs.rename(directory + "/state.tmp", directory + "/state.json")
-    @fs.write_file(directory + "/group.lock.ready", "", permission=0o600)
-    startup.unlock()
-    ensure_supervisor()
-    group.spawn_bg(no_wait=true, async fn() {
-      while @stdio.stdin.read_some(max_len=65536) is Some(bytes) {
-        writer.write(bytes) catch {
-          _ => break
-        }
-      }
-      writer.close()
-      publish_file(directory + "/eof", @env.now().to_string())
-    })
-    let code = child.wait()
-    publish_file(directory + "/exited", code.to_string())
-    while !@fs.exists(directory + "/done") {
-      @async.sleep(10)
-    }
-    let cancelled = @fs.read_file(directory + "/done").text() == "stdin_eof"
-    @fs.rmdir(directory, recursive=true)
-    if cancelled {
-      0
-    } else if code < 0 {
-      128 - code
+  let state : Json = {
+    "pid": pid.to_string(),
+    "start": start.to_string(),
+    "ownerPid": parent.to_string(),
+    "ownerStart": parent_start.to_string(),
+    "recording": @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") != Some("0"),
+    "lease": if lease == "" {
+      ""
     } else {
-      code
+      @fs.realpath(lease)
+    },
+  }
+  publish_file(directory + "/state.json", state.stringify())
+  ensure_supervisor()
+  guard proxy_parent() == parent && process_start(parent) == parent_start else {
+    raise AdapterError("SSH owner exited before transport startup")
+  }
+  let encoded : FixedArray[Bytes?] = FixedArray::makei(args.length() + 1, i => {
+    if i == args.length() {
+      None
+    } else {
+      Some(@utf8.encode(args[i] + "\u0000"))
     }
   })
-  code
+  ignore(proxy_exec(encoded[0].unwrap(), encoded))
+  raise AdapterError("SSH transport exec failed")
 }
 
 ///|

@@ -4,14 +4,13 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../src/activity_probe.mbt", import.meta.url), "utf8").split("\n").filter(line => line.trimStart().startsWith("#|")).map(line => line.trimStart().slice(2)).join("\n");
 type Facts = { process?: string | null; children?: boolean; agent?: string; state?: string; program?: string; working?: boolean; queued?: number; prompts?: number; tasks?: number; truncated?: boolean; verdict?: string; nativeError?: boolean; emptyChats?: boolean; authoritative?: boolean; connected?: boolean; age?: number; pairing?: string; };
-async function runProbe(f: Facts = {}, sequence?: Facts[]) {
+async function runProbe(f: Facts = {}) {
   let output = "";
   let connections = 0;
   let closes = 0;
   let ipcCalls = 0;
   let requests = 0;
   let callbacks: { onResponse(r: unknown): void; onError(e: Error): void };
-  let end: (() => void) | undefined;
   function rpc(method: string) {
     const results: Record<string, unknown> = {
       "status.get": { appVersion: "1.4.241", graphStatus: "ready" },
@@ -42,17 +41,12 @@ async function runProbe(f: Facts = {}, sequence?: Facts[]) {
   await vm.runInNewContext(source, {
     require(name: string) {
       if (name === "node:fs") return { readFileSync: () => JSON.stringify({ pairingCode: f.pairing ?? "private-credential" }) };
-      if (name === "node:readline") return { createInterface: () => (async function* () {
-        yield JSON.stringify({ pairingCode: "private-credential" });
-        for (const facts of sequence ?? []) { f = facts; yield "observe"; }
-        end?.();
-      })() };
       if (name.endsWith("/client.js")) return { RuntimeClient: Client };
       if (name.endsWith("/remote-runtime-client.js")) return remote;
       if (name.endsWith("/structured-agent-session-renderer-client-capabilities.js")) return { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: ["agent-session.structured.v1", "agent-session.structured.registered-agents.v1"] };
       throw Error("unexpected module");
     },
-    process: { env: { HOME: "/fixture", ORCA_ENV_DEVSY_OBSERVER: sequence ? "1" : "0" }, stdin: { once(_name: string, fn: () => void) { end = fn; } }, stdout: { write(s: string) { output += s; } } },
+    process: { env: { HOME: "/fixture" }, stdin: { once() {} }, stdout: { write(s: string) { output += s; } } },
     setTimeout, clearTimeout, queueMicrotask, Date, Promise, Buffer,
   });
   expect(output).not.toContain("private");
@@ -62,14 +56,16 @@ async function runProbe(f: Facts = {}, sequence?: Facts[]) {
 async function probe(f: Facts = {}) { return (await runProbe(f)).frames[0]; }
 
 describe("VM activity observation", () => {
-  test("persistent observation shares one subscription across all RPCs and closes it on EOF", async () => {
-    const run = await runProbe({}, [{}, { process: "sleep", children: true }, {}, { working: true }, {}]);
-    expect(run.frames[0].ready).toBe(true);
-    expect(run.frames.slice(1).map(f => f.activity)).toEqual(["idle", "active", "idle", "active", "idle"]);
-    expect(run.connections).toBe(1);
-    expect(run.ipcCalls).toBe(0);
-    expect(run.requests).toBeGreaterThan(20);
-    expect(run.closes).toBe(1);
+  test("each one-shot observation acquires a fresh snapshot, shares its RPC channel and closes it", async () => {
+    for (const facts of [{}, { working: true }, {}]) {
+      const run = await runProbe(facts);
+      expect(run.frames).toHaveLength(1);
+      expect(run.frames[0].activity).toBe(facts.working ? "active" : "idle");
+      expect(run.connections).toBe(1);
+      expect(run.ipcCalls).toBe(0);
+      expect(run.requests).toBeGreaterThan(4);
+      expect(run.closes).toBe(1);
+    }
   });
   test("silent foreground command stays active until the shell is restored", async () => {
     expect((await probe({ process: "sleep", children: true })).activity).toBe("active");

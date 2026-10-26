@@ -56,7 +56,7 @@ fn activity_probe_source() -> String {
     #|    const restored = await request('session.tabs.listAll');
     #|    check(restored.result?.authoritative === true, 'native_restoration_unconfirmed');
     #|    await snapshot;
-    #|    return { request, sessions: () => { if (lost) throw lost; check(sessions.size <= 1000, 'incomplete_native_listing'); return [...sessions.values()]; }, close: () => sub.close(), healthy: () => !lost };
+    #|    return { request, sessions: () => { if (lost) throw lost; check(sessions.size <= 1000, 'incomplete_native_listing'); return [...sessions.values()]; }, close: () => sub.close() };
     #|  } catch (error) { sub?.close(); throw error; }
     #|  finally { clearTimeout(timer); }
     #|}
@@ -133,28 +133,9 @@ fn activity_probe_source() -> String {
     #|  process.once?.('SIGTERM', () => { close(); process.exit(0); });
     #|  process.stdin?.once('end', close);
     #|  try {
-    #|    if (process.env.ORCA_ENV_DEVSY_OBSERVER === '1') {
-    #|      const lines = require('node:readline').createInterface({ input: process.stdin, crlfDelay: Infinity });
-    #|      let initialized = false;
-    #|      for await (const line of lines) {
-    #|        check(line.length <= 65536, 'observer_input_too_large');
-    #|        if (!initialized) {
-    #|          channel = await openChannel(JSON.parse(line));
-    #|          initialized = true;
-    #|          emit({ schemaVersion: 1, ready: true });
-    #|        } else {
-    #|          check(line === 'observe', 'invalid_observer_request');
-    #|          emit(await observe(async (m, p) => (await channel.request(m, p)).result, channel));
-    #|          check(channel.healthy(), 'native_connection_closed');
-    #|        }
-    #|      }
-    #|    } else {
-    #|      const config = JSON.parse(fs.readFileSync(0, 'utf8'));
-    #|      let nativeError;
-    #|      try { channel = await openChannel(config); } catch (error) { nativeError = error; }
-    #|      const client = new RuntimeClient(undefined, 5000, null, null);
-    #|      emit(await observe(async (m, p) => (await client.call(m, p)).result, channel, nativeError));
-    #|    }
+    #|    const config = JSON.parse(fs.readFileSync(0, 'utf8'));
+    #|    channel = await openChannel(config);
+    #|    emit(await observe(async (m, p) => (await channel.request(m, p)).result, channel));
     #|  } finally { close(); }
     #|}
     #|main().catch(error => { emit({ schemaVersion: 1, activity: 'unknown', errors: [{ source: 'observer', code: errorCode(error) }] }); process.exitCode = 1; });

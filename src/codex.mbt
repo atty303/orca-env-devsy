@@ -70,7 +70,7 @@ async fn codex_addon(state : Json) -> Unit {
           extra_env=workspace_environment(state),
           cwd?=workspace_directory(state).map(path => path[:]),
           inherit_env=false,
-          ssh_args(state, services=false) + [script],
+          mux_ssh_args(state) + [script],
           stdin=input,
           stdout=sink,
           stderr=sink,
