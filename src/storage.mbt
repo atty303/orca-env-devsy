@@ -14,6 +14,7 @@ async fn prepare_orca_storage(state : Json) -> Unit {
     "orca-storage",
     "started",
     source=Storage(volume, required(state, "projectRoot")),
+    recording=workspace_recording(state),
   )
   let user = required(state, "user")
   let uid = required(state, "workspaceUid")
@@ -50,6 +51,7 @@ async fn prepare_orca_storage(state : Json) -> Unit {
     "orca-storage",
     "success",
     source=Storage(volume, required(state, "projectRoot")),
+    recording=workspace_recording(state),
   )
 }
 
@@ -118,5 +120,6 @@ async fn configure_orca_project(state : Json) -> Unit {
     "orca-project-configure",
     "success",
     source=Storage(volume, required(state, "projectRoot")),
+    recording=workspace_recording(state),
   )
 }

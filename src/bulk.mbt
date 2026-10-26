@@ -59,7 +59,10 @@ async fn observe_activity(state : Json) -> Json {
     @async.with_task_group(async fn(group) {
       let child = @process.spawn(
         group,
-        "ssh",
+        workspace_program(state, "ssh"),
+        extra_env=workspace_environment(state),
+        inherit_env=false,
+        cwd?=workspace_directory(state).map(path => path[:]),
         ssh_args(state, services=false) + [script],
         stdin=input,
         stdout=reader,

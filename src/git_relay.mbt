@@ -1,7 +1,17 @@
 ///|
-async fn git_relay_status(directory : String, status : String) -> Unit {
+async fn git_relay_status(
+  directory : String,
+  status : String,
+  recording? : Bool,
+) -> Unit {
   @fs.write_file(directory + "/git-status", status, permission=0o600) catch {
-    _ => save_diagnostic("git-relay-recording", "degraded")
+    _ =>
+      save_diagnostic(
+        "git-relay-recording",
+        "degraded",
+        tunnel_directory=directory,
+        recording?,
+      )
   }
   save_diagnostic(
     "git-relay",
@@ -11,6 +21,8 @@ async fn git_relay_status(directory : String, status : String) -> Unit {
     } else {
       None
     },
+    tunnel_directory=directory,
+    recording?,
   )
 }
 
@@ -54,7 +66,10 @@ async fn relay_readiness(
   let started = @env.now()
   let result = @async.with_timeout(3000, async fn() {
     let (code, output, _) = @process.collect_output(
-      "ssh",
+      workspace_program(state, "ssh"),
+      extra_env=workspace_environment(state),
+      cwd?=workspace_directory(state).map(path => path[:]),
+      inherit_env=false,
       ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
       ssh_args(state) +
       ["-S", control_socket(state, directory), script],
@@ -105,7 +120,10 @@ async fn relay_readiness(
     if git_enabled {
       let helper = "git config --global --get credential.helper | grep -F 'internal agent git-credentials' >/dev/null"
       let (code, _, _) = @process.collect_output(
-        "ssh",
+        workspace_program(state, "ssh"),
+        extra_env=workspace_environment(state),
+        cwd?=workspace_directory(state).map(path => path[:]),
+        inherit_env=false,
         ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
         ssh_args(state) +
         ["-S", control_socket(state, directory), helper],
@@ -131,6 +149,7 @@ async fn relay_readiness(
         error_type="git_helper_unavailable",
         duration_ms=(@env.now() - started).to_double(),
         tunnel_directory=directory,
+        recording=workspace_recording(state),
       )
     Retry(reason) =>
       save_diagnostic(
@@ -139,6 +158,7 @@ async fn relay_readiness(
         error_type=reason,
         duration_ms=(@env.now() - started).to_double(),
         tunnel_directory=directory,
+        recording=workspace_recording(state),
       )
     Unsupported =>
       save_diagnostic(
@@ -146,6 +166,7 @@ async fn relay_readiness(
         "unsupported",
         error_type="readiness_unsupported",
         tunnel_directory=directory,
+        recording=workspace_recording(state),
       )
   }
   result

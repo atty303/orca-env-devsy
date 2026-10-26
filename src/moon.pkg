@@ -15,3 +15,7 @@ import {
   "moonbit-community/yaml",
   "moonbitlang/x/time",
 }
+
+options(
+  "native-stub": [ "process_identity.c" ],
+)

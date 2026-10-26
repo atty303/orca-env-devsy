@@ -32,10 +32,15 @@ async fn command_result(
   args : Array[String],
   stage : String,
   environment? : Map[String, String],
+  cwd? : StringView,
 ) -> (Int32, String, String) {
-  save_diagnostic(stage, "started")
+  let recording = environment
+    .unwrap_or(@env.get_env_vars())
+    .get("ORCA_ENV_DEVSY_RECORDING") !=
+    Some("0")
+  save_diagnostic(stage, "started", recording~)
   let started = @env.now()
-  let progress = Progress::new(stage)
+  let progress = Progress::new(stage, environment?)
   progress_message(stage + ": running…")
   let mut failure_kind = "process_api"
   let mut failure_errno = None
@@ -54,6 +59,7 @@ async fn command_result(
         phase?=failure_phase,
         error_message=progress.failure_detail(),
         details_truncated=progress.details_truncated,
+        recording~,
       )
       progress_message(stage + ": failed (" + progress_timing(started) + ")")
     }
@@ -69,6 +75,7 @@ async fn command_result(
           args,
           extra_env?=environment,
           inherit_env=environment is None,
+          cwd?,
           stdout~,
           stderr~,
         )
@@ -138,12 +145,12 @@ async fn command_result(
       Some(progress.failure_detail())
     },
     details_truncated=progress.details_truncated,
-    error_type?=if status == 0 ||
-      @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
+    error_type?=if status == 0 || !recording {
       None
     } else {
       Some(process_error_type(output + "\n" + errors))
     },
+    recording~,
   )
   (status, output, progress.failure_detail())
 }
@@ -160,12 +167,14 @@ async fn command(
   args : Array[String],
   stage : String,
   environment? : Map[String, String],
+  cwd? : StringView,
 ) -> String {
   let (status, output, detail) = command_result(
     program,
     args,
     stage,
     environment?,
+    cwd?,
   )
   guard status == 0 else {
     raise AdapterError(command_failure(stage, status, detail))
@@ -186,18 +195,78 @@ fn devsy_args(state : Json) -> Array[String] {
 }
 
 ///|
+fn workspace_environment(state : Json) -> Map[String, String] {
+  let environment = match field(state, "executionEnvironment") {
+    Some(Json::Object(values)) => {
+      let result : Map[String, String] = Map([])
+      for (name, value) in values {
+        if value is Json::String(value) {
+          result.set(name, value)
+        }
+      }
+      result
+    }
+    _ => @env.get_env_vars()
+  }
+  for name in location_variables {
+    match field(field(state, "devsyEnv").unwrap_or(Json::null()), name) {
+      Some(Json::String(value)) => environment.set(name, value)
+      _ => environment.remove(name)
+    }
+  }
+  environment
+}
+
+///|
+fn workspace_directory(state : Json) -> String? {
+  match field(state, "hostDirectory") {
+    Some(Json::String(value)) => Some(value)
+    _ => None
+  }
+}
+
+///|
+async fn workspace_program(state : Json, program : String) -> String {
+  let cwd = workspace_directory(state).unwrap_or(
+    @env.current_dir().unwrap_or("/"),
+  )
+  if program.has_prefix("/") {
+    return program
+  }
+  if program.contains("/") {
+    return cwd + "/" + program
+  }
+  let path = field(field(state, "devsyEnv").unwrap_or(Json::null()), "PATH")
+  let path = match path {
+    Some(Json::String(value)) => value
+    _ => "/usr/bin:/bin"
+  }
+  let mut fallback = None
+  for directory in path.split(":") {
+    let directory = if directory.has_prefix("/") {
+      directory.to_owned()
+    } else {
+      cwd + "/" + directory.to_owned()
+    }
+    let candidate = directory + "/" + program
+    if fallback is None {
+      fallback = Some(candidate)
+    }
+    if transport_access(@utf8.encode(candidate + "\u0000"), 1) == 0 &&
+      @fs.kind(candidate) != @fs.FileKind::Directory {
+      return candidate
+    }
+  }
+  fallback.unwrap_or(cwd + "/" + program)
+}
+
+///|
 async fn devsy_result(
   state : Json,
   args : Array[String],
   stage : String,
 ) -> (Int32, String, String) {
-  let environment = @env.get_env_vars()
-  for name in location_variables {
-    match field(field(state, "devsyEnv").unwrap(), name) {
-      Some(Json::String(value)) => environment.set(name, value)
-      _ => environment.remove(name)
-    }
-  }
+  let environment = workspace_environment(state)
   let invocation = saved_command(state)
   let logging = if devsy_progress_stage(stage) {
     ["--log-level", "debug", "--log-output", "json"]
@@ -205,10 +274,11 @@ async fn devsy_result(
     []
   }
   let result = command_result(
-    invocation[0],
+    workspace_program(state, invocation[0]),
     invocation[1:].to_owned() + devsy_args(state) + logging + args,
     stage,
     environment~,
+    cwd?=workspace_directory(state).map(path => path[:]),
   )
   result
 }
@@ -235,6 +305,10 @@ fn proxy(
   lease~ : String = "",
 ) -> String raise {
   let args = ["env"]
+  if workspace_directory(state) is Some(directory) {
+    args.push("-C")
+    args.push(directory)
+  }
   for name in location_variables {
     args.push("-u")
     args.push(name)
@@ -299,15 +373,23 @@ async fn remote(state : Json, script : String, stage : String) -> String {
     }
     if reusable {
       return command(
-        "ssh",
+        workspace_program(state, "ssh"),
         ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
         ssh_args(state, services=false) +
         ["-S", control_socket(saved, directory), script],
         stage,
+        environment=workspace_environment(state),
+        cwd?=workspace_directory(state).map(path => path[:]),
       )
     }
   }
-  command("ssh", ssh_args(state, services=false) + [script], stage)
+  command(
+    workspace_program(state, "ssh"),
+    ssh_args(state, services=false) + [script],
+    stage,
+    environment=workspace_environment(state),
+    cwd?=workspace_directory(state).map(path => path[:]),
+  )
 }
 
 ///|
@@ -468,6 +550,11 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
       },
     )
   }
+  set_field(
+    state,
+    "hostDirectory",
+    Json::string(@env.current_dir().unwrap_or(environment("ORCA_REPO_PATH"))),
+  )
   set_field(state, "command", Json::array(config.command.map(Json::string)))
   set_field(state, "devsyEnv", locations)
   if config.home is Some(value) {
@@ -1185,8 +1272,8 @@ pub async fn usage_error() -> Unit {
 
 ///|
 let location_variables : Array[String] = [
-  "HOME", "DEVSY_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-  "XDG_RUNTIME_DIR",
+  "PATH", "SSH_AUTH_SOCK", "HOME", "DEVSY_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+  "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
 ]
 
 ///|
@@ -1351,5 +1438,14 @@ fn missing_shallow_commit(output : String, commit : String) -> Bool {
     missing
   }) catch {
     _ => false
+  }
+}
+
+///|
+fn workspace_recording(state : Json) -> Bool {
+  match field(state, "executionEnvironment") {
+    Some(environment) =>
+      field(environment, "ORCA_ENV_DEVSY_RECORDING") != Some(Json::string("0"))
+    None => @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") != Some("0")
   }
 }

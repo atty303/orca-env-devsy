@@ -86,6 +86,7 @@ async fn idle_fixture(timeout : Int32) -> (String, Map[String, String], Json) {
     "projectRoot": "/workspace/repo",
     "command": [directory + "/bin/devsy"],
     "devsyEnv": {
+      "PATH": env.get("PATH").unwrap(),
       "HOME": directory,
       "XDG_STATE_HOME": directory + "/.local/state",
     },
@@ -116,7 +117,11 @@ async test "worker stops only its idle VM and reuses the observer until cleanup"
     let child = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", saved],
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
       extra_env=env,
       no_wait=true,
     )
@@ -147,7 +152,11 @@ async test "worker fresh active check cancels an otherwise due stop" {
     let child = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", saved],
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
       extra_env=env,
       no_wait=true,
     )
@@ -213,7 +222,11 @@ async test "unknown after idle reaches the deadline but cannot authorize stoppin
     let child = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", saved],
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
       extra_env=env,
       no_wait=true,
     )
@@ -276,7 +289,11 @@ async test "observer reconnect backs off and later recovers without leaking sess
     let child = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", saved],
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
       extra_env=env,
       no_wait=true,
     )
@@ -313,7 +330,11 @@ async test "unconfigured existing worker never starts an idle observer" {
     let child = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", saved],
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
       extra_env=env,
       no_wait=true,
     )
@@ -375,7 +396,11 @@ async test "failed automatic stop keeps monitoring and can recover on the next a
     let child = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", saved],
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        saved,
+      ],
       extra_env=env,
       no_wait=true,
     )
@@ -416,14 +441,22 @@ async test "one VM observer failure does not block another VM from stopping" {
     let failed = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", first_saved],
+      [
+        "--supervisor",
+        first_env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        first_saved,
+      ],
       extra_env=first_env,
       no_wait=true,
     )
     let healthy = @process.spawn(
       group,
       integration_binary(),
-      ["--tunnel-worker", second_saved],
+      [
+        "--supervisor",
+        second_env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        second_saved,
+      ],
       extra_env=second_env,
       no_wait=true,
     )

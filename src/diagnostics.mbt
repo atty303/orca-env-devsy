@@ -17,8 +17,11 @@ async fn save_diagnostic(
   expected_workspace_uid? : String,
   observed_workspace_uid? : String,
   evidence? : Json,
+  recording? : Bool,
 ) -> Unit {
-  if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
+  if !recording.unwrap_or(
+      @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") != Some("0"),
+    ) {
     return
   }
   try {

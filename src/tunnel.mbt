@@ -11,7 +11,11 @@ async fn worker_alive(directory : String) -> Bool {
 }
 
 ///|
-async fn tunnel_status(directory : String, status : String) -> Unit {
+async fn tunnel_status(
+  directory : String,
+  status : String,
+  recording? : Bool,
+) -> Unit {
   let value : Json = { "status": status, "runId": recording_run_id }
   @fs.write_file(directory + "/status.tmp", value.stringify(), permission=0o600)
   @fs.rename(
@@ -19,7 +23,7 @@ async fn tunnel_status(directory : String, status : String) -> Unit {
     directory + "/status.json",
     replace=true,
   )
-  save_diagnostic("orca-tunnel", status)
+  save_diagnostic("orca-tunnel", status, tunnel_directory=directory, recording?)
 }
 
 ///|
@@ -103,37 +107,46 @@ async fn stop_tunnel_master(
   directory : String,
   verify~ : Bool = false,
 ) -> Unit {
-  @async.with_timeout(2000, async fn() {
-    ignore(
-      @process.collect_output(
-        "ssh",
-        ssh_args(state) + ["-S", control_socket(state, directory), "-O", "exit"],
-      ),
-    )
-  }) catch {
-    _ => ()
-  }
-  if verify {
-    @async.with_timeout(5000, async fn() {
-      while true {
-        let (code, _, _) = @process.collect_output(
-          "ssh",
+  if @fs.exists(control_socket(state, directory)) {
+    @async.with_timeout(2000, async fn() {
+      ignore(
+        @process.collect_output(
+          workspace_program(state, "ssh"),
+          extra_env=workspace_environment(state),
+          cwd?=workspace_directory(state).map(path => path[:]),
+          inherit_env=false,
           ssh_args(state) +
-          [
-            "-o",
-            "ProxyCommand=false",
-            "-S",
-            control_socket(state, directory),
-            "-O",
-            "check",
-          ],
-        )
-        if code != 0 {
-          break
+          ["-S", control_socket(state, directory), "-O", "exit"],
+        ),
+      )
+    }) catch {
+      _ => ()
+    }
+    if verify {
+      @async.with_timeout(5000, async fn() {
+        while @fs.exists(control_socket(state, directory)) {
+          let (code, _, _) = @process.collect_output(
+            workspace_program(state, "ssh"),
+            extra_env=workspace_environment(state),
+            cwd?=workspace_directory(state).map(path => path[:]),
+            inherit_env=false,
+            ssh_args(state) +
+            [
+              "-o",
+              "ProxyCommand=false",
+              "-S",
+              control_socket(state, directory),
+              "-O",
+              "check",
+            ],
+          )
+          if code != 0 {
+            break
+          }
+          @async.sleep(100)
         }
-        @async.sleep(100)
-      }
-    })
+      })
+    }
   }
   if field(state, "socketDirectory") is Some(Json::String(socket_directory)) {
     if @fs.exists(socket_directory + "/socket") {
@@ -213,6 +226,7 @@ async fn ensure_ssh_worker(
     }
   })
   if @fs.exists(directory + "/state.json") {
+    register_workspace(directory)
     let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
     guard field(saved, "workspaceUid") == field(state, "workspaceUid") &&
       field(saved, "localPort") ==
@@ -223,29 +237,12 @@ async fn ensure_ssh_worker(
       restart_tunnel(saved, directory)
       expires = connection_deadline()
     }
-    if worker_alive(directory) {
-      wait_tunnel(directory, expires)
-      return
-    }
-    // A dead supervisor does not invalidate its still-live SSH transport.
-    // Reuse it so Devsy's old service cleanup cannot remove a new owner's helper.
-    let reusable = try {
-      check_tunnel(saved, directory)
-      true
-    } catch {
-      _ => false
-    }
-    if reusable {
-      for name in ["status.json", "git-status"] {
-        if @fs.exists(directory + "/" + name) {
-          @fs.remove(directory + "/" + name)
-        }
-      }
+    if !worker_alive(directory) {
+      @fs.write_file(directory + "/enabled", "", permission=0o600)
       spawn_tunnel_worker(directory)
-      wait_tunnel(directory, expires)
-      return
     }
-    stop_tunnel_master(saved, directory)
+    wait_tunnel(directory, expires)
+    return
   } else if restart {
     restart_tunnel(state, directory)
     expires = connection_deadline()
@@ -255,8 +252,8 @@ async fn ensure_ssh_worker(
   for
     name in [
       "workspaceId", "workspaceUid", "orcaVolume", "orcaVolumeCleanup", "user", "command",
-      "devsyEnv", "home", "context", "connection", "projectRoot", "idleTimeoutMs",
-      "idleProvider",
+      "devsyEnv", "hostDirectory", "home", "context", "connection", "projectRoot",
+      "idleTimeoutMs", "idleProvider",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)
@@ -272,6 +269,7 @@ async fn ensure_ssh_worker(
   if @fs.exists(directory + "/status.json") {
     @fs.remove(directory + "/status.json")
   }
+  register_workspace(directory)
   spawn_tunnel_worker(directory)
   wait_tunnel(directory, expires)
 }
@@ -291,6 +289,7 @@ async fn restart_tunnel(state : Json, directory : String) -> Unit {
     "started",
     phase~,
     tunnel_directory=directory,
+    recording=workspace_recording(state),
   )
   let mut timed_out = false
   errdefer save_diagnostic(
@@ -303,6 +302,7 @@ async fn restart_tunnel(state : Json, directory : String) -> Unit {
     phase~,
     error_type=if timed_out { "shutdown_timeout" } else { "shutdown_failed" },
     tunnel_directory=directory,
+    recording=workspace_recording(state),
   )
   try {
     if @fs.exists(enabled) {
@@ -319,6 +319,7 @@ async fn restart_tunnel(state : Json, directory : String) -> Unit {
       "stopping",
       phase~,
       tunnel_directory=directory,
+      recording=workspace_recording(state),
     )
     stop_tunnel_master(state, directory, verify=true)
   } catch {
@@ -328,22 +329,18 @@ async fn restart_tunnel(state : Json, directory : String) -> Unit {
     }
     error => raise error
   }
-  save_diagnostic("ssh-tunnel-restart", "success", tunnel_directory=directory)
+  save_diagnostic(
+    "ssh-tunnel-restart",
+    "success",
+    tunnel_directory=directory,
+    recording=workspace_recording(state),
+  )
 }
 
 ///|
 async fn spawn_tunnel_worker(directory : String) -> Unit {
-  let sink = @process.redirect_to_file("/dev/null", shared=true)
-  defer sink.close()
-  ignore(
-    @process.spawn_orphan(
-      saved_proxy_executable(),
-      ["--tunnel-worker", directory],
-      stdin=@process.redirect_from_file("/dev/null"),
-      stdout=sink,
-      stderr=sink,
-    ),
-  )
+  @fs.write_file(directory + "/request", "", permission=0o600)
+  ensure_supervisor(initial_workspace=directory)
 }
 
 ///|
@@ -368,11 +365,16 @@ pub async fn recover_all(restart~ : Bool = false) -> Unit {
 async fn recover_all_inner(restart~ : Bool = false) -> Unit {
   notify(if restart { "restart" } else { "recover" })
   let base = adapter_state_home() + "/tunnels"
-  if !@fs.exists(base) {
+  if !@fs.exists(base) && !@fs.exists(adapter_state_home() + "/transports") {
     save_diagnostic("recover", "success")
     return
   }
   ignore(saved_proxy_executable())
+  ensure_supervisor()
+  if !@fs.exists(base) {
+    save_diagnostic("recover", "success")
+    return
+  }
   let mut failures = 0
   let permits = @async.Semaphore(4)
   @async.with_task_group(async fn(group) {
@@ -481,8 +483,15 @@ async fn unpause_tunnel(state : Json) -> Unit {
 }
 
 ///|
-fn configured_timing_ms(name : String, fallback : Int32) -> Int32 raise {
-  match @env.get_env_var(name) {
+fn configured_timing_ms(
+  name : String,
+  fallback : Int32,
+  state? : Json,
+) -> Int32 raise {
+  match
+    state
+    .map(state => workspace_environment(state).get(name))
+    .unwrap_or(@env.get_env_var(name)) {
     None => fallback
     Some(text) => {
       let value = @string.parse_int(text) catch {
@@ -497,8 +506,8 @@ fn configured_timing_ms(name : String, fallback : Int32) -> Int32 raise {
 }
 
 ///|
-fn connection_timeout_ms() -> Int32 raise {
-  configured_timing_ms("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", 60000)
+fn connection_timeout_ms(state? : Json) -> Int32 raise {
+  configured_timing_ms("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", 60000, state?)
 }
 
 ///|
@@ -555,11 +564,21 @@ async fn recover_connection(
     let current = workspace(state)
     guard current is Some(current) &&
       field(current, "uid") == field(state, "workspaceUid") else {
-      save_diagnostic("recover", "ownership-error", tunnel_directory=directory)
+      save_diagnostic(
+        "recover",
+        "ownership-error",
+        tunnel_directory=directory,
+        recording=workspace_recording(state),
+      )
       raise AdapterError("Tunnel workspace ownership changed")
     }
     let status = workspace_status(state)
-    save_diagnostic("recover-workspace", status, tunnel_directory=directory)
+    save_diagnostic(
+      "recover-workspace",
+      status,
+      tunnel_directory=directory,
+      recording=workspace_recording(state),
+    )
     match status {
       "Running" => ()
       "Stopped" => return
@@ -599,12 +618,18 @@ async fn recover_connection(
         "restore"
       },
       tunnel_directory=directory,
+      recording=workspace_recording(state),
     )
     ensure_ssh_worker(state, port, deadline~, restart~)
     if required(state, "connection") == "orca-server" {
       ignore(recover_server(state))
     }
-    save_diagnostic("recover", "success", tunnel_directory=directory)
+    save_diagnostic(
+      "recover",
+      "success",
+      tunnel_directory=directory,
+      recording=workspace_recording(state),
+    )
   })
 }
 
@@ -758,11 +783,14 @@ async fn close_tunnel(state : Json) -> Unit {
       }
     })
     stop_tunnel_master(saved, directory)
-  } else {
+  } else if @fs.exists(control_socket(state, directory)) {
     // Saved receipts from before the recovery worker own an SSH master only.
     ignore(
       @process.collect_output(
-        "ssh",
+        workspace_program(state, "ssh"),
+        extra_env=workspace_environment(state),
+        cwd?=workspace_directory(state).map(path => path[:]),
+        inherit_env=false,
         ssh_args(state) + ["-S", control_socket(state, directory), "-O", "exit"],
       ),
     )
@@ -771,7 +799,7 @@ async fn close_tunnel(state : Json) -> Unit {
   for
     name in [
       "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-      "socket", "git-status", "git-established", "probe-request", "recovery.lock",
+      "request", "socket", "git-status", "git-established", "probe-request", "recovery.lock",
       "idle.json", "idle.tmp", "idle-state.lock", "idle-enabled", "operation.lock",
       "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
     ] {
@@ -786,7 +814,10 @@ async fn close_tunnel(state : Json) -> Unit {
 }
 
 ///|
-pub async fn tunnel_worker(directory : String) -> Unit {
+async fn tunnel_worker(
+  directory : String,
+  environment : Map[String, String],
+) -> Unit {
   let lock = @fs.open(
     directory + "/worker.lock",
     mode=ReadWrite,
@@ -797,7 +828,15 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   if !lock.try_lock(Exclusive) {
     return
   }
+  if @fs.exists(directory + "/request") {
+    @fs.remove(directory + "/request")
+  }
   let state = @json.parse(@fs.read_file(directory + "/state.json").text())
+  let execution = Json::empty_object()
+  for (name, value) in environment {
+    set_field(execution, name, Json::string(value))
+  }
+  set_field(state, "executionEnvironment", execution)
   validate_state(state)
   let forwarding = match field(state, "localPort") {
     Some(Json::Number(value, ..)) =>
@@ -821,16 +860,22 @@ pub async fn tunnel_worker(directory : String) -> Unit {
   let mut attempt = 0
   let mut monitoring = false
   let mut monitor_attempt = 0
+  let mut needs_cleanup = @fs.exists(control_socket(state, directory))
   defer @async.protect_from_cancel(async fn() {
-    stop_tunnel_master(state, directory)
+    if needs_cleanup {
+      stop_tunnel_master(state, directory)
+    }
   })
   while @fs.exists(enabled) {
     if pause_request(directory) is Some(request) {
       if idle_timer is Some(timer) {
         timer.previous = None
       }
-      stop_tunnel_master(state, directory)
-      tunnel_status(directory, "paused")
+      if needs_cleanup {
+        stop_tunnel_master(state, directory)
+        needs_cleanup = false
+      }
+      tunnel_status(directory, "paused", recording=workspace_recording(state))
       while @fs.exists(enabled) && pause_request(directory) == Some(request) {
         @fs.write_file(directory + "/pause-ack", request, permission=0o600)
         @async.sleep(100)
@@ -840,8 +885,8 @@ pub async fn tunnel_worker(directory : String) -> Unit {
     if @fs.exists(directory + "/probe-request") {
       @fs.remove(directory + "/probe-request")
     }
-    tunnel_status(directory, "connecting")
-    git_relay_status(directory, "pending")
+    tunnel_status(directory, "connecting", recording=workspace_recording(state))
+    git_relay_status(directory, "pending", recording=workspace_recording(state))
     let mut terminal = false
     @async.with_task_group(async fn(group) {
       let idle_busy : Ref[Bool] = { val: false, }
@@ -866,6 +911,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         tunnel_directory=directory,
         expected_workspace_uid=required(state, "workspaceUid"),
         observed_workspace_uid?=current.map(value => required(value, "uid")),
+        recording=workspace_recording(state),
       )
       guard current is Some(current) &&
         field(current, "uid") == field(state, "workspaceUid") else {
@@ -873,15 +919,28 @@ pub async fn tunnel_worker(directory : String) -> Unit {
           @fs.remove(enabled)
         }
         terminal = true
-        tunnel_status(directory, "ownership-error")
+        tunnel_status(
+          directory,
+          "ownership-error",
+          recording=workspace_recording(state),
+        )
         return
       }
       let status = required(current, "workspaceStatus")
-      save_diagnostic("monitor-workspace", status, tunnel_directory=directory)
+      save_diagnostic(
+        "monitor-workspace",
+        status,
+        tunnel_directory=directory,
+        recording=workspace_recording(state),
+      )
       if status == "NotFound" {
         terminal = true
         @fs.remove(enabled)
-        tunnel_status(directory, "ownership-error")
+        tunnel_status(
+          directory,
+          "ownership-error",
+          recording=workspace_recording(state),
+        )
         return
       }
       if status != "Running" {
@@ -896,6 +955,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
           } else {
             "workspace-busy"
           },
+          recording=workspace_recording(state),
         )
         return
       }
@@ -913,14 +973,23 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         async fn() { tunnel_errors(errors) },
         no_wait=true,
       )
+      needs_cleanup = true
       let child = if adopted {
-        save_diagnostic("orca-tunnel", "adopted", tunnel_directory=directory)
+        save_diagnostic(
+          "orca-tunnel",
+          "adopted",
+          tunnel_directory=directory,
+          recording=workspace_recording(state),
+        )
         None
       } else {
         Some(
           @process.spawn(
             group,
-            "ssh",
+            workspace_program(state, "ssh"),
+            extra_env=workspace_environment(state),
+            cwd?=workspace_directory(state).map(path => path[:]),
+            inherit_env=false,
             ssh_args(
               state,
               lease=required(state, "socketDirectory") + "/primary-proxy.lock",
@@ -973,10 +1042,11 @@ pub async fn tunnel_worker(directory : String) -> Unit {
               _ => "process_exit"
             },
             tunnel_directory=directory,
+            recording=workspace_recording(state),
           )
           break
         }
-        if (!connected || child is None) && @env.now() >= next_check {
+        if !connected && @env.now() >= next_check {
           let alive = try {
             check_tunnel(state, directory)
             true
@@ -1000,7 +1070,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
               attempt = 0
               if !connected {
                 if @fs.exists(directory + "/server-enabled") {
-                  @async.with_timeout(connection_timeout_ms(), async fn() {
+                  @async.with_timeout(connection_timeout_ms(state~), async fn() {
                     ignore(recover_server(state))
                   })
                 }
@@ -1014,8 +1084,13 @@ pub async fn tunnel_worker(directory : String) -> Unit {
                   } else {
                     "disabled"
                   },
+                  recording=workspace_recording(state),
                 )
-                tunnel_status(directory, "connected")
+                tunnel_status(
+                  directory,
+                  "connected",
+                  recording=workspace_recording(state),
+                )
               }
               if @fs.exists(directory + "/probe-request") {
                 @fs.remove(directory + "/probe-request")
@@ -1034,6 +1109,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
                         error_type="monitor_failed",
                         error_message=redact_credentials(error.to_string()),
                         tunnel_directory=directory,
+                        recording=workspace_recording(state),
                       )
                   }
                 })
@@ -1041,27 +1117,48 @@ pub async fn tunnel_worker(directory : String) -> Unit {
             }
             Unsupported => {
               terminal = true
-              tunnel_status(directory, "unsupported")
+              tunnel_status(
+                directory,
+                "unsupported",
+                recording=workspace_recording(state),
+              )
               break
             }
             WaitingForGitHelper => {
               failures = 0
               connected = false
-              git_relay_status(directory, "unavailable")
-              tunnel_status(directory, "checking")
+              git_relay_status(
+                directory,
+                "unavailable",
+                recording=workspace_recording(state),
+              )
+              tunnel_status(
+                directory,
+                "checking",
+                recording=workspace_recording(state),
+              )
               next_probe = @env.now() + 1000
             }
             Retry(reason) => {
               failures += 1
               connected = false
-              git_relay_status(directory, "unavailable")
-              tunnel_status(directory, "checking")
+              git_relay_status(
+                directory,
+                "unavailable",
+                recording=workspace_recording(state),
+              )
+              tunnel_status(
+                directory,
+                "checking",
+                recording=workspace_recording(state),
+              )
               save_diagnostic(
                 "relay-recovery",
                 "failed",
                 attempt=failures,
                 error_type=reason,
                 tunnel_directory=directory,
+                recording=workspace_recording(state),
               )
               if failures >= 2 {
                 break
@@ -1090,11 +1187,15 @@ pub async fn tunnel_worker(directory : String) -> Unit {
               "connection_failed"
             },
             error_message?=message,
+            recording=workspace_recording(state),
           )
         }
       }
     }
-    stop_tunnel_master(state, directory, verify=true)
+    if needs_cleanup {
+      stop_tunnel_master(state, directory, verify=true)
+      needs_cleanup = false
+    }
     if terminal {
       return
     }
@@ -1105,6 +1206,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       let delay = configured_timing_ms(
         "ORCA_ENV_DEVSY_TEST_MONITOR_DELAY_MS",
         monitor_delay(monitor_attempt),
+        state~,
       )
       save_diagnostic(
         "monitor-wait",
@@ -1112,6 +1214,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         attempt=monitor_attempt,
         retry_delay_ms=delay,
         tunnel_directory=directory,
+        recording=workspace_recording(state),
       )
       monitor_attempt = if monitor_attempt < 4 {
         monitor_attempt + 1
@@ -1122,7 +1225,11 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       continue
     }
     if @fs.exists(enabled) {
-      tunnel_status(directory, "disconnected")
+      tunnel_status(
+        directory,
+        "disconnected",
+        recording=workspace_recording(state),
+      )
       attempt = if attempt < 6 { attempt + 1 } else { 6 }
       let delay = if attempt < 6 { 500 * (1 << attempt) } else { 30000 }
       save_diagnostic(
@@ -1131,18 +1238,25 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         attempt~,
         retry_delay_ms=delay,
         tunnel_directory=directory,
+        recording=workspace_recording(state),
       )
       idle_retry_wait(state, idle_timer, delay)
     }
   }
-  tunnel_status(directory, "stopped")
+  tunnel_status(directory, "stopped", recording=workspace_recording(state))
 }
 
 ///|
 async fn check_tunnel(state : Json, directory : String) -> Unit {
+  guard @fs.exists(control_socket(state, directory)) else {
+    raise AdapterError("Tunnel not ready")
+  }
   @async.with_timeout(2000, async fn() {
     let (status, _, _) = @process.collect_output(
-      "ssh",
+      workspace_program(state, "ssh"),
+      extra_env=workspace_environment(state),
+      cwd?=workspace_directory(state).map(path => path[:]),
+      inherit_env=false,
       ssh_args(state) + ["-S", control_socket(state, directory), "-O", "check"],
     )
     guard status == 0 else { raise AdapterError("Tunnel not ready") }

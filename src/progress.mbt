@@ -102,6 +102,7 @@ priv struct Progress {
   operations : Map[String, UInt64]
   builds : Map[String, String]
   secrets : Array[String]
+  recording : Bool
   mut phase_count : Int32
   mut private_key : Bool
   mut classic_build : Bool
@@ -122,9 +123,12 @@ fn sensitive_name(name : String) -> Bool {
 }
 
 ///|
-fn Progress::new(stage : String) -> Progress {
+fn Progress::new(
+  stage : String,
+  environment? : Map[String, String],
+) -> Progress {
   let secrets = []
-  for name, value in @env.get_env_vars() {
+  for name, value in environment.unwrap_or(@env.get_env_vars()) {
     if sensitive_name(name) && value != "" {
       secrets.push(value)
       // Multiline credentials must also be masked in line-oriented output.
@@ -141,6 +145,10 @@ fn Progress::new(stage : String) -> Progress {
     operations: {},
     builds: {},
     secrets,
+    recording: environment
+    .unwrap_or(@env.get_env_vars())
+    .get("ORCA_ENV_DEVSY_RECORDING") !=
+    Some("0"),
     phase_count: 0,
     private_key: false,
     classic_build: false,
@@ -233,6 +241,7 @@ async fn Progress::status(self : Progress, event : Json) -> Unit {
       state,
       phase~,
       error_type?=if state == "failed" { Some("backend_phase") } else { None },
+      recording=self.recording,
     )
   } else if self.phase_count == 128 {
     self.phase_count += 1
@@ -240,6 +249,7 @@ async fn Progress::status(self : Progress, event : Json) -> Unit {
       self.stage,
       "diagnostics-truncated",
       error_type="phase_limit",
+      recording=self.recording,
     )
   }
   let key = ["pipeline", "operationId", "phase", "step"]

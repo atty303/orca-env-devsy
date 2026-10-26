@@ -35,10 +35,20 @@ async fn recover_server(
     raise AdapterError("Connection recovery cancelled")
   }
   let output = if !connection_result && server_is_running(state) {
-    save_diagnostic("recover-server", "reuse", tunnel_directory=directory)
+    save_diagnostic(
+      "recover-server",
+      "reuse",
+      tunnel_directory=directory,
+      recording=workspace_recording(state),
+    )
     Json::null()
   } else {
-    save_diagnostic("recover-server", "start", tunnel_directory=directory)
+    save_diagnostic(
+      "recover-server",
+      "start",
+      tunnel_directory=directory,
+      recording=workspace_recording(state),
+    )
     if field(state, "orcaVolume") is Some(_) {
       prepare_orca_storage(state)
       let installation = remote(
@@ -147,6 +157,7 @@ async fn server_is_running(state : Json) -> Bool {
     } else {
       "not-running"
     },
+    recording=workspace_recording(state),
   )
   running
 }

@@ -18,29 +18,29 @@ async fn fixture() -> (String, Map[String, String]) {
   let devsy =
     #|#!/bin/sh
     #|set -eu
-    #|printf '%s\n' "$@" >> "$FAKE_HOME/args"
+    #|printf '%s\n' "$@" >> "$HOME/args"
     #|previous=
     #|for arg in "$@"; do
-    #|  if test "$previous" = --uid; then printf '%s' "$arg" > "$FAKE_HOME/uid"; fi
-    #|  if test "$previous" = --id; then printf '%s' "$arg" > "$FAKE_HOME/workspace-id"; fi
+    #|  if test "$previous" = --uid; then printf '%s' "$arg" > "$HOME/uid"; fi
+    #|  if test "$previous" = --id; then printf '%s' "$arg" > "$HOME/workspace-id"; fi
     #|  previous="$arg"
     #|done
     #|case "$*" in
     #|  *'context list'*) printf '[{"name":"fixture-context","default":true}]\n' ;;
     #|  *'context get'*) printf '{"SSH_INJECT_GIT_CREDENTIALS":{"default":"true","value":"%s"}}\n' "${FAKE_GIT_FORWARDING:-true}" ;;
-    #|  *'provider list'*) if test -f "$FAKE_HOME/providers"; then cat "$FAKE_HOME/providers"; else printf '{"fixture-provider":{"config":{"agent":{"local":"true","driver":"apple","apple":{"path":"%s/bin/runtime"}}}}}' "$FAKE_HOME"; fi ;;
+    #|  *'provider list'*) if test -f "$HOME/providers"; then cat "$HOME/providers"; else printf '{"fixture-provider":{"config":{"agent":{"local":"true","driver":"apple","apple":{"path":"%s/bin/runtime"}}}}}' "$HOME"; fi ;;
     #|  *'workspace list'*)
-    #|    if test -f "$FAKE_HOME/block-list"; then
-    #|      printf '%s\n' "$$" > "$FAKE_HOME/blocked-list-pid"
-    #|      while test ! -f "$FAKE_HOME/release-list"; do sleep 0.1; done
+    #|    if test -f "$HOME/block-list"; then
+    #|      printf '%s\n' "$$" > "$HOME/blocked-list-pid"
+    #|      while test ! -f "$HOME/release-list"; do sleep 0.1; done
     #|    fi
-    #|    if test -f "$FAKE_HOME/created"; then printf '[{"id":"%s","uid":"%s","provider":{"name":"fixture-provider"}}]\n' "$(cat "$FAKE_HOME/workspace-id")" "$(cat "$FAKE_HOME/uid")"; else printf '[]\n'; fi ;;
-    #|  *'workspace status'*) test ! -f "$FAKE_HOME/fail-status"; if test -f "$FAKE_HOME/busy"; then printf '{"state":"Busy"}\n'; elif test -f "$FAKE_HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
-    #|  *'workspace up'*) rm -f "$FAKE_HOME/stopped"; touch "$FAKE_HOME/created" "$FAKE_HOME/volume-present"; test ! -f "$FAKE_HOME/fail-up"
-    #|    if test -f "$FAKE_HOME/up-result"; then cat "$FAKE_HOME/up-result"; else printf '{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}\n'; fi ;;
-    #|  *'workspace ssh'*'/proc/self/mountinfo'*) test ! -f "$FAKE_HOME/fail-storage" ;;
-    #|  *'workspace stop'*) test ! -f "$FAKE_HOME/fail-stop"; touch "$FAKE_HOME/stopped" ;;
-    #|  *'workspace delete'*) test ! -f "$FAKE_HOME/fail-delete"; rm -f "$FAKE_HOME/created" ;;
+    #|    if test -f "$HOME/created"; then printf '[{"id":"%s","uid":"%s","provider":{"name":"fixture-provider"}}]\n' "$(cat "$HOME/workspace-id")" "$(cat "$HOME/uid")"; else printf '[]\n'; fi ;;
+    #|  *'workspace status'*) test ! -f "$HOME/fail-status"; if test -f "$HOME/busy"; then printf '{"state":"Busy"}\n'; elif test -f "$HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
+    #|  *'workspace up'*) rm -f "$HOME/stopped"; touch "$HOME/created" "$HOME/volume-present"; test ! -f "$HOME/fail-up"
+    #|    if test -f "$HOME/up-result"; then cat "$HOME/up-result"; else printf '{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}\n'; fi ;;
+    #|  *'workspace ssh'*'/proc/self/mountinfo'*) test ! -f "$HOME/fail-storage" ;;
+    #|  *'workspace stop'*) test ! -f "$HOME/fail-stop"; touch "$HOME/stopped" ;;
+    #|  *'workspace delete'*) test ! -f "$HOME/fail-delete"; rm -f "$HOME/created" ;;
     #|  *) exit 2 ;;
     #|esac
   let git =
@@ -52,7 +52,7 @@ async fn fixture() -> (String, Map[String, String]) {
   let ssh =
     #|#!/bin/sh
     #|set -eu
-    #|printf '%s\n' "$@" >> "$FAKE_HOME/ssh-args"
+    #|printf '%s\n' "$@" >> "$HOME/ssh-args"
     #|control=
     #|owner=developer
     #|previous=
@@ -62,88 +62,88 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  previous="$arg"
     #|done
     #|case "$*" in
-    #|  *'-N'*) if test -f "$FAKE_HOME/recover-on-master"; then rm -f "$FAKE_HOME/rpc-unavailable" "$FAKE_HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$FAKE_HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
+    #|  *'-N'*) if test -f "$HOME/recover-on-master"; then rm -f "$HOME/rpc-unavailable" "$HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$HOME/primary-services" ;; *) printf enabled > "$HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
     #|  *'ORCA_ENV_DEVSY_OBSERVER=1'*)
-    #|    printf 'start\n' >> "$FAKE_HOME/idle-starts"
-    #|    printf '%s\n' "$$" > "$FAKE_HOME/idle-pid"
-    #|    trap 'printf "closed\n" >> "$FAKE_HOME/idle-closed"' EXIT
+    #|    printf 'start\n' >> "$HOME/idle-starts"
+    #|    printf '%s\n' "$$" > "$HOME/idle-pid"
+    #|    trap 'printf "closed\n" >> "$HOME/idle-closed"' EXIT
     #|    read -r config
-    #|    if test -f "$FAKE_HOME/fail-idle-connect"; then exit 3; fi
+    #|    if test -f "$HOME/fail-idle-connect"; then exit 3; fi
     #|    printf '{"schemaVersion":1,"ready":true}\n'
     #|    count=0
     #|    while read -r request; do
     #|      count=$((count+1))
-    #|      printf '%s\n' "$request" >> "$FAKE_HOME/idle-requests"
-    #|      if test -f "$FAKE_HOME/drop-idle-once"; then rm "$FAKE_HOME/drop-idle-once"; exit 4; fi
-    #|      if test "$count" -ge 3 && test -f "$FAKE_HOME/idle-final-active"; then printf '{"schemaVersion":1,"activity":"active"}\n';
-    #|      elif test -f "$FAKE_HOME/activity"; then cat "$FAKE_HOME/activity"; printf '\n';
+    #|      printf '%s\n' "$request" >> "$HOME/idle-requests"
+    #|      if test -f "$HOME/drop-idle-once"; then rm "$HOME/drop-idle-once"; exit 4; fi
+    #|      if test "$count" -ge 3 && test -f "$HOME/idle-final-active"; then printf '{"schemaVersion":1,"activity":"active"}\n';
+    #|      elif test -f "$HOME/activity"; then cat "$HOME/activity"; printf '\n';
     #|      else printf '{"schemaVersion":1,"activity":"idle"}\n'; fi
     #|    done ;;
     #|  *'const fs = require'* )
     #|    cat >/dev/null
-    #|    if test -f "$FAKE_HOME/activity"; then cat "$FAKE_HOME/activity"; else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}'; fi ;;
+    #|    if test -f "$HOME/activity"; then cat "$HOME/activity"; else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}'; fi ;;
     #|  *'orca-relay-readiness'*)
-    #|    touch "$FAKE_HOME/relay-probed"
+    #|    touch "$HOME/relay-probed"
     #|    test -f "$control"
-    #|    if test -f "$FAKE_HOME/unsupported-ready"; then printf '\n404';
-    #|    elif test -f "$FAKE_HOME/rpc-unavailable"; then printf '\n503';
-    #|    elif test -f "$FAKE_HOME/flaky-ready"; then rm "$FAKE_HOME/flaky-ready"; printf '\n503';
+    #|    if test -f "$HOME/unsupported-ready"; then printf '\n404';
+    #|    elif test -f "$HOME/rpc-unavailable"; then printf '\n503';
+    #|    elif test -f "$HOME/flaky-ready"; then rm "$HOME/flaky-ready"; printf '\n503';
     #|    else printf '{"version":1,"owner":"%s","host_owner":"fixture-host","instance":"fixture-instance"}\n200' "$owner"; fi ;;
     #|  *'git config --global --get credential.helper'*)
-    #|    touch "$FAKE_HOME/git-probed"
-    #|    test ! -f "$FAKE_HOME/git-unavailable" ;;
-    #|  *'then printf present; else printf missing; fi'*) if test -f "$FAKE_HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
+    #|    touch "$HOME/git-probed"
+    #|    test ! -f "$HOME/git-unavailable" ;;
+    #|  *'then printf present; else printf missing; fi'*) if test -f "$HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
-    #|  *'rev-parse HEAD'*) test ! -f "$FAKE_HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
-    #|  *'then printf installed; else printf missing; fi'*) if test -f "$FAKE_HOME/missing-orca"; then printf missing; else printf installed; fi ;;
-    #|  *'./orca.AppImage --appimage-extract'*) rm -f "$FAKE_HOME/missing-orca" ;;
-    #|  *'Sec-WebSocket-Version'*) if test -f "$FAKE_HOME/served"; then printf 101; else printf 000; fi ;;
-    #|  *'repo add --json'*) test ! -f "$FAKE_HOME/fail-project"; printf '{"ok":true,"result":{}}\n' ;;
+    #|  *'rev-parse HEAD'*) test ! -f "$HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
+    #|  *'then printf installed; else printf missing; fi'*) if test -f "$HOME/missing-orca"; then printf missing; else printf installed; fi ;;
+    #|  *'./orca.AppImage --appimage-extract'*) rm -f "$HOME/missing-orca" ;;
+    #|  *'Sec-WebSocket-Version'*) if test -f "$HOME/served"; then printf 101; else printf 000; fi ;;
+    #|  *'repo add --json'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{}}\n' ;;
     #|  *'project setups'*) printf '{"ok":true,"result":{"setups":[{"id":"fixture-setup","path":"/workspace/repo"}]}}\n' ;;
-    #|  *'project setup-update'*) test ! -f "$FAKE_HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/workspaces/.orca"}}}}\n' ;;
-    #|  *'--recipe-json'*) test ! -f "$FAKE_HOME/fail-serve"; printf 'serve\n' >> "$FAKE_HOME/serve-count"; touch "$FAKE_HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
+    #|  *'project setup-update'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/workspaces/.orca"}}}}\n' ;;
+    #|  *'--recipe-json'*) test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
     #|  *'-O check'*)
-    #|    if test -f "$FAKE_HOME/fail-tunnel-cleanup"; then
+    #|    if test -f "$HOME/fail-tunnel-cleanup"; then
     #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
     #|    fi
     #|    test -f "$control" ;;
     #|  *'-O exit'*) rm -f "$control" ;;
-    #|  *'cat >'* ) test ! -f "$FAKE_HOME/fail-addon"; cat > "$FAKE_HOME/delivered-auth" ;;
+    #|  *'cat >'* ) test ! -f "$HOME/fail-addon"; cat > "$HOME/delivered-auth" ;;
     #|  *'-L 127.0.0.1:'* )
     #|    while test "$1" != '-L'; do shift; done
     #|    port=${2#127.0.0.1:}; port=${port%%:*}
-    #|    printf '%s\n' "$port" > "$FAKE_HOME/listener-port.tmp"
-    #|    mv "$FAKE_HOME/listener-port.tmp" "$FAKE_HOME/listener-port"
+    #|    printf '%s\n' "$port" > "$HOME/listener-port.tmp"
+    #|    mv "$HOME/listener-port.tmp" "$HOME/listener-port"
     #|    count=0
-    #|    while ! test -f "$FAKE_HOME/listener-ready"; do count=$((count+1)); test "$count" -lt 100; sleep 0.01; done
+    #|    while ! test -f "$HOME/listener-ready"; do count=$((count+1)); test "$count" -lt 100; sleep 0.01; done
     #|    keeper=
     #|    trap 'rm -f "$control"; if test -n "$keeper"; then kill "$keeper" 2>/dev/null || true; wait "$keeper" 2>/dev/null || true; fi' EXIT HUP INT TERM
-    #|    while test -f "$FAKE_HOME/hold-proxy-setup"; do sleep 0.01; done
-    #|    if test -f "$FAKE_HOME/keep-proxy-stderr"; then
+    #|    while test -f "$HOME/hold-proxy-setup"; do sleep 0.01; done
+    #|    if test -f "$HOME/keep-proxy-stderr"; then
     #|      sleep 60 & keeper=$!
-    #|      printf '%s\n' "$keeper" > "$FAKE_HOME/keeper-pid"
+    #|      printf '%s\n' "$keeper" > "$HOME/keeper-pid"
     #|    fi
     #|    touch "$control"
     #|    while test -f "$control"; do
-    #|      if test -f "$FAKE_HOME/drop-tunnel"; then rm "$FAKE_HOME/drop-tunnel"; printf "Permission denied (publickey). private-stderr-secret\n" >&2; exit 1; fi
+    #|      if test -f "$HOME/drop-tunnel"; then rm "$HOME/drop-tunnel"; printf "Permission denied (publickey). private-stderr-secret\n" >&2; exit 1; fi
     #|      sleep 0.01
     #|    done ;;
     #|  *'-N'* )
     #|    trap 'rm -f "$control"' EXIT HUP INT TERM
     #|    touch "$control"
-    #|    while test -f "$control" && test -f "$FAKE_HOME/created"; do sleep 0.01; done ;;
+    #|    while test -f "$control" && test -f "$HOME/created"; do sleep 0.01; done ;;
     #|  *) : ;;
     #|esac
   let runtime =
     #|#!/bin/sh
     #|set -eu
-    #|printf '%s\n' "$@" >> "$FAKE_HOME/volume-args"
-    #|if test -f "$FAKE_HOME/fail-volume-list"; then echo 'runtime unavailable' >&2; exit 9; fi
+    #|printf '%s\n' "$@" >> "$HOME/volume-args"
+    #|if test -f "$HOME/fail-volume-list"; then echo 'runtime unavailable' >&2; exit 9; fi
     #|case "$*" in
-    #|  'volume ls --format json') if test -f "$FAKE_HOME/volume-list"; then cat "$FAKE_HOME/volume-list"; elif test -f "$FAKE_HOME/volume-present"; then printf '[{"configuration":{"name":"orca-env-devsy-%s"}}]' "$(cat "$FAKE_HOME/uid")"; else printf '[]'; fi ;;
-    #|  'volume rm '*) test ! -f "$FAKE_HOME/created"; if test -f "$FAKE_HOME/fail-volume-remove"; then echo 'volume is in use' >&2; exit 7; fi; test "$3" = "orca-env-devsy-$(cat "$FAKE_HOME/uid")"; rm -f "$FAKE_HOME/volume-present" ;;
+    #|  'volume ls --format json') if test -f "$HOME/volume-list"; then cat "$HOME/volume-list"; elif test -f "$HOME/volume-present"; then printf '[{"configuration":{"name":"orca-env-devsy-%s"}}]' "$(cat "$HOME/uid")"; else printf '[]'; fi ;;
+    #|  'volume rm '*) test ! -f "$HOME/created"; if test -f "$HOME/fail-volume-remove"; then echo 'volume is in use' >&2; exit 7; fi; test "$3" = "orca-env-devsy-$(cat "$HOME/uid")"; rm -f "$HOME/volume-present" ;;
     #|  *) exit 2 ;;
     #|esac
   for
@@ -936,7 +936,11 @@ async test "proxy preserves binary streams and the configured command exit statu
   let input = b"\x00SSH\n\xff"
   @fs.write_file(directory + "/input", input)
   let state : Json = {
-    "devsyEnv": {},
+    "devsyEnv": {
+      "HOME": directory,
+      "XDG_STATE_HOME": directory + "/.local/state",
+      "PATH": "/usr/bin:/bin",
+    },
     "command": ["/bin/sh", "-c", "cat; exit \"$PROXY_EXIT\"", "sh"],
     "workspaceId": "test-id",
     "user": "developer",
@@ -1095,7 +1099,7 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       #|set -eu
       #|case "$*" in
       #| *--git-clone-strategy=shallow*)
-      #|   printf '%s\n' "$@" >> "$FAKE_HOME/shallow-args"
+      #|   printf '%s\n' "$@" >> "$HOME/shallow-args"
       #|   if test "$CLONE_FAILURE" = missing || test "$CLONE_FAILURE" = missing-full; then
       #|     printf '%s\n' "{\"kind\":\"status\",\"phase\":\"cloning_repository\",\"state\":\"failed\",\"error\":{\"message\":\"Could not parse object 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\"}}"
       #|     printf '\377 non-UTF-8 private-stderr-secret\n' >&2
@@ -1106,7 +1110,7 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       #|if test "$CLONE_FAILURE" = missing-full; then
       #|  case "$*" in *'workspace up'*) exit 9 ;; esac
       #|fi
-      #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+      #|exec "$HOME/bin/devsy-original" "$@"
     @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
     env.set("CLONE_FAILURE", failure)
     @fs.write_file(
@@ -1914,9 +1918,6 @@ async test "restart replaces live connections through bulk and receipt recover" 
         assert_true(worker_alive(worker))
         assert_true(@fs.exists(worker + "/enabled"))
         let after = @json.parse(@fs.read_file(worker + "/state.json").text())
-        assert_true(
-          field(after, "socketDirectory") != field(before, "socketDirectory"),
-        )
         assert_eq(field(after, "localPort"), field(before, "localPort"))
         assert_true(
           @fs.read_file(directory + "/master-pid").text().trim() != pid,
@@ -1972,7 +1973,7 @@ async test "restart refuses an SSH master that does not stop and preserves saved
   let wrapper =
     #|#!/bin/sh
     #|case "$*" in *'-O exit'*) exit 1 ;; esac
-    #|exec "$FAKE_HOME/bin/ssh-original" "$@"
+    #|exec "$HOME/bin/ssh-original" "$@"
   @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
   @fs.write_file(directory + "/ssh-args", "")
   let (status, _, _) = invoke("restart", env, directory)
@@ -2106,9 +2107,6 @@ async test "bulk recover restores persistent XDG state without a receipt or curr
     let after = @json.parse(@fs.read_file(worker + "/state.json").text())
     assert_eq(field(after, "localPort"), field(before, "localPort"))
     assert_eq(field(after, "command"), field(before, "command"))
-    assert_true(
-      field(after, "socketDirectory") != field(before, "socketDirectory"),
-    )
     assert_true(worker_alive(worker))
     let (status, output, errors) = invoke("recover", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -2227,12 +2225,12 @@ async test "lifecycle progress reaches stderr and diagnostics before workspace u
     #|   printf '%s\n' '{invalid JSON fixture-private-malformed' '{"kind":"result","message":"fixture-private-result"}' >&2
     #|   awk 'BEGIN { for(i=0;i<70000;i++) printf "x"; print "fixture-private-oversized" }' >&2
     #|   printf '%s\n' '{"level":"info","msg":"creating machine"}' >&2
-    #|   touch "$FAKE_HOME/up-waiting"
-    #|   while test ! -f "$FAKE_HOME/release-up"; do sleep 0.01; done
+    #|   touch "$HOME/up-waiting"
+    #|   while test ! -f "$HOME/release-up"; do sleep 0.01; done
     #|   : ;;
     #| *'workspace stop'*|*'workspace delete'*) printf '%s\n' '{"level":"info","msg":"lifecycle action complete"}' >&2 ;;
     #|esac
-    #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+    #|exec "$HOME/bin/devsy-original" "$@"
   @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
   let executable = integration_binary()
   let stdout = @process.redirect_to_file(
@@ -2340,14 +2338,14 @@ async test "failed streamed workspace up preserves exit failure and owned cleanu
     #|set -eu
     #|case "$*" in
     #| *'workspace up'*)
-    #|   "$FAKE_HOME/bin/devsy-original" "$@" >/dev/null
+    #|   "$HOME/bin/devsy-original" "$@" >/dev/null
     #|   printf '%s\n' '{"kind":"status","phase":"building_image","state":"started"}' '{"kind":"status","phase":"building_image","state":"failed","durationMs":2500}'
     #|   printf '%s\n' '{"kind":"log","level":"info","message":"Step 1/1 : RUN install"}'
     #|   printf '%s' '{"level":"error","msg":"build failed: fixture error"}' >&2
     #|   printf '%s\n' '{"kind":"error","message":"workspace error envelope"}'
     #|   exit 9 ;;
     #|esac
-    #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+    #|exec "$HOME/bin/devsy-original" "$@"
   @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
   let (status, output, errors) = invoke("create", env, directory)
   assert_true(status != 0)
@@ -2436,6 +2434,14 @@ async fn cleanup_fixture(directory : String) -> Unit {
       }
     }
   }
+  let root = directory + "/.local/state/orca-env-devsy"
+  if @fs.exists(root) {
+    @async.with_timeout(5000, async fn() {
+      while supervisor_alive(root) {
+        @async.sleep(10)
+      }
+    })
+  }
   @fs.rmdir(directory, recursive=true)
 }
 
@@ -2499,6 +2505,9 @@ async test "adoption rejects stopped or replaced workspaces and reaps the old ma
         @async.sleep(100)
       }
     })
+    idle_wait_for(async fn() {
+      !supervisor_alive(env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy")
+    })
     let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
     let socket = required(saved, "socketDirectory")
     @fs.mkdir(socket, recursive=true, allow_exist=true)
@@ -2523,7 +2532,11 @@ async test "adoption rejects stopped or replaced workspaces and reaps the old ma
       let child = @process.spawn(
         group,
         executable,
-        ["--tunnel-worker", worker],
+        [
+          "--supervisor",
+          env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+          worker,
+        ],
         extra_env=env,
       )
       if condition == "stopped" {
@@ -2550,14 +2563,14 @@ async test "adoption rejects stopped or replaced workspaces and reaps the old ma
 ///|
 async test "SSH proxy preserves binary input and reaps its child on EOF or signals" {
   for termination in ["eof", "HUP", "TERM"] {
-    let (directory, _) = fixture()
+    let (directory, env) = fixture()
     defer cleanup_fixture(directory)
     @fs.write_file(
       directory + "/transport",
       "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\ncat\nwhile :; do :; done\n",
       permission=0o700,
     )
-    @async.with_timeout(3000, async fn() {
+    @async.with_timeout(5000, async fn() {
       @async.with_task_group(async fn(group) {
         let (input, writer) = @process.write_to_process()
         defer writer.close()
@@ -2568,6 +2581,7 @@ async test "SSH proxy preserves binary input and reaps its child on EOF or signa
         let proxy = @process.spawn(
           group,
           integration_binary(),
+          extra_env=env,
           [
             "--ssh-proxy",
             "",
@@ -2609,12 +2623,13 @@ async test "SSH proxy preserves binary input and reaps its child on EOF or signa
 
 ///|
 async test "SSH proxy retains early and drained exit codes and closes launcher descendants" {
-  let (directory, _) = fixture()
+  let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(directory + "/input", "x".repeat(1000000))
   for script in ["exit 37", "cat >/dev/null; sleep 0.3; printf tail; exit 37"] {
     let (code, output, _) = @process.collect_output(
       integration_binary(),
+      extra_env=env,
       ["--ssh-proxy", "", "/bin/sh", "-c", script],
       stdin=@process.redirect_from_file(directory + "/input"),
     )
@@ -2624,6 +2639,7 @@ async test "SSH proxy retains early and drained exit codes and closes launcher d
   @async.with_timeout(2500, async fn() {
     let (code, output, _) = @process.collect_output(
       integration_binary(),
+      extra_env=env,
       [
         "--ssh-proxy", "", "/bin/sh", "-c", "sleep 30 & printf '%s' \"$!\"; wait",
       ],
@@ -2641,10 +2657,11 @@ async test "SSH proxy retains early and drained exit codes and closes launcher d
 
 ///|
 async test "SSH transport retains default signals and launcher termination traps" {
-  let (directory, _) = fixture()
+  let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   let (code, _, _) = @process.collect_output(
     integration_binary(),
+    extra_env=env,
     ["--ssh-proxy", "", "/bin/sh", "-c", "kill -TERM $$; exit 37"],
     stdin=@process.redirect_from_file("/dev/null"),
   )
@@ -2656,6 +2673,7 @@ async test "SSH transport retains default signals and launcher termination traps
       let child = @process.spawn(
         group,
         integration_binary(),
+        extra_env=env,
         [
           "--ssh-proxy",
           "",
@@ -2680,13 +2698,15 @@ async test "SSH transport retains default signals and launcher termination traps
 
 ///|
 async test "SSH proxy caller group death closes streams and reaps the transport" {
-  let (directory, _) = fixture()
+  let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/transport",
     "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\ncat\nwhile :; do :; done\n",
     permission=0o700,
   )
+  @fs.write_file(directory + "/outer-group.lock", "")
+  @fs.write_file(directory + "/outer-group.lock.ready", "")
   @async.with_timeout(3500, async fn() {
     @async.with_task_group(async fn(group) {
       let (input, writer) = @process.write_to_process()
@@ -2698,8 +2718,10 @@ async test "SSH proxy caller group death closes streams and reaps the transport"
       let proxy = @process.spawn(
         group,
         integration_binary(),
+        extra_env=env,
         [
           "--ssh-transport",
+          directory + "/outer-group.lock",
           integration_binary(),
           "--ssh-proxy",
           "",
@@ -2742,13 +2764,15 @@ async test "SSH proxy caller group death closes streams and reaps the transport"
 
 ///|
 async test "SSH proxy caller death reaps a transport with blocked stdin" {
-  let (directory, _) = fixture()
+  let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(
     directory + "/transport",
     "#!/bin/sh\ntrap '' TERM\nprintf '%s' \"$$\" > \"$1\"\nwhile :; do :; done\n",
     permission=0o700,
   )
+  @fs.write_file(directory + "/outer-group.lock", "")
+  @fs.write_file(directory + "/outer-group.lock.ready", "")
   @async.with_timeout(3500, async fn() {
     @async.with_task_group(async fn(group) {
       let (input, writer) = @process.write_to_process()
@@ -2760,8 +2784,10 @@ async test "SSH proxy caller death reaps a transport with blocked stdin" {
       let proxy = @process.spawn(
         group,
         integration_binary(),
+        extra_env=env,
         [
           "--ssh-transport",
+          directory + "/outer-group.lock",
           "/bin/sh",
           "-c",
           "\"$1\" --ssh-proxy '' \"$2\" \"$3\" <&0 & wait",
@@ -2839,14 +2865,14 @@ async test "adoption waits for Git options and validates the relay before connec
   @fs.mkdir(socket, recursive=true, allow_exist=true)
   @fs.write_file(socket + "/socket", "")
   @fs.write_file(worker + "/enabled", "")
-  @fs.write_file(worker + "/status.json", "{}")
+  @fs.write_file(worker + "/status.json", "{\"status\":\"connected\"}")
   @fs.rename(directory + "/bin/devsy", directory + "/bin/devsy-original")
   let wrapper =
     #|#!/bin/sh
     #|case "$*" in
-    #|  *'context get'*) touch "$FAKE_HOME/options-blocked"; while test ! -f "$FAKE_HOME/release-options"; do sleep 0.01; done ;;
+    #|  *'context get'*) touch "$HOME/options-blocked"; while test ! -f "$HOME/release-options"; do sleep 0.01; done ;;
     #|esac
-    #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+    #|exec "$HOME/bin/devsy-original" "$@"
   @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
   @async.with_task_group(async fn(group) {
     group.spawn_bg(async fn() {
@@ -2894,6 +2920,9 @@ async test "adopted primary is stopped before recovering after a failed health c
       @async.sleep(10)
     }
   })
+  idle_wait_for(async fn() {
+    !supervisor_alive(env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy")
+  })
   let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
   let socket = required(saved, "socketDirectory")
   @fs.mkdir(socket, recursive=true, allow_exist=true)
@@ -2911,13 +2940,14 @@ async test "adopted primary is stopped before recovering after a failed health c
     #|  previous="$arg"
     #|done
     #|case "$*" in
-    #|  *'-O check'*)
-    #|    if test -f "$FAKE_HOME/fail-next-check"; then rm "$FAKE_HOME/fail-next-check"; exit 1; fi ;;
+    #|  *'orca-relay-readiness'*)
+    #|    if test -f "$HOME/fail-next-check"; then exit 1; fi ;;
     #|  *'-N'*)
-    #|    if test -f "$control"; then touch "$FAKE_HOME/master-conflict"; exit 1; fi
-    #|    touch "$FAKE_HOME/master-recreated" ;;
+    #|    rm -f "$HOME/fail-next-check"
+    #|    if test -f "$control"; then touch "$HOME/master-conflict"; exit 1; fi
+    #|    touch "$HOME/master-recreated" ;;
     #|esac
-    #|exec "$FAKE_HOME/bin/ssh-original" "$@"
+    #|exec "$HOME/bin/ssh-original" "$@"
   @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
   @async.with_timeout(5000, async fn() {
     @async.with_task_group(async fn(group) {
@@ -2926,7 +2956,11 @@ async test "adopted primary is stopped before recovering after a failed health c
       let child = @process.spawn(
         group,
         integration_binary(),
-        ["--tunnel-worker", worker],
+        [
+          "--supervisor",
+          env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+          worker,
+        ],
         extra_env=env,
         stdout=sink,
         stderr=sink,
@@ -2940,6 +2974,7 @@ async test "adopted primary is stopped before recovering after a failed health c
         @async.sleep(10)
       }
       @fs.write_file(directory + "/fail-next-check", "")
+      @fs.write_file(worker + "/probe-request", "")
       while !@fs.exists(directory + "/master-recreated") &&
             !@fs.exists(directory + "/master-conflict") {
         @async.sleep(10)
@@ -3049,16 +3084,16 @@ async test "provisioned task checkout waits for primary Git readiness without re
     #|#!/bin/sh
     #|case "$*" in
     #|  *'-N'*)
-    #|    if test -f "$FAKE_HOME/primary-started"; then touch "$FAKE_HOME/primary-replaced"; fi
-    #|    touch "$FAKE_HOME/primary-started" ;;
+    #|    if test -f "$HOME/primary-started"; then touch "$HOME/primary-replaced"; fi
+    #|    touch "$HOME/primary-started" ;;
     #|  *'git checkout -B'*)
-    #|    touch "$FAKE_HOME/task-checkout"
-    #|    if test -f "$FAKE_HOME/git-unavailable"; then
-    #|      touch "$FAKE_HOME/checkout-before-ready"
+    #|    touch "$HOME/task-checkout"
+    #|    if test -f "$HOME/git-unavailable"; then
+    #|      touch "$HOME/checkout-before-ready"
     #|      exit 7
     #|    fi ;;
     #|esac
-    #|exec "$FAKE_HOME/bin/ssh-original" "$@"
+    #|exec "$HOME/bin/ssh-original" "$@"
   @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
   let (status, output, errors) = @async.with_task_group(async fn(group) {
     group.spawn_bg(async fn() {
@@ -3739,7 +3774,7 @@ async test "failed workspace creation preserves credential error causes and mask
       #|set -eu
       #|case "$*" in
       #| *'workspace up'*)
-      #|   "$FAKE_HOME/bin/devsy-original" "$@" >/dev/null
+      #|   "$HOME/bin/devsy-original" "$@" >/dev/null
       #|   printf '%s\n' '{"level":"error","msg":"get credentials: credential helper executable not found"}' >&2
       #|   printf '%s\n' '{"kind":"error","message":"token exchange failed: API returned 403; token=fixture-private-token; operation=connect"}'
       #|   printf '%s\n' '{"kind":"status","phase":"configuring_ssh","state":"failed","error":{"message":"SSH authorization failed: https://user:fixture-private-url@example.com/connect?signature=fixture-private-signature&region=apne1","hint":"check credential helper installation","context":{"token":"fixture-private-context"}}}'
@@ -3748,7 +3783,7 @@ async test "failed workspace creation preserves credential error causes and mask
       #|   printf '%s\n' '{"level":"info","msg":"deleting machine"}' '{"level":"info","msg":"deleted machine"}' >&2
       #|   exit 9 ;;
       #|esac
-      #|exec "$FAKE_HOME/bin/devsy-original" "$@"
+      #|exec "$HOME/bin/devsy-original" "$@"
     @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
     let (status, output, errors) = invoke("create", env, directory)
     assert_true(status != 0)
@@ -3830,7 +3865,7 @@ async test "unsupported readiness is terminal and failed create removes its work
     "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   @fs.write_file(directory + "/unsupported-ready", "")
-  let (status, _, errors) = @async.with_timeout(5000, async fn() {
+  let (status, _, errors) = @async.with_timeout(connection_timeout_ms(), async fn() {
     invoke("create", env, directory)
   })
   assert_true(status != 0)

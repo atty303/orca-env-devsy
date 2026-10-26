@@ -188,11 +188,11 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       }));
       await checkClient();
     }, index);
-    const crashWorker = async () => {
-      const expected = env.XDG_STATE_HOME + "/orca-env-devsy/ssh-proxy-adapter --tunnel-worker " + state.tunnelDirectory;
+    const crashSupervisor = async () => {
+      const expected = env.XDG_STATE_HOME + "/orca-env-devsy/ssh-proxy-adapter --supervisor " + env.XDG_STATE_HOME + "/orca-env-devsy";
       const processes = await run(["ps", "-ww", "-axo", "pid=,command="], { env, timeout: budgets.operation });
-      const matches = processes.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match?.[2] === expected);
-      assert.equal(matches.length, 1, "Crash only the worker with this exact executable and owned directory");
+      const matches = processes.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match?.[2] === expected || match?.[2].startsWith(expected + " "));
+      assert.equal(matches.length, 1, "Crash only the supervisor with this exact executable and owned state directory");
       const pid = Number(matches[0]![1]);
       process.kill(pid, "SIGKILL");
       await until(async () => {
@@ -243,7 +243,7 @@ else:
       assert(connected.ok);
     }
     console.log(`PASS workspace ${index}: three SSH sessions, signed Git push/fetch, agent, auth, files and HTTP isolation`);
-    return { runtime, index, exec, check, checkClient, serve, close, crashWorker, stopServer, path, id, serverVersion, agentVersion };
+    return { runtime, index, exec, check, checkClient, serve, close, crashSupervisor, stopServer, path, id, serverVersion, agentVersion };
   } catch (error) {
     await close(); throw error;
   }

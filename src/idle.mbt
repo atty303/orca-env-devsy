@@ -161,6 +161,7 @@ async fn idle_reset(state : Json, reason : String) -> Unit {
     reason,
     tunnel_directory=required(state, "tunnelDirectory"),
     evidence=record,
+    recording=workspace_recording(state),
   )
 }
 
@@ -217,6 +218,7 @@ async fn idle_tick(
       "after": record,
       "observation": observation.unwrap_or(Json::null()),
     },
+    recording=workspace_recording(state),
   )
 }
 
@@ -366,7 +368,10 @@ async fn[X] open_idle_session(
   let script = "ORCA_ENV_DEVSY_OBSERVER=1 " + activity_command(state)
   let child = @process.spawn(
     group,
-    "ssh",
+    workspace_program(state, "ssh"),
+    extra_env=workspace_environment(state),
+    cwd?=workspace_directory(state).map(path => path[:]),
+    inherit_env=false,
     ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
     ssh_args(state, services=false) +
     ["-S", control_socket(state, directory), script],
@@ -395,7 +400,12 @@ async fn[X] open_idle_session(
       )
     }
   })
-  save_diagnostic("idle-connection", "connected", tunnel_directory=directory)
+  save_diagnostic(
+    "idle-connection",
+    "connected",
+    tunnel_directory=directory,
+    recording=workspace_recording(state),
+  )
   session
 }
 
@@ -407,7 +417,11 @@ async fn idle_supervisor(
   done : Ref[Bool],
 ) -> Unit {
   let timeout = idle_timeout(state).unwrap()
-  let interval = configured_timing_ms("ORCA_ENV_DEVSY_TEST_IDLE_POLL_MS", 30000)
+  let interval = configured_timing_ms(
+    "ORCA_ENV_DEVSY_TEST_IDLE_POLL_MS",
+    30000,
+    state~,
+  )
   let mut attempt = 0
   let mut retry_reason = "observer_reconnecting"
   while @fs.exists(required(state, "tunnelDirectory") + "/enabled") &&
@@ -476,6 +490,7 @@ async fn idle_supervisor(
               "started",
               tunnel_directory=required(state, "tunnelDirectory"),
               evidence=fresh,
+              recording=workspace_recording(state),
             )
             session.close()
             let failure = try {
@@ -492,6 +507,7 @@ async fn idle_supervisor(
                 error_type="workspace_stop_failed",
                 error_message=message,
                 tunnel_directory=required(state, "tunnelDirectory"),
+                recording=workspace_recording(state),
               )
               raise AdapterError(message)
             }
@@ -499,6 +515,7 @@ async fn idle_supervisor(
               "idle-stop",
               "success",
               tunnel_directory=required(state, "tunnelDirectory"),
+              recording=workspace_recording(state),
             )
             done.val = true
             return true
@@ -523,6 +540,7 @@ async fn idle_supervisor(
           error_type="observer_unavailable",
           error_message=redact_credentials(error.to_string()),
           tunnel_directory=required(state, "tunnelDirectory"),
+          recording=workspace_recording(state),
         )
         false
       }
@@ -539,6 +557,7 @@ async fn idle_supervisor(
       attempt~,
       retry_delay_ms=interval * cycles,
       tunnel_directory=required(state, "tunnelDirectory"),
+      recording=workspace_recording(state),
     )
     for _ in 0..<cycles {
       idle_tick(state, timer, "unknown", retry_reason, @async.now())
@@ -554,7 +573,11 @@ async fn idle_retry_wait(
   delay : Int32,
 ) -> Unit {
   let directory = required(state, "tunnelDirectory")
-  let interval = configured_timing_ms("ORCA_ENV_DEVSY_TEST_IDLE_POLL_MS", 30000)
+  let interval = configured_timing_ms(
+    "ORCA_ENV_DEVSY_TEST_IDLE_POLL_MS",
+    30000,
+    state~,
+  )
   let mut remaining = delay
   while remaining > 0 && @fs.exists(directory + "/enabled") {
     if @fs.exists(directory + "/paused") ||
@@ -582,6 +605,7 @@ async fn idle_retry_wait(
               error_type="timer_unavailable",
               error_message=redact_credentials(error.to_string()),
               tunnel_directory=directory,
+              recording=workspace_recording(state),
             )
         }
       }

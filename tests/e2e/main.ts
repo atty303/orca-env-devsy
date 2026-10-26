@@ -178,7 +178,7 @@ try {
   beginPhase("worker-receipt-server-recovery");
   const crashed = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
   await measure("worker-recovery", budgets.recovery, async () => {
-    await crashed.crashWorker();
+    await crashed.crashSupervisor();
     await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover"], { env, timeout: budgets.recovery });
     await Promise.all([crashed.checkClient(), (async () => {
       assert(/^[a-f0-9]{40}\s+refs\/heads\/task-0/.test(await crashed.exec(1, `git ls-remote http://127.0.0.1:18080/w-${crashed.index}.git refs/heads/task-0`)));
@@ -188,7 +188,7 @@ try {
   await measure("receipt-recover", budgets.recovery, async () => { await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recipe", "recover"], { env, timeout: budgets.recovery, input: JSON.stringify({ schemaVersion: 1, recipeResult: crashed.runtime.recipeResult }) }); await crashed.checkClient(); }, crashed.index);
   await measure("server-recovery", budgets.lifecycle, async () => {
     await crashed.stopServer();
-    await crashed.crashWorker();
+    await crashed.crashSupervisor();
     await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover"], { env, timeout: budgets.lifecycle });
     await crashed.checkClient();
   }, crashed.index);

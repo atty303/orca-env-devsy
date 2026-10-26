@@ -66,7 +66,10 @@ async fn codex_addon(state : Json) -> Unit {
         stage = "spawn"
         let process = @process.spawn(
           group,
-          "ssh",
+          workspace_program(state, "ssh"),
+          extra_env=workspace_environment(state),
+          cwd?=workspace_directory(state).map(path => path[:]),
+          inherit_env=false,
           ssh_args(state, services=false) + [script],
           stdin=input,
           stdout=sink,
