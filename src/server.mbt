@@ -8,8 +8,40 @@ async fn server_connection(
     let script = server_install_script()
     ignore(remote(state, script, "orca-install"))
   }
-  let output = launch_server(state)
+  let output = recover_server(state, connection_result=true)
   ensure_ssh_worker(state, Some(reserve_server_port(state)), deadline?)
+  output
+}
+
+///|
+async fn recover_server(
+  state : Json,
+  connection_result~ : Bool = false,
+) -> Json {
+  let directory = required(state, "tunnelDirectory")
+  let lock = @fs.open(
+    directory + "/server.lock",
+    mode=ReadWrite,
+    create_mode=OpenOrCreate,
+    permission=0o600,
+  )
+  defer lock.close()
+  @async.with_timeout(30000, async fn() {
+    while !lock.try_lock(Exclusive) {
+      @async.sleep(100)
+    }
+  })
+  guard @fs.exists(directory + "/enabled") && !@fs.exists(directory + "/paused") else {
+    raise AdapterError("Connection recovery cancelled")
+  }
+  let output = if !connection_result && server_is_running(state) {
+    save_diagnostic("recover-server", "reuse", tunnel_directory=directory)
+    Json::null()
+  } else {
+    save_diagnostic("recover-server", "start", tunnel_directory=directory)
+    launch_server(state)
+  }
+  @fs.write_file(directory + "/server-enabled", "", permission=0o600)
   output
 }
 

@@ -707,7 +707,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     }
     initial_output
   }
-  let deadline = @env.now() + 60000
+  let deadline = connection_deadline()
   let retry = connection_timeout(deadline, async fn() {
     let created = workspace(state).unwrap()
     guard required(created, "uid") == uid else {
@@ -943,13 +943,25 @@ async fn write_connection(state : Json, connection : Json) -> Unit {
 ///|
 async fn execute_inner(mode : String) -> Unit {
   notify(mode)
+  if mode == "create" ||
+    mode == "resume" ||
+    mode == "recover" ||
+    mode == "restart" {
+    save_diagnostic(
+      "connection-budget",
+      "selected",
+      timeout_ms=connection_timeout_ms(),
+    )
+  }
   let started = @env.now()
   let (state, previous, deadline) = if mode == "create" {
     let (state, expires) = create_state()
     (state, Json::null(), Some(expires))
   } else {
     let (state, previous) = if mode == "recover" || mode == "restart" {
-      connection_timeout(started + 60000, async fn() { lifecycle_state(mode) })
+      connection_timeout(started + connection_timeout_ms().to_uint64(), async fn() {
+        lifecycle_state(mode)
+      })
     } else {
       lifecycle_state(mode)
     }
@@ -957,11 +969,24 @@ async fn execute_inner(mode : String) -> Unit {
       state,
       previous,
       if mode == "recover" || mode == "restart" {
-        Some(started + 60000)
+        Some(started + connection_timeout_ms().to_uint64())
       } else {
         None
       },
     )
+  }
+  let operation = if mode == "resume" || mode == "suspend" || mode == "destroy" {
+    Some(connection_operation_lock(state))
+  } else {
+    None
+  }
+  defer (if operation is Some(lock) { lock.close() })
+  if mode == "resume" {
+    guard workspace(state) is Some(current) &&
+      field(current, "uid") == field(state, "workspaceUid") else {
+      raise AdapterError("Workspace missing or replaced before resume")
+    }
+    unpause_tunnel(state)
   }
   match mode {
     "create" => {
@@ -988,7 +1013,7 @@ async fn execute_inner(mode : String) -> Unit {
           "workspace-resume",
         ),
       )
-      let expires = @env.now() + 60000
+      let expires = connection_deadline()
       connection_timeout(expires, async fn() {
         let port = if required(state, "connection") == "orca-server" {
           Some(reserve_server_port(state))
@@ -997,12 +1022,10 @@ async fn execute_inner(mode : String) -> Unit {
         }
         ensure_ssh_worker(state, port, deadline=expires)
         codex_addon(state)
-        if required(state, "connection") == "orca-server" &&
-          server_is_running(state) {
-          emit_connection(state, false, existing=previous, deadline=expires)
-        } else {
-          emit_connection(state, false, deadline=expires)
+        if required(state, "connection") == "orca-server" {
+          ignore(recover_server(state))
         }
+        emit_connection(state, false, existing=previous, deadline=expires)
       })
     }
     "recover" | "restart" => {
@@ -1011,6 +1034,8 @@ async fn execute_inner(mode : String) -> Unit {
       write_connection(state, connection)
     }
     "suspend" => {
+      pause_tunnel(state)
+      defer unpause_tunnel(state)
       ignore(
         devsy(
           state,
@@ -1018,9 +1043,10 @@ async fn execute_inner(mode : String) -> Unit {
           "workspace-stop",
         ),
       )
-      close_tunnel(state)
     }
     "destroy" => {
+      pause_tunnel(state)
+      errdefer unpause_tunnel(state)
       ignore(
         devsy(
           state,

@@ -711,6 +711,13 @@ async test "configured command survives YAML and environment changes and real Op
       assert_eq(field(@json.parse(output), "userData"), Some(state))
     }
   }
+  let worker = required(state, "tunnelDirectory")
+  @fs.remove(worker + "/enabled")
+  @async.with_timeout(5000, async fn() {
+    while worker_alive(worker) {
+      @async.sleep(25)
+    }
+  })
   // OpenSSH expands percent tokens before the shell runs. Use its real consumer
   // from an unrelated cwd with no recipe PATH or interpolation environment.
   let proxy_env = { "PATH": "/usr/bin:/bin", "FAKE_HOME": directory }
@@ -1540,7 +1547,7 @@ async test "server create returns recipe JSON while the tunnel child retains std
     )
     @fs.write_file(directory + "/hold-proxy-setup", "")
     let ((status, output, errors), premature_check) = @async.with_timeout(
-      5000,
+      15000,
       async fn() {
         @async.with_task_group(async fn(group) {
           let creation = group.spawn(async fn() {
@@ -1565,7 +1572,8 @@ async test "server create returns recipe JSON while the tunnel child retains std
             extra_env=env,
           )
           @fs.remove(directory + "/hold-proxy-setup")
-          (creation.wait(), check)
+          let result = @async.with_timeout(5000, async fn() { creation.wait() })
+          (result, check)
         })
       },
     )
@@ -2048,7 +2056,7 @@ async test "bulk recover restores persistent XDG state without a receipt or curr
     assert_eq(@json.parse(@fs.read_file(worker + "/state.json").text()), after)
     let (status, _, errors) = invoke("suspend", env, directory, payload~)
     assert_eq(status, 0, msg=errors)
-    assert_false(@fs.exists(worker))
+    assert_true(worker_alive(worker))
     let (status, output, errors) = invoke("recover", env, directory)
     assert_eq(status, 0, msg=errors)
     assert_eq(output, "")
@@ -2372,7 +2380,7 @@ async fn cleanup_fixture(directory : String) -> Unit {
 }
 
 ///|
-async test "SSH recipes retain a recovery worker without a server port and reap it on lifecycle changes" {
+async test "SSH recipes retain their monitor during sleep and reap it on destruction" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(
@@ -2396,7 +2404,8 @@ async test "SSH recipes retain a recovery worker without a server port and reap 
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
   let (status, _, errors) = invoke("suspend", env, directory, payload~)
   assert_eq(status, 0, msg=errors)
-  assert_false(@fs.exists(worker))
+  assert_true(worker_alive(worker))
+  assert_true(@fs.exists(worker + "/enabled"))
   let (status, output, errors) = invoke("resume", env, directory, payload~)
   assert_eq(status, 0, msg=errors)
   let resumed = @json.parse(output)
@@ -2450,13 +2459,20 @@ async test "adoption rejects stopped or replaced workspaces and reaps the old ma
         )
     }
     let executable = integration_binary()
-    ignore(
-      @process.collect_output(
+    @async.with_task_group(async fn(group) {
+      let child = @process.spawn(
+        group,
         executable,
         ["--tunnel-worker", worker],
         extra_env=env,
-      ),
-    )
+      )
+      if condition == "stopped" {
+        wait_worker_status(worker, "workspace-stopped")
+        assert_true(worker_alive(worker))
+        @fs.remove(worker + "/enabled")
+      }
+      assert_eq(child.wait(), 0)
+    })
     assert_false(@fs.exists(socket + "/socket"))
     assert_false(worker_alive(worker))
     if condition == "replaced" {
@@ -2957,7 +2973,7 @@ async test "provisioned task checkout waits for relay even with present commits"
 }
 
 ///|
-async test "provisioned task checkout waits beyond thirty seconds for primary Git readiness" {
+async test "provisioned task checkout waits for primary Git readiness without replacing its master" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   env.set("ORCA_REPO_REF_HEAD", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -2989,7 +3005,7 @@ async test "provisioned task checkout waits beyond thirty seconds for primary Gi
       while !@fs.exists(directory + "/git-probed") {
         @async.sleep(10)
       }
-      @async.sleep(31500)
+      assert_false(@fs.exists(directory + "/task-checkout"))
       @fs.remove(directory + "/git-unavailable")
     })
     invoke("create", env, directory)
@@ -3797,20 +3813,23 @@ async test "resume deadline returns failure while the worker continues recoverin
 
     let (suspended, _, errors) = invoke("suspend", env, directory, payload~)
     assert_eq(suspended, 0, msg=errors)
-    assert_false(@fs.exists(original_worker))
+    assert_true(worker_alive(original_worker))
     @fs.write_file(directory + "/rpc-unavailable", "")
+    env.set("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", "500")
     let started = @env.now()
     let (status, _, errors) = invoke("resume", env, directory, payload~)
     assert_true(status != 0)
-    assert_true(errors.contains("readiness timed out after 60 seconds"))
-    assert_true(@env.now() - started >= 59000)
-    assert_true(@env.now() - started < 65000)
+    assert_true(errors.contains("readiness timed out after 500 ms"))
+    assert_true(@env.now() - started >= 500)
+    assert_true(@env.now() - started < 5000)
     let base = directory + "/.local/state/orca-env-devsy/tunnels"
     let worker = base + "/" + @fs.readdir(base)[0]
     assert_true(worker_alive(worker))
     assert_true(@fs.exists(directory + "/created"))
+    env.remove("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS")
     @fs.remove(directory + "/rpc-unavailable")
-    @async.with_timeout(35000, async fn() {
+    @fs.write_file(worker + "/probe-request", "")
+    @async.with_timeout(5000, async fn() {
       while field(
               @json.parse(@fs.read_file(worker + "/status.json").text()),
               "status",
@@ -3859,11 +3878,7 @@ async test "recover restores an externally stopped then started workspace and it
       assert_eq(field(saved, "projectRoot"), field(state, "projectRoot"))
       @fs.write_file(directory + "/stopped", "")
       @fs.remove(required(saved, "socketDirectory") + "/socket")
-      @async.with_timeout(5000, async fn() {
-        while worker_alive(worker) {
-          @async.sleep(25)
-        }
-      })
+      wait_worker_status(worker, "workspace-stopped")
       @fs.remove(directory + "/served")
       @fs.write_file(directory + "/args", "")
       let (status, _, errors) = invoke(
@@ -3873,7 +3888,7 @@ async test "recover restores an externally stopped then started workspace and it
         payload?=if receipt { Some(payload) } else { None },
       )
       assert_eq(status, 0, msg=errors)
-      assert_false(worker_alive(worker))
+      assert_true(worker_alive(worker))
       assert_false(@fs.exists(directory + "/served"))
       @fs.remove(directory + "/stopped")
       @fs.write_file(directory + "/ssh-args", "")
@@ -4001,7 +4016,7 @@ async test "recover reports server startup failure without installing or resetti
 }
 
 ///|
-async test "receipt recovery skips a suspended workspace and rebuilds its removed directory after external up" {
+async test "receipt recovery skips a sleeping workspace and recovers its retained monitor after external up" {
   for mode in ["recover", "restart"] {
     let (directory, env) = fixture()
     defer cleanup_fixture(directory)
@@ -4018,10 +4033,10 @@ async test "receipt recovery skips a suspended workspace and rebuilds its remove
     defer ignore(invoke("destroy", env, directory, payload~))
     let (status, _, errors) = invoke("suspend", env, directory, payload~)
     assert_eq(status, 0, msg=errors)
-    assert_false(@fs.exists(worker))
+    assert_true(worker_alive(worker))
     let (status, _, errors) = invoke(mode, env, directory, payload~)
     assert_eq(status, 0, msg=errors)
-    assert_false(@fs.exists(worker))
+    assert_true(worker_alive(worker))
     @fs.remove(directory + "/stopped")
     let (status, _, errors) = invoke(mode, env, directory, payload~)
     assert_eq(status, 0, msg=errors)
@@ -4055,4 +4070,282 @@ async test "server probe finishes after the upgrade headers while the websocket 
     assert_eq(status, 0)
     assert_eq(output.text(), "101")
   })
+}
+
+///|
+async fn wait_worker_status(directory : String, expected : String) -> Unit {
+  @async.with_timeout(20000, async fn() {
+    while true {
+      if @fs.exists(directory + "/status.json") &&
+        field(
+          @json.parse(@fs.read_file(directory + "/status.json").text()),
+          "status",
+        ) ==
+        Some(Json::string(expected)) {
+        return
+      }
+      @async.sleep(25)
+    }
+  })
+}
+
+///|
+test "stopped monitoring backs off to five minutes and resets after recovery" {
+  assert_eq([0, 1, 2, 3, 4, 5, 100].map(monitor_delay), [
+    15000, 30000, 60000, 120000, 300000, 300000, 300000,
+  ])
+}
+
+///|
+async test "external stop and sleep retain a monitor that automatically restores the server" {
+  for sleep in [false, true] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    env.set("ORCA_ENV_DEVSY_TEST_MONITOR_DELAY_MS", "500")
+    with_fake_tunnel(directory, async fn() {
+      @fs.write_file(
+        directory + "/orca.yaml",
+        "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+      )
+      let (code, output, errors) = invoke("create", env, directory)
+      assert_eq(code, 0, msg=errors)
+      let result = @json.parse(output)
+      let state = field(result, "userData").unwrap()
+      let worker = required(state, "tunnelDirectory")
+      let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+      defer ignore(invoke("destroy", env, directory, payload~))
+      if sleep {
+        let (code, _, errors) = invoke("suspend", env, directory, payload~)
+        assert_eq(code, 0, msg=errors)
+      } else {
+        @fs.write_file(directory + "/stopped", "")
+        @fs.write_file(directory + "/drop-tunnel", "")
+      }
+      wait_worker_status(worker, "workspace-stopped")
+      assert_true(worker_alive(worker))
+      @fs.remove(directory + "/served")
+      @fs.write_file(directory + "/args", "")
+      @fs.remove(directory + "/stopped")
+      wait_worker_status(worker, "connected")
+      assert_true(@fs.exists(directory + "/served"))
+      assert_eq(
+        @fs.read_file(directory + "/serve-count").text(),
+        "serve\nserve\n",
+      )
+      let commands = @fs.read_file(directory + "/args").text()
+      assert_true(commands.contains("--container-status=false"))
+      for operation in ["up", "stop", "delete"] {
+        assert_false(commands.contains("workspace\n" + operation + "\n"))
+      }
+      let events = @fs.read_file(
+        directory + "/.local/state/orca-env-devsy/events.jsonl",
+      ).text()
+      assert_true(events.contains("monitor-wait"))
+      assert_true(events.contains("500"))
+      @fs.write_file(directory + "/stopped", "")
+      @fs.write_file(directory + "/drop-tunnel", "")
+      wait_worker_status(worker, "workspace-stopped")
+      @async.with_timeout(5000, async fn() {
+        while monitor_wait_events(directory).length() < 2 {
+          @async.sleep(25)
+        }
+      })
+      let waits = monitor_wait_events(directory)
+      assert_eq(waits.length(), 2)
+      for event in waits {
+        assert_eq(field(event, "attempt"), Some(Json::number(0)))
+        assert_eq(field(event, "retryDelayMs"), Some(Json::number(500)))
+      }
+    })
+  }
+}
+
+///|
+async test "monitor retains Busy and query failures but terminates on UID replacement" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (code, output, errors) = invoke("create", env, directory)
+  assert_eq(code, 0, msg=errors)
+  let state = field(@json.parse(output), "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
+  @fs.write_file(directory + "/busy", "")
+  @fs.remove(required(saved, "socketDirectory") + "/socket")
+  wait_worker_status(worker, "workspace-busy")
+  assert_true(worker_alive(worker))
+  let before = @fs.read_file(directory + "/ssh-args")
+    .text()
+    .split("-N\n")
+    .count()
+  @fs.write_file(directory + "/fail-status", "")
+  @fs.write_file(worker + "/probe-request", "")
+  @async.with_timeout(5000, async fn() {
+    while !@fs.read_file(
+            directory + "/.local/state/orca-env-devsy/events.jsonl",
+          )
+          .text()
+          .contains("workspace_query_failed") {
+      @async.sleep(25)
+    }
+  })
+  assert_true(worker_alive(worker))
+  assert_true(@fs.exists(worker + "/enabled"))
+  assert_eq(
+    @fs.read_file(directory + "/ssh-args").text().split("-N\n").count(),
+    before,
+  )
+  @fs.remove(directory + "/fail-status")
+  @fs.write_file(directory + "/uid", "replacement-uid")
+  @fs.write_file(worker + "/probe-request", "")
+  @async.with_timeout(5000, async fn() {
+    while worker_alive(worker) {
+      @async.sleep(25)
+    }
+  })
+  assert_false(@fs.exists(worker + "/enabled"))
+  let events = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_true(events.contains("replacement-uid"))
+  assert_true(events.contains("expectedWorkspaceUid"))
+  assert_true(events.contains("replaced"))
+}
+
+///|
+async test "concurrent resume sleep and destroy serialize without recreating a deleted workspace" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (code, output, errors) = invoke("create", env, directory)
+  assert_eq(code, 0, msg=errors)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  @fs.write_file(
+    directory + "/concurrent.json",
+    ({ "schemaVersion": 1, "recipeResult": result } : Json).stringify(),
+  )
+  let run = async fn(mode : String) {
+    @process.collect_output(
+      integration_binary(),
+      [mode],
+      extra_env=env,
+      stdin=@process.redirect_from_file(directory + "/concurrent.json"),
+    )
+  }
+  @async.with_timeout(15000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let resumed = group.spawn(async fn() { run("resume") })
+      let (code, _, errors) = run("suspend")
+      assert_eq(code, 0, msg=errors.text())
+      let (code, _, errors) = resumed.wait()
+      assert_eq(code, 0, msg=errors.text())
+    })
+  })
+  assert_true(worker_alive(worker))
+  @async.with_timeout(15000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let resumed = group.spawn(async fn() { run("resume") })
+      let recovered = group.spawn(async fn() {
+        invoke("recover", env, directory)
+      })
+      let (code, _, errors) = run("destroy")
+      assert_eq(code, 0, msg=errors.text())
+      ignore(resumed.wait())
+      ignore(recovered.wait())
+    })
+  })
+  assert_false(@fs.exists(directory + "/created"))
+  assert_false(@fs.exists(worker + "/enabled"))
+  if @fs.exists(worker) {
+    assert_false(worker_alive(worker))
+  }
+}
+
+///|
+async fn monitor_wait_events(directory : String) -> Array[Json] {
+  let events = []
+  for
+    line in @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    )
+    .text()
+    .split("\n") {
+    if line == "" {
+      continue
+    }
+    let event = @json.parse(line.to_owned())
+    if field(event, "stage") == Some(Json::string("monitor-wait")) {
+      events.push(event)
+    }
+  }
+  events
+}
+
+///|
+async test "long monitor and connection retry waits yield to pause wake and shutdown" {
+  let directory = @fs.tmpdir(prefix="orca-monitor-wait")
+  defer @fs.rmdir(directory, recursive=true)
+  for action in ["paused", "probe-request", "disabled"] {
+    @fs.write_file(directory + "/enabled", "")
+    let started = @env.now()
+    @async.with_timeout(2000, async fn() {
+      @async.with_task_group(async fn(group) {
+        let waiting = group.spawn(async fn() { monitor_wait(directory, 300000) })
+        @async.sleep(100)
+        if action == "disabled" {
+          @fs.remove(directory + "/enabled")
+        } else {
+          @fs.write_file(directory + "/" + action, "")
+        }
+        waiting.wait()
+      })
+    })
+    assert_true(@env.now() - started < 2000)
+    if action != "disabled" {
+      @fs.remove(directory + "/" + action)
+    }
+  }
+  assert_eq(pause_request(directory), None)
+  @fs.write_file(directory + "/paused", "first-request")
+  assert_eq(pause_request(directory), Some("first-request"))
+  @fs.remove(directory + "/paused")
+  assert_eq(pause_request(directory), None)
+}
+
+///|
+async test "invalid connection budgets fail before resuming a workspace" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (code, output, errors) = invoke("create", env, directory)
+  assert_eq(code, 0, msg=errors)
+  let payload : Json = {
+    "schemaVersion": 1,
+    "recipeResult": @json.parse(output),
+  }
+  defer {
+    env.remove("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS")
+    ignore(invoke("destroy", env, directory, payload~))
+  }
+  @fs.write_file(directory + "/args", "")
+  for value in ["0", "-1", "invalid", "2147483648"] {
+    env.set("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", value)
+    let (code, _, errors) = invoke("resume", env, directory, payload~)
+    assert_true(code != 0)
+    assert_true(errors.contains("must be positive milliseconds"))
+  }
+  assert_false(
+    @fs.read_file(directory + "/args").text().contains("workspace\nup\n"),
+  )
 }

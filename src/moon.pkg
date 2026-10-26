@@ -5,6 +5,7 @@ import {
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "moonbitlang/core/env",
+  "moonbitlang/core/string",
   "moonbitlang/async",
   "moonbitlang/async/process",
   "moonbitlang/async/os_error",
@@ -14,7 +15,3 @@ import {
   "moonbit-community/yaml",
   "moonbitlang/x/time",
 }
-
-import {
-  "moonbitlang/core/string",
-} for "wbtest"

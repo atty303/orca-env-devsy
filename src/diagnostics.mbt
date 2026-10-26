@@ -8,11 +8,14 @@ async fn save_diagnostic(
   duration_ms? : Double,
   attempt? : Int32,
   retry_delay_ms? : Int32,
+  timeout_ms? : Int32,
   os_errno? : Int32,
   source? : CreateEvidence,
   error_message? : String,
   details_truncated~ : Bool = false,
   tunnel_directory? : String,
+  expected_workspace_uid? : String,
+  observed_workspace_uid? : String,
 ) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
@@ -51,6 +54,15 @@ async fn save_diagnostic(
     if tunnel_directory is Some(directory) {
       set_field(event, "tunnelDirectory", Json::string(directory))
     }
+    for
+      pair in [
+        ("expectedWorkspaceUid", expected_workspace_uid),
+        ("observedWorkspaceUid", observed_workspace_uid),
+      ] {
+      if pair.1 is Some(value) {
+        set_field(event, pair.0, Json::string(redact_credentials(value)))
+      }
+    }
     if source is Some(evidence) {
       set_field(event, "source", evidence.to_json())
     }
@@ -70,6 +82,9 @@ async fn save_diagnostic(
     }
     if attempt is Some(value) {
       set_field(event, "attempt", Json::number(value.to_double()))
+    }
+    if timeout_ms is Some(value) {
+      set_field(event, "timeoutMs", Json::number(value.to_double()))
     }
     if retry_delay_ms is Some(value) {
       set_field(event, "retryDelayMs", Json::number(value.to_double()))
