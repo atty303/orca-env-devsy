@@ -36,6 +36,7 @@ async fn git_forwarding_enabled(state : Json) -> Bool {
 ///|
 priv enum RelayReadiness {
   Ready
+  WaitingForGitHelper
   Retry(String)
   Unsupported
 }
@@ -109,8 +110,11 @@ async fn relay_readiness(
         ssh_args(state) +
         ["-S", control_socket(state, directory), helper],
       )
+      if code == 1 {
+        return RelayReadiness::WaitingForGitHelper
+      }
       if code != 0 {
-        return RelayReadiness::Retry("git_helper_unavailable")
+        return RelayReadiness::Retry("transport_error")
       }
     }
     RelayReadiness::Ready
@@ -120,6 +124,14 @@ async fn relay_readiness(
   }
   match result {
     Ready => ()
+    WaitingForGitHelper =>
+      save_diagnostic(
+        "relay-probe",
+        "pending",
+        error_type="git_helper_unavailable",
+        duration_ms=(@env.now() - started).to_double(),
+        tunnel_directory=directory,
+      )
     Retry(reason) =>
       save_diagnostic(
         "relay-probe",

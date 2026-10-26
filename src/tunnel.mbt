@@ -804,7 +804,8 @@ pub async fn tunnel_worker(directory : String) -> Unit {
           }
           next_check = @env.now() + 1000
         }
-        if @env.now() >= next_probe || @fs.exists(directory + "/probe-request") {
+        if @env.now() >= next_probe ||
+          (connected && @fs.exists(directory + "/probe-request")) {
           match relay_readiness(state, directory, git_enabled) {
             Ready => {
               failures = 0
@@ -831,6 +832,13 @@ pub async fn tunnel_worker(directory : String) -> Unit {
               tunnel_status(directory, "unsupported")
               break
             }
+            WaitingForGitHelper => {
+              failures = 0
+              connected = false
+              git_relay_status(directory, "unavailable")
+              tunnel_status(directory, "checking")
+              next_probe = @env.now() + 1000
+            }
             Retry(reason) => {
               failures += 1
               connected = false
@@ -846,6 +854,7 @@ pub async fn tunnel_worker(directory : String) -> Unit {
               if failures >= 2 {
                 break
               }
+              next_probe = @env.now()
               continue
             }
           }

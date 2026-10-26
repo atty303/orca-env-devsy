@@ -2972,6 +2972,9 @@ async test "provisioned task checkout waits beyond thirty seconds for primary Gi
   let wrapper =
     #|#!/bin/sh
     #|case "$*" in
+    #|  *'-N'*)
+    #|    if test -f "$FAKE_HOME/primary-started"; then touch "$FAKE_HOME/primary-replaced"; fi
+    #|    touch "$FAKE_HOME/primary-started" ;;
     #|  *'git checkout -B'*)
     #|    touch "$FAKE_HOME/task-checkout"
     #|    if test -f "$FAKE_HOME/git-unavailable"; then
@@ -2998,6 +3001,7 @@ async test "provisioned task checkout waits beyond thirty seconds for primary Gi
   }
   defer ignore(invoke("destroy", env, directory, payload~))
   assert_false(@fs.exists(directory + "/checkout-before-ready"))
+  assert_false(@fs.exists(directory + "/primary-replaced"))
   assert_true(@fs.exists(directory + "/task-checkout"))
   assert_false(errors.contains("readiness is unavailable"))
 }
