@@ -176,7 +176,7 @@ async fn command(
 ///|
 fn devsy_args(state : Json) -> Array[String] {
   let args = []
-  for name in ["home", "context"] {
+  for name in ["home", "context", "provider"] {
     if field(state, name) is Some(Json::String(value)) {
       args.push("--" + name)
       args.push(value)
@@ -1158,9 +1158,7 @@ fn valid_commit(value : String) -> Bool {
 
 ///|
 pub async fn usage_error() -> Unit {
-  @stdio.stderr.write(
-    "Usage: orca-env-devsy <create|resume|suspend|destroy|recover [--receipt]|restart [--receipt]>\n",
-  )
+  @stdio.stderr.write(usage)
   raise AdapterError("Invalid command")
 }
 

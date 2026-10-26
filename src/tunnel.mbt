@@ -771,7 +771,7 @@ async fn close_tunnel(state : Json) -> Unit {
     name in [
       "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
       "socket", "git-status", "git-established", "probe-request", "recovery.lock",
-      "operation.lock", "server.lock", "server-enabled", "paused", "pause-ack",
+      "operation.lock", "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
     ] {
     if @fs.exists(directory + "/" + name) {
       @fs.remove(directory + "/" + name)

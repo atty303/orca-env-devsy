@@ -185,7 +185,7 @@ try {
     })()]);
   }, crashed.index);
   await Promise.all(workspaces.map(w => w.check()));
-  await measure("receipt-recover", budgets.recovery, async () => { await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover", "--receipt"], { env, timeout: budgets.recovery, input: JSON.stringify({ schemaVersion: 1, recipeResult: crashed.runtime.recipeResult }) }); await crashed.checkClient(); }, crashed.index);
+  await measure("receipt-recover", budgets.recovery, async () => { await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recipe", "recover"], { env, timeout: budgets.recovery, input: JSON.stringify({ schemaVersion: 1, recipeResult: crashed.runtime.recipeResult }) }); await crashed.checkClient(); }, crashed.index);
   await measure("server-recovery", budgets.lifecycle, async () => {
     await crashed.stopServer();
     await crashed.crashWorker();
@@ -229,9 +229,9 @@ try {
   await persistent.exec(0, `set -eu; test -f ${quote(worktreePath + "/worktree-usable.txt")}; test -f /workspaces/.orca/.profile/orca-profile-index.json; printf preserved > /workspaces/.orca/.profile/e2e-marker; printf volatile > "$HOME/e2e-volatile"`);
   await persistent.close();
   const receipt = JSON.stringify({ schemaVersion: 1, recipeResult: persistent.runtime.recipeResult });
-  await run([adapter, "suspend"], { env, timeout: budgets.lifecycle, input: receipt });
+  await run([adapter, "recipe", "suspend"], { env, timeout: budgets.lifecycle, input: receipt });
   await measure("recreate-persistent-server", budgets.provision, () => d(["workspace", "up", state.workspaceId as string, "--recreate", "--ide-launch", "skip", "--mount", `type=volume,source=${volume},target=/workspaces/.orca`]), persistent.index);
-  await run([adapter, "recover", "--receipt"], { env, timeout: budgets.lifecycle, input: receipt });
+  await run([adapter, "recipe", "recover"], { env, timeout: budgets.lifecycle, input: receipt });
   const checkPersistence = async () => {
     await d(["workspace", "ssh", state.workspaceId as string, "--start-services=false", "--agent-forwarding=false", "--user", state.user as string, "--command", `set -eu; test ! -e "$HOME/e2e-volatile"; test "$(cat /workspaces/.orca/.profile/e2e-marker)" = preserved; test "$(cat ${quote(worktreePath + "/worktree-usable.txt")})" = usable; git -C ${quote(worktreePath)} rev-parse --is-inside-work-tree`]);
     await persistent.checkClient();
@@ -254,7 +254,7 @@ try {
     }
     live.splice(live.indexOf(current), 1);
     assert.equal(await orca.call("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), null, "Deleted workspace must not resume through stale Orca mapping");
-    await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover", "--receipt"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
+    await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "recipe", "recover"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
     await Promise.all(live.map(w => w.check()));
   }
   if (phase.signal.aborted) throw new Error("E2E interrupted");

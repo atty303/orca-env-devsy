@@ -65,6 +65,9 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'-N'*) if test -f "$FAKE_HOME/recover-on-master"; then rm -f "$FAKE_HOME/rpc-unavailable" "$FAKE_HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$FAKE_HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$FAKE_HOME/primary-services" ;; *) printf enabled > "$FAKE_HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
+    #|  *'const fs = require'* )
+    #|    cat >/dev/null
+    #|    if test -f "$FAKE_HOME/activity"; then cat "$FAKE_HOME/activity"; else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}'; fi ;;
     #|  *'orca-relay-readiness'*)
     #|    touch "$FAKE_HOME/relay-probed"
     #|    test -f "$control"
@@ -165,10 +168,10 @@ async fn invoke(
   }
   let (status, stdout, stderr) = @process.collect_output(
     executable,
-    if (mode == "recover" || mode == "restart") && payload is Some(_) {
-      [mode, "--receipt"]
-    } else {
+    if (mode == "recover" || mode == "restart") && payload is None {
       [mode]
+    } else {
+      ["recipe", mode]
     },
     extra_env=env,
     stdin?=input,
@@ -2230,7 +2233,7 @@ async test "lifecycle progress reaches stderr and diagnostics before workspace u
     let child = @process.spawn(
       group,
       executable,
-      ["create"],
+      ["recipe", "create"],
       extra_env=env,
       inherit_env=false,
       stdout~,
@@ -2357,7 +2360,7 @@ async test "unavailable progress stderr preserves lifecycle result with recordin
     env.set("ORCA_ENV_DEVSY_RECORDING", recording)
     let (status, output, _) = @process.collect_output(
       "/bin/sh",
-      ["-c", "exec \"$1\" create 2>&-", "sh", executable],
+      ["-c", "exec \"$1\" recipe create 2>&-", "sh", executable],
       extra_env=env,
       inherit_env=false,
     )
@@ -3075,7 +3078,7 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
   assert_eq(@process.run("/bin/cp", [integration_binary(), installed]), 0)
   let (status, output, errors) = @process.collect_output(
     installed,
-    ["create"],
+    ["recipe", "create"],
     extra_env=env,
   )
   assert_eq(status, 0, msg=errors.text())
@@ -4272,7 +4275,7 @@ async test "concurrent resume sleep and destroy serialize without recreating a d
   let run = async fn(mode : String) {
     @process.collect_output(
       integration_binary(),
-      [mode],
+      ["recipe", mode],
       extra_env=env,
       stdin=@process.redirect_from_file(directory + "/concurrent.json"),
     )

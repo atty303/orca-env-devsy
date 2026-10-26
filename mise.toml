@@ -54,7 +54,7 @@ depends = ["check"]
 run = [
   "moon build --target native --release --deny-warn",
   "moon test --target native --deny-warn",
-  "bun test tests/release-build.test.ts tests/process.test.ts tests/e2e/diagnostics.test.ts",
+  "bun test tests/release-build.test.ts tests/process.test.ts tests/activity-probe.test.ts tests/e2e/diagnostics.test.ts",
 ]
 
 [tasks.build]

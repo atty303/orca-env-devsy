@@ -49,20 +49,20 @@ environmentRecipes:
     checkoutMode: orca-worktree
     devsy:
       buildRef: main
-    create: orca-env-devsy create
-    resume: orca-env-devsy resume
-    suspend: orca-env-devsy suspend
-    destroy: orca-env-devsy destroy
+    create: orca-env-devsy recipe create
+    resume: orca-env-devsy recipe resume
+    suspend: orca-env-devsy recipe suspend
+    destroy: orca-env-devsy recipe destroy
   - id: local-ssh
     name: Local SSH
     checkoutMode: provisioned-root
     devsy:
       profile: local
       connection: ssh
-    create: orca-env-devsy create
-    resume: orca-env-devsy resume
-    suspend: orca-env-devsy suspend
-    destroy: orca-env-devsy destroy
+    create: orca-env-devsy recipe create
+    resume: orca-env-devsy recipe resume
+    suspend: orca-env-devsy recipe suspend
+    destroy: orca-env-devsy recipe destroy
 ```
 
 Settings apply in common → one selected profile → recipe order. `upArgs` append

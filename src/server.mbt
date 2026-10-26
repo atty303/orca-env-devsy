@@ -80,6 +80,11 @@ async fn launch_server(state : Json) -> Json {
   guard required(connection, "pairingCode") != "" else {
     raise AdapterError("Orca returned no pairing code")
   }
+  @fs.write_file(
+    required(state, "tunnelDirectory") + "/pairing-code",
+    required(connection, "pairingCode"),
+    permission=0o600,
+  )
   let output : Json = {
     "type": "orca-server",
     "pairingCode": required(connection, "pairingCode"),

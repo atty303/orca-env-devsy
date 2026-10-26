@@ -16,6 +16,7 @@ async fn save_diagnostic(
   tunnel_directory? : String,
   expected_workspace_uid? : String,
   observed_workspace_uid? : String,
+  evidence? : Json,
 ) -> Unit {
   if @env.get_env_var("ORCA_ENV_DEVSY_RECORDING") == Some("0") {
     return
@@ -65,6 +66,14 @@ async fn save_diagnostic(
     }
     if source is Some(evidence) {
       set_field(event, "source", evidence.to_json())
+    }
+    if evidence is Some(value) {
+      if value.stringify().length() <= 65536 {
+        set_field(event, "evidence", value)
+      } else {
+        set_field(event, "evidenceTruncated", Json::boolean(true))
+        set_field(event, "completeness", Json::string("partial"))
+      }
     }
     if os_errno is Some(code) && code > 0 && code < 4096 {
       set_field(event, "osErrno", Json::number(code.to_double()))

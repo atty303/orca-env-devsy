@@ -53,7 +53,7 @@ process.exit(await child.exited);
 `);
   await writeFile(source + "/orca.yaml", JSON.stringify({
     devsy: { command: [process.execPath, audit, devsy], home, addons: { codexAuth: true }, upArgs: ["--provider", provider] },
-    environmentRecipes: definitions.map(({ id, connection, mode, buildRef }) => ({ id, name: id, checkoutMode: mode, devsy: { connection, ...(buildRef ? { buildRef } : {}) }, create: adapter + " create", resume: adapter + " resume", suspend: adapter + " suspend", destroy: adapter + " destroy" })),
+    environmentRecipes: definitions.map(({ id, connection, mode, buildRef }) => ({ id, name: id, checkoutMode: mode, devsy: { connection, ...(buildRef ? { buildRef } : {}) }, create: adapter + " recipe create", resume: adapter + " recipe resume", suspend: adapter + " recipe suspend", destroy: adapter + " recipe destroy" })),
   }, null, 2));
   return definitions;
 }

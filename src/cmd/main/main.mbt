@@ -29,15 +29,20 @@ async fn main {
     [_, "--version"] =>
       @stdio.stdout.write("orca-env-devsy " + @adapter.version + "\n")
     [_, "recover"] => @adapter.recover_all()
-    [_, "recover", "--receipt"] => @adapter.execute("recover")
     [_, "restart"] => @adapter.recover_all(restart=true)
-    [_, "restart", "--receipt"] => @adapter.execute("restart")
-    [_, "create" | "resume" | "suspend" | "destroy" as mode] =>
-      @adapter.execute(mode)
-    [_, "--help"] =>
-      @stdio.stdout.write(
-        "Usage: orca-env-devsy <create|resume|suspend|destroy|recover [--receipt]|restart [--receipt]>\n",
-      )
+    [
+      _,
+      "recipe",
+      "create"
+      | "resume"
+      | "suspend"
+      | "destroy"
+      | "recover"
+      | "restart" as mode,
+    ] => @adapter.execute(mode)
+    [_, "status" | "stop" | "resume" as mode, .. options] =>
+      @adapter.bulk(mode, options.to_owned())
+    [_, "--help"] => @stdio.stdout.write(@adapter.usage)
     _ => @adapter.usage_error()
   }
 }

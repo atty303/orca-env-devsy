@@ -97,7 +97,7 @@ Pairing data belongs to the connection result; it is never duplicated in
 `userData`. Local SSH control sockets belong to the adapter's tunnels and are
 closed at suspend/destroy. `recover` restores every enabled tunnel in the current
 adapter state directory, retaining each saved command, location environment, UID
-and the Server forwarding port, where applicable. It emits no recipe JSON. `recover --receipt` accepts the saved
+and the Server forwarding port, where applicable. It emits no recipe JSON. `recipe recover` accepts the saved
 lifecycle payload and re-emits its connection offer after restoring that tunnel.
 Devsy's SSH path can itself start a workspace, so a stop racing that status check
 is not guaranteed to remain stopped.
