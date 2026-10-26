@@ -20,6 +20,9 @@ extern "C" fn process_group(pid : Int32) -> Int32 = "getpgid"
 extern "C" fn group_exists(pid : Int32) -> Int32 = "orca_group_exists"
 
 ///|
+extern "C" fn transport_input_closed(pid : Int32) -> Int32 = "orca_transport_input_closed"
+
+///|
 fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
   let current = process_start(pid)
   guard current >= 0 else {

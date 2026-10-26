@@ -2621,7 +2621,7 @@ async test "SSH transport retains default signals and launcher termination traps
 }
 
 ///|
-async test "SSH owner death reaps direct transports even when stdin remains open or blocked" {
+async test "SSH owner death terminates managed transports even when stdin remains open or blocked" {
   for blocked in [false, true] {
     let (directory, env) = fixture()
     defer cleanup_fixture(directory)
@@ -2643,7 +2643,7 @@ async test "SSH owner death reaps direct transports even when stdin remains open
           "/bin/sh",
           [
             "-c",
-            "\"$1\" --ssh-proxy '' \"$2\" \"$3\" <&0 & wait",
+            "\"$1\" --ssh-proxy \"$HOME/primary-proxy.lock\" \"$2\" \"$3\" <&0 & wait",
             "sh",
             integration_binary(),
             directory + "/transport",
@@ -2683,9 +2683,7 @@ async test "SSH owner death reaps direct transports even when stdin remains open
         )
         assert_eq(owner.wait(), -9)
         assert_eq(reader.read_some(max_len=1), None)
-        idle_wait_for(async fn() {
-          @process.collect_output("kill", ["-0", pid]).0 != 0
-        })
+        idle_wait_for(() => process_start(@string.parse_int(pid)) == 0)
       })
     })
   }

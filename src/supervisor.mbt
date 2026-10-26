@@ -296,7 +296,9 @@ async fn supervise_transport(directory : String) -> Unit {
     recording~,
   )
   let reason : Ref[String] = { val: "supervisor_shutdown", }
+  let mut detached = false
   defer @async.protect_from_cancel(async fn() {
+    guard reason.val != "inspection_failed" else { return }
     if transport_group_alive(pid, start) {
       if reason.val != "transport_exited" {
         ignore(proxy_signal(-pid, 15))
@@ -332,13 +334,53 @@ async fn supervise_transport(directory : String) -> Unit {
     guard owner_current >= 0 && transport_current >= 0 else {
       raise AdapterError("Cannot inspect SSH transport identity")
     }
-    if owner_current != owner_start || transport_current != start {
-      reason.val = if transport_current != start {
-        "transport_exited"
-      } else {
-        "owner_exited"
-      }
+    if transport_current != start {
+      reason.val = "transport_exited"
       return
+    }
+    if owner_current != owner_start {
+      let closed = if field(state, "lease") != Some(Json::string("")) {
+        1
+      } else {
+        transport_input_closed(pid)
+      }
+      guard closed >= 0 else {
+        reason.val = "inspection_failed"
+        let failure = match -closed / 65536 {
+          1 => "pipe_info"
+          2 => "pipe_info_short"
+          3 => "input_open"
+          4 => "input_stat"
+          5 => "input_not_pipe"
+          6 => "input_poll"
+          _ => "input_poll_invalid"
+        }
+        save_diagnostic(
+          "supervisor-transport",
+          "inspection_failed",
+          evidence={
+            "pid": pid,
+            "transport": directory,
+            "failure": failure,
+            "errno": -closed % 65536,
+          },
+          recording~,
+        )
+        return
+      }
+      if closed == 1 {
+        reason.val = "owner_exited"
+        return
+      }
+      if !detached {
+        detached = true
+        save_diagnostic(
+          "supervisor-transport",
+          "adopted",
+          evidence={ "pid": pid, "reason": "ssh_owner_detached" },
+          recording~,
+        )
+      }
     }
     @async.sleep(100)
   }

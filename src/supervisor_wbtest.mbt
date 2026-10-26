@@ -205,7 +205,7 @@ async test "supervisor crash preserves transport streams and recover resumes cle
         "/bin/sh",
         [
           "-c",
-          "\"$1\" --ssh-proxy \"\" \"$2\" <&0 & wait $!",
+          "\"$1\" --ssh-proxy \"$HOME/primary-proxy.lock\" \"$2\" <&0 & wait $!",
           "sh",
           integration_binary(),
           directory + "/transport",
@@ -233,15 +233,13 @@ async test "supervisor crash preserves transport streams and recover resumes cle
       assert_eq(proxy.wait(), -15)
       writer.close()
       assert_eq(reader.read_some(max_len=1), None)
-      idle_wait_for(async fn() {
-        @process.collect_output("kill", ["-0", transport]).0 != 0
-      })
+      idle_wait_for(() => process_start(@string.parse_int(transport)) == 0)
     })
   })
 }
 
 ///|
-async test "transport cleanup reaps descendants after their launcher exits without inherited locks" {
+async test "transport cleanup terminates descendants after their launcher exits without inherited locks" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   let (code, output, errors) = @async.with_timeout(5000, async fn() {
@@ -257,9 +255,7 @@ async test "transport cleanup reaps descendants after their launcher exits witho
   assert_eq(code, 37, msg=errors.text())
   let child = output.text()
   assert_true(@string.parse_int(child) > 1)
-  idle_wait_for(async fn() {
-    @process.collect_output("kill", ["-0", child]).0 != 0
-  })
+  idle_wait_for(() => process_start(@string.parse_int(child)) == 0)
   idle_wait_for(async fn() {
     @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
     .text()
@@ -329,7 +325,7 @@ async test "direct exec preserves PID and transport ownership until group cleanu
       )
       assert_eq(proxy.wait(), -9)
       wait_transport_cleanup(pending)
-      assert_true(@process.collect_output("kill", ["-0", transport]).0 != 0)
+      assert_true(process_start(@string.parse_int(transport)) == 0)
       assert_eq(reader.read_some(max_len=1), None)
     })
   })
@@ -402,4 +398,50 @@ async test "short SSH operations wait for the owned master and never launch an i
     ),
   )
   assert_false(args.contains("--ssh-proxy"))
+}
+
+///|
+async test "detached SSH ownership retains transport until its final input writer closes" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  @fs.write_file(
+    directory + "/transport",
+    "#!/bin/sh\ntrap '' TERM\ncat\nwhile :; do :; done\n",
+    permission=0o700,
+  )
+  @async.with_timeout(10000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let (input, writer) = @process.write_to_process()
+      defer writer.close()
+      let (reader, output) = @process.read_from_process()
+      defer reader.close()
+      let owner = @process.spawn(
+        group,
+        "/bin/sh",
+        [
+          "-c",
+          "\"$1\" --ssh-proxy '' \"$2\" <&0 & while test ! -f \"$HOME/detach\"; do sleep 0.01; done",
+          "sh",
+          integration_binary(),
+          directory + "/transport",
+        ],
+        extra_env=env,
+        stdin=input,
+        stdout=output,
+      )
+      writer.write(b"before")
+      assert_eq(reader.read_exactly(6), b"before")
+      @fs.write_file(directory + "/detach", "")
+      assert_eq(owner.wait(), 0)
+      @async.sleep(800)
+      writer.write(b"after")
+      assert_eq(reader.read_exactly(5), b"after")
+      let root = env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy"
+      let receipts = @fs.readdir(root + "/transports")
+      assert_eq(receipts.length(), 1)
+      writer.close()
+      assert_eq(reader.read_some(max_len=1), None)
+      wait_transport_cleanup([root + "/transports/" + receipts[0]])
+    })
+  })
 }

@@ -5,10 +5,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/stat.h>
 #ifdef __APPLE__
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/proc.h>
+#include <libproc.h>
+#define ORCA_PIPE_EOF 0x080
+#else
+#include <dirent.h>
 #endif
 
 int64_t orca_process_start(int pid) {
@@ -41,8 +48,43 @@ int64_t orca_process_start(int pid) {
 }
 
 int orca_group_exists(int pid) {
-  if (kill(-pid, 0) == 0) return 1;
-  return errno == ESRCH ? 0 : -1;
+  if (kill(-pid, 0) != 0) return errno == ESRCH ? 0 : -1;
+#ifdef __APPLE__
+  return 1;
+#else
+  DIR *proc = opendir("/proc");
+  if (!proc) return -1;
+  int unknown = 0;
+  struct dirent *entry;
+  while ((entry = readdir(proc))) {
+    char *end;
+    long member = strtol(entry->d_name, &end, 10);
+    if (*end || member <= 0) continue;
+    char path[64], buffer[4096];
+    snprintf(path, sizeof(path), "/proc/%ld/stat", member);
+    FILE *file = fopen(path, "r");
+    if (!file) {
+      if (errno != ENOENT && errno != ESRCH) unknown = 1;
+      continue;
+    }
+    char *read = fgets(buffer, sizeof(buffer), file);
+    fclose(file);
+    if (!read) { unknown = 1; continue; }
+    char *field = strrchr(buffer, ')');
+    char state;
+    long parent, group;
+    if (!field || sscanf(field + 2, "%c %ld %ld", &state, &parent, &group) != 3) {
+      unknown = 1;
+      continue;
+    }
+    if (group == pid && state != 'Z' && state != 'X' && state != 'x') {
+      closedir(proc);
+      return 1;
+    }
+  }
+  closedir(proc);
+  return unknown ? -1 : 0;
+#endif
 }
 
 static sigset_t proxy_sigmask;
@@ -57,4 +99,32 @@ int orca_transport_exec(const char *command, char *const args[]) {
   if (sigaction(SIGPIPE, &proxy_sigpipe, NULL) != 0) return -1;
   if (sigprocmask(SIG_SETMASK, &proxy_sigmask, NULL) != 0) return -1;
   return execvp(command, args);
+}
+
+int orca_transport_input_closed(int pid) {
+#ifdef __APPLE__
+  struct pipe_fdinfo info;
+  errno = 0;
+  int size = proc_pidfdinfo(pid, STDIN_FILENO, PROC_PIDFDPIPEINFO, &info, sizeof(info));
+  if (size <= 0) return -(65536 + errno);
+  if (size != sizeof(info)) return -131072;
+  return (info.pipeinfo.pipe_status & ORCA_PIPE_EOF) != 0;
+#else
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%d/fd/0", pid);
+  int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0) return -(196608 + errno);
+  struct stat info;
+  int result;
+  if (fstat(fd, &info) != 0) result = -(262144 + errno);
+  else if (!S_ISFIFO(info.st_mode)) result = -327680;
+  else {
+    struct pollfd watch = { .fd = fd, .events = 0 };
+    if (poll(&watch, 1, 0) < 0) result = -(393216 + errno);
+    else if (watch.revents & (POLLERR | POLLNVAL)) result = -458752;
+    else result = (watch.revents & POLLHUP) != 0;
+  }
+  close(fd);
+  return result;
+#endif
 }
