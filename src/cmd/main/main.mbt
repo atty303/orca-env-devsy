@@ -28,15 +28,15 @@ async fn main {
     [_, "--tunnel-worker", directory] => @adapter.tunnel_worker(directory)
     [_, "--version"] =>
       @stdio.stdout.write("orca-env-devsy " + @adapter.version + "\n")
-    [_, "reconnect"] => @adapter.reconnect_all()
-    [_, "reconnect", "--receipt"] => @adapter.execute("reconnect")
-    [_, "restart"] => @adapter.reconnect_all(restart=true)
+    [_, "recover"] => @adapter.recover_all()
+    [_, "recover", "--receipt"] => @adapter.execute("recover")
+    [_, "restart"] => @adapter.recover_all(restart=true)
     [_, "restart", "--receipt"] => @adapter.execute("restart")
     [_, "create" | "resume" | "suspend" | "destroy" as mode] =>
       @adapter.execute(mode)
     [_, "--help"] =>
       @stdio.stdout.write(
-        "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]|restart [--receipt]>\n",
+        "Usage: orca-env-devsy <create|resume|suspend|destroy|recover [--receipt]|restart [--receipt]>\n",
       )
     _ => @adapter.usage_error()
   }

@@ -164,13 +164,19 @@ try {
   const crashed = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
   await measure("worker-recovery", budgets.recovery, async () => {
     await crashed.crashWorker();
-    await run([resolve("_build/native/release/build/cmd/main/main.exe"), "reconnect"], { env, timeout: budgets.recovery });
+    await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover"], { env, timeout: budgets.recovery });
     await Promise.all([crashed.checkClient(), (async () => {
       assert(/^[a-f0-9]{40}\s+refs\/heads\/task-0/.test(await crashed.exec(1, `git ls-remote http://127.0.0.1:18080/w-${crashed.index}.git refs/heads/task-0`)));
     })()]);
   }, crashed.index);
   await Promise.all(workspaces.map(w => w.check()));
-  await measure("receipt-reconnect", budgets.recovery, async () => { await run([resolve("_build/native/release/build/cmd/main/main.exe"), "reconnect", "--receipt"], { env, timeout: budgets.recovery, input: JSON.stringify({ schemaVersion: 1, recipeResult: crashed.runtime.recipeResult }) }); await crashed.checkClient(); }, crashed.index);
+  await measure("receipt-recover", budgets.recovery, async () => { await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover", "--receipt"], { env, timeout: budgets.recovery, input: JSON.stringify({ schemaVersion: 1, recipeResult: crashed.runtime.recipeResult }) }); await crashed.checkClient(); }, crashed.index);
+  await measure("server-recovery", budgets.lifecycle, async () => {
+    await crashed.stopServer();
+    await crashed.crashWorker();
+    await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover"], { env, timeout: budgets.lifecycle });
+    await crashed.checkClient();
+  }, crashed.index);
   await writeFile(env.CODEX_HOME + "/auth.json", auth(access(2)), { mode: 0o600 });
   // Interleave each workspace lifecycle with live operations in all peers.
   for (const current of workspaces) {
@@ -204,7 +210,7 @@ try {
     assert.equal(cleaned.status, "cleaned");
     live.splice(live.indexOf(current), 1);
     assert.equal(await orca.call("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), null, "Deleted workspace must not resume through stale Orca mapping");
-    await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "reconnect", "--receipt"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
+    await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "recover", "--receipt"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
     await Promise.all(live.map(w => w.check()));
   }
   if (phase.signal.aborted) throw new Error("E2E interrupted");

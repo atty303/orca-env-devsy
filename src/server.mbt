@@ -4,11 +4,18 @@ async fn server_connection(
   install : Bool,
   deadline? : UInt64,
 ) -> Json {
-  let root = required(state, "projectRoot")
   if install {
     let script = server_install_script()
     ignore(remote(state, script, "orca-install"))
   }
+  let output = launch_server(state)
+  ensure_ssh_worker(state, Some(reserve_server_port(state)), deadline?)
+  output
+}
+
+///|
+async fn launch_server(state : Json) -> Json {
+  let root = required(state, "projectRoot")
   let port = reserve_server_port(state)
   let script = server_launch_script(root, port)
   let result = @json.parse(remote(state, script, "orca-serve"))
@@ -19,7 +26,6 @@ async fn server_connection(
   guard required(connection, "pairingCode") != "" else {
     raise AdapterError("Orca returned no pairing code")
   }
-  ensure_ssh_worker(state, Some(port), deadline?)
   let output : Json = {
     "type": "orca-server",
     "pairingCode": required(connection, "pairingCode"),
@@ -89,7 +95,7 @@ async fn server_is_running(state : Json) -> Bool {
 ///|
 fn server_probe_script() -> String {
   let script =
-    #|curl --disable --noproxy '*' --silent --max-time 2 --output /dev/null --write-out '%{http_code}' \
+    #|curl --disable --noproxy '*' --silent --head --request GET --max-time 2 --output /dev/null --write-out '%{http_code}' \
     #|  --header 'Connection: Upgrade' --header 'Upgrade: websocket' \
     #|  --header 'Sec-WebSocket-Version: 13' \
     #|  --header 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \

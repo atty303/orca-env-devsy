@@ -232,6 +232,35 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
       }, budgets.recovery);
     };
+    const stopServer = async () => {
+      assert.equal(runtime.recipeResult.connection.type, "orca-server");
+      await exec(0, "python3 -c " + quote(`import os, pathlib, signal, socket, time
+inodes = set()
+for table in ["tcp", "tcp6"]:
+    for row in pathlib.Path("/proc/net/" + table).read_text().splitlines()[1:]:
+        fields = row.split()
+        if int(fields[1].split(":")[1], 16) == 47121 and fields[3] == "0A":
+            inodes.add("socket:[" + fields[9] + "]")
+owners = set()
+for entry in pathlib.Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        if any(os.readlink(fd) in inodes for fd in (entry / "fd").iterdir()):
+            assert b"orca" in (entry / "cmdline").read_bytes().lower()
+            owners.add(int(entry.name))
+    except (FileNotFoundError, PermissionError):
+        pass
+assert len(owners) == 1
+os.kill(owners.pop(), signal.SIGTERM)
+for attempt in range(100):
+    with socket.socket() as client:
+        if client.connect_ex(("127.0.0.1", 47121)) != 0:
+            break
+    time.sleep(0.05)
+else:
+    raise RuntimeError("Owned server did not stop")`));
+    };
     const agentVersion = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/.exec(await exec(0, "/usr/local/bin/devsy --version"))?.[0];
     assert(agentVersion);
     const recoverRelay = async () => {
@@ -285,7 +314,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       assert(connected.ok);
     }
     console.log(`PASS workspace ${index}: three SSH sessions, signed Git push/fetch, agent, auth, files and HTTP isolation`);
-    return { runtime, index, exec, check, checkClient, serve, close, recoverRelay, crashWorker, path, id, serverVersion, agentVersion };
+    return { runtime, index, exec, check, checkClient, serve, close, recoverRelay, crashWorker, stopServer, path, id, serverVersion, agentVersion };
   } catch (error) {
     await close(); throw error;
   }

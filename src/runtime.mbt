@@ -720,6 +720,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
       raise AdapterError("Invalid remote workspace folder")
     }
+    set_field(state, "projectRoot", Json::string(root))
     // Transient probes must not own the shared credential relay. Establish the
     // persistent owner before checkout commands can need private Git access.
     let port = if required(state, "connection") == "orca-server" {
@@ -780,7 +781,6 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
       )
     }
     set_field(state, "buildCommit", Json::string(actual_commit))
-    set_field(state, "projectRoot", Json::string(root))
     if mode == "provisioned-root" {
       create_recording.phase = "task-checkout"
       let head = environment("ORCA_REPO_REF_HEAD")
@@ -890,10 +890,9 @@ async fn emit_connection(
   install : Bool,
   existing? : Json,
   deadline? : UInt64,
-  restart~ : Bool = false,
 ) -> Unit {
   let connection = if required(state, "connection") == "ssh" {
-    ensure_ssh_worker(state, None, deadline?, restart~)
+    ensure_ssh_worker(state, None, deadline?)
     let target : Json = {
       "label": "Devsy",
       "host": required(state, "workspaceId") + ".devsy",
@@ -912,7 +911,7 @@ async fn emit_connection(
       Some(Json::Number(port, ..)) => port.to_int()
       _ => raise AdapterError("Missing saved tunnel port")
     }
-    ensure_ssh_worker(state, Some(port), deadline?, restart~)
+    ensure_ssh_worker(state, Some(port), deadline?)
     match field(result, "connection") {
       Some(value) => value
       None => raise AdapterError("Missing saved connection")
@@ -920,6 +919,11 @@ async fn emit_connection(
   } else {
     server_connection(state, install, deadline?)
   }
+  write_connection(state, connection)
+}
+
+///|
+async fn write_connection(state : Json, connection : Json) -> Unit {
   let version = if required(state, "checkoutMode") == "provisioned-root" {
     2
   } else {
@@ -944,7 +948,7 @@ async fn execute_inner(mode : String) -> Unit {
     let (state, expires) = create_state()
     (state, Json::null(), Some(expires))
   } else {
-    let (state, previous) = if mode == "reconnect" {
+    let (state, previous) = if mode == "recover" || mode == "restart" {
       connection_timeout(started + 60000, async fn() { lifecycle_state(mode) })
     } else {
       lifecycle_state(mode)
@@ -952,7 +956,7 @@ async fn execute_inner(mode : String) -> Unit {
     (
       state,
       previous,
-      if mode == "reconnect" {
+      if mode == "recover" || mode == "restart" {
         Some(started + 60000)
       } else {
         None
@@ -1001,11 +1005,11 @@ async fn execute_inner(mode : String) -> Unit {
         }
       })
     }
-    "reconnect" =>
-      connection_timeout(deadline.unwrap(), async fn() {
-        emit_connection(state, false, existing=previous, deadline?)
-      })
-    "restart" => emit_connection(state, false, existing=previous, restart=true)
+    "recover" | "restart" => {
+      recover_connection(state, restart=mode == "restart", deadline?)
+      let connection = field(previous, "connection").unwrap()
+      write_connection(state, connection)
+    }
     "suspend" => {
       ignore(
         devsy(
@@ -1117,7 +1121,7 @@ fn valid_commit(value : String) -> Bool {
 ///|
 pub async fn usage_error() -> Unit {
   @stdio.stderr.write(
-    "Usage: orca-env-devsy <create|resume|suspend|destroy|reconnect [--receipt]|restart [--receipt]>\n",
+    "Usage: orca-env-devsy <create|resume|suspend|destroy|recover [--receipt]|restart [--receipt]>\n",
   )
   raise AdapterError("Invalid command")
 }

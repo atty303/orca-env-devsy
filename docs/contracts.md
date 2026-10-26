@@ -30,7 +30,7 @@ working directory; a recipe-local PATH or relative working directory is not
 saved. Use an explicit executable path when needed.
 
 The expanded array is saved in `userData.command` at creation. Resume, suspend,
-destroy and reconnect use that array without rereading YAML or expanding it again.
+destroy and recover use that array without rereading YAML or expanding it again.
 Saved states from releases without this field use `["devsy"]`. Do not put
 credentials in command arguments or environment references used by this field;
 use Devsy's credential configuration instead.
@@ -95,12 +95,10 @@ protocol/capability negotiation.
 
 Pairing data belongs to the connection result; it is never duplicated in
 `userData`. Local SSH control sockets belong to the adapter's tunnels and are
-closed at suspend/destroy. `reconnect` restores every enabled tunnel in the current
+closed at suspend/destroy. `recover` restores every enabled tunnel in the current
 adapter state directory, retaining each saved command, location environment, UID
-and the Server forwarding port, where applicable. It emits no recipe JSON. `reconnect --receipt` accepts the saved
+and the Server forwarding port, where applicable. It emits no recipe JSON. `recover --receipt` accepts the saved
 lifecycle payload and re-emits its connection offer after restoring that tunnel.
-Neither path rereads YAML or installs/starts a Server. Workspace status is checked
-before worker connections; stopped or busy workspaces are skipped by bulk recovery.
 Devsy's SSH path can itself start a workspace, so a stop racing that status check
 is not guaranteed to remain stopped.
 A detached adapter worker owns the SSH master and reconnects after transient
@@ -163,10 +161,8 @@ or copy it locally for diagnosis. Tunnel control state is stored privately in
 directory per tunnel recorded as `userData.tunnelDirectory`. Existing state and
 its enabled marker survive host restart; SSH control sockets use separate short
 temporary paths. Successful suspend/destroy removes the owned state. Missing or
-replaced workspace UIDs disable recovery; one failed target does not prevent
-attempting the others. Existing temporary states become persistent on the next
-resume or receipt-based reconnect; previously unregistered states cannot be
-recovered in bulk after their temporary files have disappeared. There is no remote telemetry.
+replaced workspace UIDs prevent recovery; one failed target does not prevent
+attempting the others. There is no remote telemetry.
 
 The Codex addon reads `$CODEX_HOME/auth.json` (default `$HOME/.codex/auth.json`),
 refreshes managed ChatGPT credentials when fewer than seven days remain using

@@ -78,13 +78,7 @@ Orca's supplied start ref and commit. The resulting `userData.buildRef` and
 `userData.buildCommit` identify the build source. Lifecycle operations use saved
 settings; editing YAML affects new workspaces only.
 
-After a host reboot, run `orca-env-devsy reconnect` to restore enabled SSH
-connections and Server tunnels saved by this adapter under `${XDG_STATE_HOME:-$HOME/.local/state}`.
-No workspace selection or receipt is required. Stopped workspaces are skipped;
-the adapter does not run workspace-up or start the remote Server. To restore one
-connection and emit recipe JSON, use `orca-env-devsy reconnect --receipt` with
-its saved Orca lifecycle payload on stdin. Existing environments become available
-for bulk recovery on their next resume or receipt-based reconnect.
+See `orca-env-devsy --help` for recovery commands.
 
 Enable the optional Codex credential handoff with `devsy.addons.codexAuth: true`.
 At create/resume it refreshes file-backed ChatGPT authentication through the host

@@ -67,7 +67,7 @@ async fn saved_proxy_executable() -> String {
   let binary = @fs.read_file(executable).binary()
   if !@fs.exists(target) || @fs.read_file(target).binary() != binary {
     // A private executable copy survives package-manager pruning. Rename keeps
-    // active proxies valid while create/resume/reconnect refresh future calls.
+    // active proxies valid while create/resume/recover refresh future calls.
     let temporary = directory + "/ssh-proxy-adapter.tmp"
     defer (@fs.remove(temporary) catch { _ => () })
     @fs.write_file(temporary, binary, permission=0o700)
@@ -255,7 +255,7 @@ async fn ensure_ssh_worker(
   for
     name in [
       "workspaceId", "workspaceUid", "user", "command", "devsyEnv", "home", "context",
-      "connection",
+      "connection", "projectRoot",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)
@@ -277,6 +277,13 @@ async fn ensure_ssh_worker(
 
 ///|
 async fn restart_tunnel(state : Json, directory : String) -> Unit {
+  let enabled = directory + "/enabled"
+  let was_enabled = @fs.exists(enabled)
+  errdefer (if was_enabled && @fs.exists(directory) {
+    @fs.write_file(enabled, "", permission=0o600) catch {
+      _ => ()
+    }
+  })
   let mut phase = if worker_alive(directory) { "worker" } else { "master" }
   save_diagnostic(
     "ssh-tunnel-restart",
@@ -297,8 +304,8 @@ async fn restart_tunnel(state : Json, directory : String) -> Unit {
     tunnel_directory=directory,
   )
   try {
-    if @fs.exists(directory + "/enabled") {
-      @fs.remove(directory + "/enabled")
+    if @fs.exists(enabled) {
+      @fs.remove(enabled)
     }
     @async.with_timeout(15000, async fn() {
       while worker_alive(directory) {
@@ -339,29 +346,29 @@ async fn spawn_tunnel_worker(directory : String) -> Unit {
 }
 
 ///|
-pub async fn reconnect_all(restart~ : Bool = false) -> Unit {
-  reconnect_all_inner(restart~) catch {
+pub async fn recover_all(restart~ : Bool = false) -> Unit {
+  recover_all_inner(restart~) catch {
     AdapterError(message) => {
       @stdio.stderr.write("orca-env-devsy: " + message + "\n")
-      save_diagnostic("reconnect", "failed")
+      save_diagnostic("recover", "failed")
       raise AdapterError(message)
     }
     _ => {
       @stdio.stderr.write(
-        "orca-env-devsy: bulk reconnect failed; inspect local diagnostics\n",
+        "orca-env-devsy: bulk recover failed; inspect local diagnostics\n",
       )
-      save_diagnostic("reconnect", "failed")
-      raise AdapterError("Bulk reconnect failed")
+      save_diagnostic("recover", "failed")
+      raise AdapterError("Bulk recover failed")
     }
   }
 }
 
 ///|
-async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
-  notify(if restart { "restart" } else { "reconnect" })
+async fn recover_all_inner(restart~ : Bool = false) -> Unit {
+  notify(if restart { "restart" } else { "recover" })
   let base = adapter_state_home() + "/tunnels"
   if !@fs.exists(base) {
-    save_diagnostic("reconnect", "success")
+    save_diagnostic("recover", "success")
     return
   }
   ignore(saved_proxy_executable())
@@ -373,7 +380,6 @@ async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
       permits.acquire()
       group.spawn_bg(async fn() {
         defer permits.release()
-        let target_deadline = @env.now() + 60000
         try {
           if @fs.kind(directory, follow_symlink=false) !=
             @fs.FileKind::Directory ||
@@ -384,41 +390,15 @@ async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
             @fs.read_file(directory + "/state.json").text(),
           )
           validate_state(state)
-          if worker_alive(directory) {
-            let current = worker_workspace(state, directory)
-            guard current is Some(current) &&
-              field(current, "uid") == field(state, "workspaceUid") else {
-              @fs.remove(directory + "/enabled")
-              save_diagnostic("reconnect", "ownership-error")
-              return
-            }
-            if field(current, "running") != Some(Json::boolean(true)) {
-              save_diagnostic("reconnect", "workspace-stopped")
-              return
-            }
-          }
-          let port = match field(state, "localPort") {
-            Some(Json::Number(value, ..)) if value >= 1 &&
-              value <= 65535 &&
-              value == value.to_int().to_double() => Some(value.to_int())
-            None if field(state, "connection") == Some(Json::string("ssh")) =>
-              None
-            _ => raise AdapterError("Invalid saved tunnel port")
-          }
           set_field(state, "tunnelDirectory", Json::string(directory))
-          ensure_ssh_worker(state, port, deadline=target_deadline, restart~)
-          save_diagnostic("reconnect", "success")
+          recover_connection(state, restart~)
         } catch {
-          AdapterError("Tunnel workspace ownership changed") =>
-            save_diagnostic("reconnect", "ownership-error")
-          AdapterError("Tunnel workspace stopped") =>
-            save_diagnostic("reconnect", "workspace-stopped")
           _ =>
             if @fs.exists(directory) {
               failures += 1
-              save_diagnostic("reconnect", "failed")
+              save_diagnostic("recover", "failed", tunnel_directory=directory)
             } else {
-              save_diagnostic("reconnect", "target-removed")
+              save_diagnostic("recover", "target-removed")
             }
         }
       })
@@ -426,14 +406,84 @@ async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
   })
   guard failures == 0 else {
     raise AdapterError(
-      "Some tunnels could not be restored; other targets were attempted",
+      "Some connections could not be recovered; other targets were attempted",
     )
   }
-  save_diagnostic("reconnect", "success")
+  save_diagnostic("recover", "success")
 }
 
 ///|
-async fn workspace_running(state : Json) -> Bool {
+async fn recover_connection(
+  state : Json,
+  restart~ : Bool = false,
+  deadline? : UInt64,
+) -> Unit {
+  let directory = required(state, "tunnelDirectory")
+  let deadline = deadline.unwrap_or(@env.now() + 60000)
+  connection_timeout(deadline, async fn() {
+    let current = workspace(state)
+    guard current is Some(current) &&
+      field(current, "uid") == field(state, "workspaceUid") else {
+      save_diagnostic("recover", "ownership-error", tunnel_directory=directory)
+      raise AdapterError("Tunnel workspace ownership changed")
+    }
+    let status = workspace_status(state)
+    save_diagnostic("recover-workspace", status, tunnel_directory=directory)
+    match status {
+      "Running" => ()
+      "Stopped" => return
+      "Busy" =>
+        raise AdapterError(
+          "Workspace is Busy; wait for workspace up to finish before recover",
+        )
+      _ => raise AdapterError("Workspace is missing")
+    }
+    @fs.mkdir(directory, recursive=true, permission=0o700, allow_exist=true)
+    let lock = @fs.open(
+      directory + "/recovery.lock",
+      mode=ReadWrite,
+      create_mode=OpenOrCreate,
+      permission=0o600,
+    )
+    defer lock.close()
+    @async.with_timeout(30000, async fn() {
+      while !lock.try_lock(Exclusive) {
+        @async.sleep(100)
+      }
+    })
+    let port = match field(state, "localPort") {
+      Some(Json::Number(value, ..)) if value >= 1 &&
+        value <= 65535 &&
+        value == value.to_int().to_double() => Some(value.to_int())
+      None if field(state, "connection") == Some(Json::string("ssh")) => None
+      _ => raise AdapterError("Invalid saved tunnel port")
+    }
+    save_diagnostic(
+      "recover-worker",
+      if restart {
+        "restart"
+      } else if worker_alive(directory) {
+        "reuse"
+      } else {
+        "restore"
+      },
+      tunnel_directory=directory,
+    )
+    ensure_ssh_worker(state, port, deadline~, restart~)
+    if required(state, "connection") == "orca-server" {
+      if server_is_running(state) {
+        save_diagnostic("recover-server", "reuse", tunnel_directory=directory)
+      } else {
+        save_diagnostic("recover-server", "start", tunnel_directory=directory)
+        ignore(launch_server(state))
+      }
+    }
+    save_diagnostic("recover", "success", tunnel_directory=directory)
+  })
+}
+
+///|
+async fn workspace_status(state : Json) -> String {
   let result = @json.parse(
     @async.with_timeout(10000, async fn() {
       devsy(
@@ -450,10 +500,15 @@ async fn workspace_running(state : Json) -> Bool {
     }),
   )
   match field(result, "state") {
-    Some(Json::String("Running")) => true
-    Some(Json::String("Stopped" | "Busy" | "NotFound")) => false
+    Some(Json::String("Running" | "Stopped" | "Busy" | "NotFound" as value)) =>
+      value
     _ => raise AdapterError("Invalid workspace status")
   }
+}
+
+///|
+async fn workspace_running(state : Json) -> Bool {
+  workspace_status(state) == "Running"
 }
 
 ///|
@@ -588,7 +643,7 @@ async fn close_tunnel(state : Json) -> Unit {
     for
       name in [
         "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-        "socket", "git-status", "git-established", "probe-request",
+        "socket", "git-status", "git-established", "probe-request", "recovery.lock",
       ] {
       if @fs.exists(directory + "/" + name) {
         @fs.remove(directory + "/" + name)
