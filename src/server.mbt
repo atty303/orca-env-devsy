@@ -1,5 +1,9 @@
 ///|
-async fn server_connection(state : Json, install : Bool) -> Json {
+async fn server_connection(
+  state : Json,
+  install : Bool,
+  deadline? : UInt64,
+) -> Json {
   let root = required(state, "projectRoot")
   if install {
     let script = server_install_script()
@@ -15,7 +19,7 @@ async fn server_connection(state : Json, install : Bool) -> Json {
   guard required(connection, "pairingCode") != "" else {
     raise AdapterError("Orca returned no pairing code")
   }
-  ensure_ssh_worker(state, Some(port))
+  ensure_ssh_worker(state, Some(port), deadline?)
   let output : Json = {
     "type": "orca-server",
     "pairingCode": required(connection, "pairingCode"),

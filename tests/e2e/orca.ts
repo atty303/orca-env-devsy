@@ -160,10 +160,16 @@ export class Orca {
     const operation = this.app.evaluate(async ({ BrowserWindow }, request) => {
       const bridge = BrowserWindow.fromId(request.id);
       if (!bridge) throw new Error("IPC bridge window disappeared");
-      return await bridge.webContents.executeJavaScript(`window.api[${JSON.stringify(request.section)}][${JSON.stringify(request.method)}](${request.args === undefined ? "" : JSON.stringify(request.args)})`);
-    }, { id: this.bridgeId, section, method, args }) as T;
+      return await bridge.webContents.executeJavaScript(`(async () => {
+        try { return { ok: true, value: await window.api[${JSON.stringify(request.section)}][${JSON.stringify(request.method)}](${request.args === undefined ? "" : JSON.stringify(request.args)}) }; }
+        catch (error) { return { ok: false, error: { name: error?.name, message: error?.message, code: error?.code } }; }
+      })()`);
+    }, { id: this.bridgeId, section, method, args }).then(reply => {
+      if (!reply.ok) throw reply.error;
+      return reply.value as T;
+    });
     let timer: ReturnType<typeof setTimeout>;
-    const budget = method === "provision" ? budgets.provision : ["resumeWorkspace", "suspendWorkspace", "cleanup"].includes(method) ? budgets.lifecycle : budgets.operation;
+    const budget = method === "provision" ? budgets.provision : ["resumeWorkspace", "sleep", "cleanup"].includes(method) ? budgets.lifecycle : budgets.operation;
     try {
       const result = await measure(`ipc-${section}.${method}`, budget, () => withAbort(signal, () => Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`IPC ${section}.${method} exceeded deadline`)), budget); })])));
       if (workspace !== undefined) this.observations.finish(workspace, result as { ok: boolean; error?: unknown; stderr?: string; stdout?: string });

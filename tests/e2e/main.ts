@@ -53,11 +53,12 @@ try {
   console.log(`E2E ${provider} ${process.platform}/${process.arch} Orca ${release.version}`);
   const version = async (argv: string[], timeout = budgets.operation) => {
     const output = await run(argv, { env, timeout });
-    const result = /\d+\.\d+\.\d+/.exec(output)?.[0];
+    const result = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/.exec(output)?.[0];
     assert(result, "Runtime must report a semantic version");
     return result;
   };
   versions.devsy = await version([devsy, "--version"]);
+  assert(/-beta\./.test(versions.devsy), "E2E must use the pinned official upstream beta");
   versions[provider] = await version(provider === "docker" ? ["docker", "version", "--format", "{{.Server.Version}}"] : [provider === "apple" ? "container" : provider === "microsandbox" ? "msb" : "podman", "--version"]);
   if (provider === "podman") versions.crun = await version(["podman", "info", "--format", "{{.Host.OCIRuntime.Version}}"], budgets.lifecycle);
   if (provider === "podman") {
@@ -132,6 +133,7 @@ try {
     const { runtime, index } = (result as PromiseFulfilledResult<{ runtime: Runtime; index: number }>).value;
     const active = await workspace(orca!, runtime, index, env, shared!, { ...source!, build: index === 3 ? source!.customBuild : source!.build }, phase.signal, false, allConnectionsReady, acquireConnectionStart);
     workspaces.push(active);
+    assert.equal(active.agentVersion, versions.devsy, "Remote agent must match the official host beta");
     if (active.serverVersion) assert.equal(active.serverVersion, release.version);
   }).map(operation => operation.catch(error => { connected.reject(error); throw error; })));
   for (const result of connectedWorkspaces) if (result.status === "rejected") throw result.reason;
@@ -174,8 +176,11 @@ try {
   for (const current of workspaces) {
     if (current.index === 0) await current.exec(1, 'printf manual-change > "$HOME/.codex/auth.json"');
     await current.close();
-    const suspended: Runtime = await orca.call<Runtime>("ephemeralVm", "suspendWorkspace", { workspaceId: current.runtime.workspaceId });
-    assert.equal(suspended.status, "suspended");
+    const outcomes: { failure?: string; vmSuspendFailure?: string }[] = await orca.call<{ failure?: string; vmSuspendFailure?: string }[]>("worktrees", "sleep", { targets: [{ worktreeId: current.runtime.workspaceId, terminalHost: { kind: "environment", environmentId: current.runtime.runtimeEnvironmentId }, chatHosts: [] }], markChatsAsleep: false });
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0]!.failure, undefined);
+    assert.equal(outcomes[0]!.vmSuspendFailure, undefined);
+    assert.equal((await orca.call<Runtime[]>("ephemeralVm", "listRuntimes")).find(runtime => runtime.id === current.runtime.id)?.status, "suspended");
     await Promise.all(workspaces.filter(w => w !== current).map(w => w.check()));
     const resumed: Runtime = await measure("resume-workspace", budgets.lifecycle, () => orca!.call<Runtime>("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), current.index);
     assert.equal(resumed.status, "running");

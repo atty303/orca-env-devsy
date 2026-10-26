@@ -34,86 +34,107 @@ async fn git_forwarding_enabled(state : Json) -> Bool {
 }
 
 ///|
-async fn git_relay_ready(state : Json, directory : String) -> Bool {
-  // ProxyCommand=false prevents OpenSSH's mux fallback from opening a new
-  // Devsy connection and concealing the loss under test.
+priv enum RelayReadiness {
+  Ready
+  Retry(String)
+  Unsupported
+}
+
+///|
+async fn relay_readiness(
+  state : Json,
+  directory : String,
+  git_enabled : Bool,
+) -> RelayReadiness {
   let script =
-    #|# orca-git-readiness
+    #|# orca-relay-readiness
     #|set -eu
-    #|helper=$(git config --global --get credential.helper) || exit 1
-    #|case "$helper" in *'internal agent git-credentials'*) ;; *) exit 1 ;; esac
-    #|port=12049
-    #|previous=
-    #|for word in $helper; do
-    #|  if test "$previous" = --port; then port=$word; fi
-    #|  previous=$word
-    #|done
-    #|case "$port" in ''|*[!0-9]*) exit 1 ;; esac
-    #|test "$port" -ge 1 && test "$port" -le 65535
-    #|curl --noproxy '*' -fsS --max-time 2 "http://localhost:$port/" >/dev/null
-  let script = script +
-    "\ntest \"$(curl --noproxy '*' -fsS --max-time 2 \"http://localhost:$port/owner\")\" = " +
-    quote(required(state, "user"))
-  @async.with_timeout(4000, async fn() {
-    let (code, _, _) = @process.collect_output(
+    #|curl --disable --noproxy '*' --silent --max-time 1 --max-filesize 4096 --write-out '\n%{http_code}' http://localhost:12049/ready
+  let started = @env.now()
+  let result = @async.with_timeout(3000, async fn() {
+    let (code, output, _) = @process.collect_output(
       "ssh",
       ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
       ssh_args(state) +
       ["-S", control_socket(state, directory), script],
     )
-    code == 0
-  }) catch {
-    _ => false
-  }
-}
-
-///|
-async fn monitor_git_relay(
-  state : Json,
-  directory : String,
-  initial_enabled~ : Bool? = None,
-) -> Unit {
-  let enabled = directory + "/enabled"
-  match initial_enabled {
-    Some(false) => {
-      git_relay_status(directory, "disabled")
-      return
+    if code != 0 {
+      return RelayReadiness::Retry(
+        if code == 28 {
+          "http_timeout"
+        } else {
+          "transport_error"
+        },
+      )
     }
-    Some(true) => ()
-    None =>
-      while @fs.exists(enabled) {
-        try {
-          if !@async.with_timeout(10000, async fn() {
-              git_forwarding_enabled(state)
-            }) {
-            git_relay_status(directory, "disabled")
-            return
-          }
-          break
-        } catch {
-          _ => {
-            git_relay_status(directory, "unavailable")
-            save_diagnostic("git-relay-options", "retry", retry_delay_ms=10000)
-            @async.sleep(10000)
-          }
-        }
+    let text = output.text().trim().to_owned()
+    let lines = text.split("\n").to_array()
+    let status = lines.last().unwrap_or("").to_owned()
+    if status == "404" {
+      return RelayReadiness::Unsupported
+    }
+    if status != "200" {
+      return RelayReadiness::Retry(
+        if status == "503" {
+          "http_503"
+        } else {
+          "http_error"
+        },
+      )
+    }
+    let body = text[:text.length() - status.length()]
+      .to_owned()
+      .trim()
+      .to_owned()
+    let value = @json.parse(body) catch {
+      _ => return RelayReadiness::Retry("schema_invalid")
+    }
+    if field(value, "version") != Some(Json::number(1)) {
+      return RelayReadiness::Unsupported
+    }
+    if field(value, "owner") != field(state, "user") {
+      return RelayReadiness::Retry("owner_mismatch")
+    }
+    for name in ["host_owner", "instance"] {
+      if field(value, name) is Some(Json::String(value)) && value != "" {
+        continue
       }
-  }
-  let mut last = ""
-  let mut was_ready = false
-  while @fs.exists(enabled) {
-    let status = if git_relay_ready(state, directory) {
-      was_ready = true
-      "ready"
-    } else if was_ready {
-      "unavailable"
-    } else {
-      "pending"
+      return RelayReadiness::Retry("schema_invalid")
     }
-    if status != last {
-      git_relay_status(directory, status)
-      last = status
+    if git_enabled {
+      let helper = "git config --global --get credential.helper | grep -F 'internal agent git-credentials' >/dev/null"
+      let (code, _, _) = @process.collect_output(
+        "ssh",
+        ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
+        ssh_args(state) +
+        ["-S", control_socket(state, directory), helper],
+      )
+      if code != 0 {
+        return RelayReadiness::Retry("git_helper_unavailable")
+      }
     }
-    @async.sleep(500)
+    RelayReadiness::Ready
+  }) catch {
+    @async.TimeoutError => RelayReadiness::Retry("ssh_timeout")
+    _ => RelayReadiness::Retry("transport_error")
   }
+  match result {
+    Ready => ()
+    Retry(reason) =>
+      save_diagnostic(
+        "relay-probe",
+        "failed",
+        error_type=reason,
+        duration_ms=(@env.now() - started).to_double(),
+        tunnel_directory=directory,
+      )
+    Unsupported =>
+      save_diagnostic(
+        "relay-probe",
+        "unsupported",
+        error_type="readiness_unsupported",
+        tunnel_directory=directory,
+      )
+  }
+  result
 }

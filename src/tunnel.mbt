@@ -154,9 +154,10 @@ async fn stop_tunnel_master(
 async fn ensure_ssh_worker(
   state : Json,
   port : Int32?,
-  wait_for_git~ : Bool = true,
+  deadline? : UInt64,
   restart~ : Bool = false,
 ) -> Unit {
+  let mut expires = deadline.unwrap_or(@env.now() + 60000)
   let base = adapter_state_home() + "/tunnels"
   @fs.mkdir(base, recursive=true, permission=0o700, allow_exist=true)
   let directory = match field(state, "tunnelDirectory") {
@@ -187,13 +188,14 @@ async fn ensure_ssh_worker(
           raise AdapterError("Tunnel ownership changed")
         }
         restart_tunnel(saved, old)
+        expires = @env.now() + 60000
       }
       close_tunnel(state)
-      let temporary = @fs.tmpdir(prefix="oe")
-      let name = temporary.split("/").to_array().last().unwrap().to_owned()
-      @fs.rmdir(temporary)
-      let directory = base + "/" + name
-      @fs.mkdir(directory, permission=0o700)
+      let name = required(state, "workspaceUid")
+        .replace_all(old="%", new="%25")
+        .replace_all(old="/", new="%2F")
+      let directory = base + "/workspace-" + name
+      @fs.mkdir(directory, permission=0o700, allow_exist=true)
       set_field(state, "tunnelDirectory", Json::string(directory))
       directory
     }
@@ -219,9 +221,10 @@ async fn ensure_ssh_worker(
     }
     if restart {
       restart_tunnel(saved, directory)
+      expires = @env.now() + 60000
     }
     if worker_alive(directory) {
-      wait_tunnel(directory, wait_for_git~)
+      wait_tunnel(directory, expires)
       return
     }
     // A dead supervisor does not invalidate its still-live SSH transport.
@@ -239,12 +242,13 @@ async fn ensure_ssh_worker(
         }
       }
       spawn_tunnel_worker(directory)
-      wait_tunnel(directory, wait_for_git~)
+      wait_tunnel(directory, expires)
       return
     }
     stop_tunnel_master(saved, directory)
   } else if restart {
     restart_tunnel(state, directory)
+    expires = @env.now() + 60000
   }
   let socket_directory = @fs.tmpdir(prefix="oe")
   let saved = Json::empty_object()
@@ -268,7 +272,7 @@ async fn ensure_ssh_worker(
     @fs.remove(directory + "/status.json")
   }
   spawn_tunnel_worker(directory)
-  wait_tunnel(directory, wait_for_git~)
+  wait_tunnel(directory, expires)
 }
 
 ///|
@@ -369,6 +373,7 @@ async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
       permits.acquire()
       group.spawn_bg(async fn() {
         defer permits.release()
+        let target_deadline = @env.now() + 60000
         try {
           if @fs.kind(directory, follow_symlink=false) !=
             @fs.FileKind::Directory ||
@@ -401,7 +406,7 @@ async fn reconnect_all_inner(restart~ : Bool = false) -> Unit {
             _ => raise AdapterError("Invalid saved tunnel port")
           }
           set_field(state, "tunnelDirectory", Json::string(directory))
-          ensure_ssh_worker(state, port, restart~)
+          ensure_ssh_worker(state, port, deadline=target_deadline, restart~)
           save_diagnostic("reconnect", "success")
         } catch {
           AdapterError("Tunnel workspace ownership changed") =>
@@ -452,58 +457,85 @@ async fn workspace_running(state : Json) -> Bool {
 }
 
 ///|
-async fn wait_tunnel(directory : String, wait_for_git~ : Bool = true) -> Unit {
+priv suberror ConnectionDeadline {
+  ConnectionDeadline
+}
+
+///|
+async fn[T] connection_timeout(deadline : UInt64, run : async () -> T) -> T {
+  let now = @env.now()
+  if deadline <= now {
+    raise AdapterError("SSH and relay readiness timed out after 60 seconds")
+  }
+  @async.with_timeout((deadline - now).to_int(), run, error=ConnectionDeadline) catch {
+    ConnectionDeadline => {
+      save_diagnostic(
+        "connection-readiness",
+        "timeout",
+        error_type="readiness_timeout",
+      )
+      raise AdapterError("SSH and relay readiness timed out after 60 seconds")
+    }
+    error => raise error
+  }
+}
+
+///|
+async fn wait_tunnel(directory : String, deadline : UInt64) -> Unit {
   let started = @env.now()
   progress_message("ssh-tunnel: connecting…")
   errdefer progress_message(
     "ssh-tunnel: failed (" + progress_timing(started) + ")",
   )
-  @async.with_timeout(30000, async fn() {
+  @fs.write_file(directory + "/probe-request", "", permission=0o600)
+  connection_timeout(deadline, async fn() {
     while true {
       if @fs.exists(directory + "/status.json") {
         let status = @json.parse(
           @fs.read_file(directory + "/status.json").text(),
         )
-        if field(status, "status") == Some(Json::string("ownership-error")) {
-          raise AdapterError("Tunnel workspace ownership changed")
-        }
-        if field(status, "status") == Some(Json::string("workspace-stopped")) {
-          raise AdapterError("Tunnel workspace stopped")
-        }
-        if field(status, "status") == Some(Json::string("connected")) &&
-          worker_alive(directory) {
-          let saved = @json.parse(
-            @fs.read_file(directory + "/state.json").text(),
-          )
-          try {
-            check_tunnel(saved, directory)
-            return
-          } catch {
-            _ => ()
+        match field(status, "status") {
+          Some(Json::String("ownership-error")) => {
+            while worker_alive(directory) {
+              @async.sleep(25)
+            }
+            raise AdapterError("Tunnel workspace ownership changed")
           }
+          Some(Json::String("workspace-stopped")) => {
+            while worker_alive(directory) {
+              @async.sleep(25)
+            }
+            raise AdapterError("Tunnel workspace stopped")
+          }
+          Some(Json::String("unsupported")) => {
+            while worker_alive(directory) {
+              @async.sleep(25)
+            }
+            raise AdapterError(
+              "Devsy /ready is unsupported; upgrade Devsy to a version supporting relay readiness",
+            )
+          }
+          Some(Json::String("connected")) if !@fs.exists(
+              directory + "/probe-request",
+            ) &&
+            worker_alive(directory) => {
+            let saved = @json.parse(
+              @fs.read_file(directory + "/state.json").text(),
+            )
+            try {
+              check_tunnel(saved, directory)
+              return
+            } catch {
+              _ => ()
+            }
+          }
+          _ => ()
         }
       }
       @async.sleep(100)
     }
   })
   progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
-  guard wait_for_git else { return }
-  @async.with_timeout(5000, async fn() { wait_git_relay(directory) }) catch {
-    _ => ()
-  }
-  let git_status = if @fs.exists(directory + "/git-status") {
-    @fs.read_file(directory + "/git-status").text()
-  } else {
-    "pending"
-  }
-  if git_status != "ready" && git_status != "disabled" {
-    @stdio.stderr.write(
-      "orca-env-devsy: Git credential relay readiness is unavailable; Orca remains connected. Inspect local git-relay diagnostics.\n",
-    ) catch {
-      _ => ()
-    }
-    save_diagnostic("git-relay", "warning", error_type="readiness_unavailable")
-  }
 }
 
 ///|
@@ -556,7 +588,7 @@ async fn close_tunnel(state : Json) -> Unit {
     for
       name in [
         "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-        "socket", "git-status", "git-established",
+        "socket", "git-status", "git-established", "probe-request",
       ] {
       if @fs.exists(directory + "/" + name) {
         @fs.remove(directory + "/" + name)
@@ -598,84 +630,27 @@ pub async fn tunnel_worker(directory : String) -> Unit {
     _ => raise AdapterError("Missing tunnel port")
   }
   let enabled = directory + "/enabled"
-  let adopted = try {
+  let mut adopted = try {
     check_tunnel(state, directory)
     true
   } catch {
     _ => false
   }
-  if adopted {
-    errdefer stop_tunnel_master(state, directory)
-    let mut terminal = false
-    @async.with_task_group(async fn(group) {
-      // Both reads use the saved context; neither changes transport ownership.
-      let current = worker_workspace(state, directory)
-      guard current is Some(current) &&
-        field(current, "uid") == field(state, "workspaceUid") else {
-        if @fs.exists(enabled) {
-          @fs.remove(enabled)
-        }
-        stop_tunnel_master(state, directory)
-        terminal = true
-        tunnel_status(directory, "ownership-error")
-        return
-      }
-      if field(current, "running") != Some(Json::boolean(true)) {
-        stop_tunnel_master(state, directory)
-        terminal = true
-        tunnel_status(directory, "workspace-stopped")
-        return
-      }
-      save_diagnostic("orca-tunnel", "adopted")
-      tunnel_status(directory, "connected")
-      let options = group.spawn(
-        async fn() {
-          Some(
-            @async.with_timeout(10000, async fn() {
-              git_forwarding_enabled(state)
-            }),
-          )
-        },
-        allow_failure=true,
-        no_wait=true,
-      )
-      group.spawn_bg(no_wait=true, async fn() {
-        let initial_enabled = options.wait() catch { _ => None }
-        monitor_git_relay(state, directory, initial_enabled~) catch {
-          _ => git_relay_status(directory, "unavailable")
-        }
-      })
-      while @fs.exists(enabled) {
-        check_tunnel(state, directory) catch {
-          _ => break
-        }
-        @async.sleep(1000)
-      }
-    })
-    if terminal {
-      return
-    }
-    if !@fs.exists(enabled) {
-      stop_tunnel_master(state, directory)
-      tunnel_status(directory, "stopped")
-      return
-    }
-    stop_tunnel_master(state, directory)
-    @fs.mkdir(
-      required(state, "socketDirectory"),
-      permission=0o700,
-      allow_exist=true,
-    )
-  }
   let mut attempt = 0
+  defer @async.protect_from_cancel(async fn() {
+    stop_tunnel_master(state, directory)
+  })
   while @fs.exists(enabled) {
-    git_relay_status(directory, "pending")
     tunnel_status(directory, "connecting")
+    git_relay_status(directory, "pending")
     let mut terminal = false
     @async.with_task_group(async fn(group) {
-      let sink = @process.redirect_to_file("/dev/null", shared=true)
-      defer sink.close()
-      // A saved ID alone must not reconnect into a replacement workspace.
+      group.spawn_bg(no_wait=true, async fn() {
+        while @fs.exists(enabled) {
+          @async.sleep(100)
+        }
+        raise AdapterError("Tunnel disabled")
+      })
       guard worker_workspace(state, directory) is Some(current) &&
         field(current, "uid") == field(state, "workspaceUid") else {
         if @fs.exists(enabled) {
@@ -690,88 +665,149 @@ pub async fn tunnel_worker(directory : String) -> Unit {
         tunnel_status(directory, "workspace-stopped")
         return
       }
-      // The worker owns this master and reaps it before reconnecting.
+      @fs.mkdir(
+        required(state, "socketDirectory"),
+        permission=0o700,
+        allow_exist=true,
+      )
+      let sink = @process.redirect_to_file("/dev/null", shared=true)
+      defer sink.close()
       let (errors, stderr) = @process.read_from_process()
       defer errors.close()
       let classified = group.spawn(
         async fn() { tunnel_errors(errors) },
         no_wait=true,
       )
-      let child = @process.spawn(
-        group,
-        "ssh",
-        ssh_args(
-          state,
-          lease=required(state, "socketDirectory") + "/primary-proxy.lock",
-        ) +
-        [
-          "-M",
-          "-S",
-          control_socket(state, directory),
-          "-N",
-          "-o",
-          "ExitOnForwardFailure=yes",
-          "-o",
-          "ServerAliveInterval=10",
-          "-o",
-          "ServerAliveCountMax=3",
-        ] +
-        forwarding,
-        stdin=@process.redirect_from_file("/dev/null"),
-        stdout=sink,
-        stderr~,
-        no_wait=true,
-      )
+      let child = if adopted {
+        save_diagnostic("orca-tunnel", "adopted", tunnel_directory=directory)
+        None
+      } else {
+        Some(
+          @process.spawn(
+            group,
+            "ssh",
+            ssh_args(
+              state,
+              lease=required(state, "socketDirectory") + "/primary-proxy.lock",
+            ) +
+            [
+              "-M",
+              "-S",
+              control_socket(state, directory),
+              "-N",
+              "-o",
+              "ExitOnForwardFailure=yes",
+              "-o",
+              "ServerAliveInterval=10",
+              "-o",
+              "ServerAliveCountMax=3",
+            ] +
+            forwarding,
+            stdin=@process.redirect_from_file("/dev/null"),
+            stdout=sink,
+            stderr~,
+            no_wait=true,
+          ),
+        )
+      }
+      adopted = false
+      let git_enabled = @async.with_timeout(10000, async fn() {
+        git_forwarding_enabled(state)
+      })
+      let mut next_probe = @env.now()
+      let mut next_check = @env.now()
+      let mut failures = 0
       let mut connected = false
-      let mut monitoring_git = false
-      while @fs.exists(enabled) && child.try_wait() is None {
-        if !connected {
-          try {
-            check_tunnel(state, directory)
-            connected = true
-            attempt = 0
-            tunnel_status(directory, "connected")
-          } catch {
-            _ => ()
-          }
+      while @fs.exists(enabled) {
+        if child is Some(child) && child.try_wait() is Some(code) {
+          save_diagnostic(
+            "orca-tunnel",
+            "disconnected",
+            exit_code=code,
+            error_type=@async.with_timeout(1000, async fn() {
+              classified.wait()
+            }) catch {
+              _ => "process_exit"
+            },
+            tunnel_directory=directory,
+          )
+          break
         }
-        if connected && !monitoring_git {
-          monitoring_git = true
-          group.spawn_bg(no_wait=true, async fn() {
-            monitor_git_relay(state, directory) catch {
-              _ => git_relay_status(directory, "unavailable")
+        if (!connected || child is None) && @env.now() >= next_check {
+          let alive = try {
+            check_tunnel(state, directory)
+            true
+          } catch {
+            _ => false
+          }
+          if !alive {
+            if connected || child is None {
+              break
             }
-          })
+            @async.sleep(100)
+            continue
+          }
+          next_check = @env.now() + 1000
+        }
+        if @env.now() >= next_probe || @fs.exists(directory + "/probe-request") {
+          match relay_readiness(state, directory, git_enabled) {
+            Ready => {
+              failures = 0
+              attempt = 0
+              if !connected {
+                connected = true
+                git_relay_status(
+                  directory,
+                  if git_enabled {
+                    "ready"
+                  } else {
+                    "disabled"
+                  },
+                )
+                tunnel_status(directory, "connected")
+              }
+              if @fs.exists(directory + "/probe-request") {
+                @fs.remove(directory + "/probe-request")
+              }
+              next_probe = @env.now() + 10000
+            }
+            Unsupported => {
+              terminal = true
+              tunnel_status(directory, "unsupported")
+              break
+            }
+            Retry(reason) => {
+              failures += 1
+              connected = false
+              git_relay_status(directory, "unavailable")
+              tunnel_status(directory, "checking")
+              save_diagnostic(
+                "relay-recovery",
+                "failed",
+                attempt=failures,
+                error_type=reason,
+                tunnel_directory=directory,
+              )
+              if failures >= 2 {
+                break
+              }
+              continue
+            }
+          }
         }
         @async.sleep(100)
       }
-      if !@fs.exists(enabled) {
-        @async.with_timeout(2000, async fn() {
-          ignore(
-            @process.collect_output(
-              "ssh",
-              ssh_args(state) +
-              ["-S", control_socket(state, directory), "-O", "exit"],
-            ),
-          )
-        }) catch {
-          _ => ()
-        }
-        child.cancel()
-      } else {
-        let code = child.wait()
-        save_diagnostic(
-          "orca-tunnel",
-          "disconnected",
-          exit_code=code,
-          error_type=@async.with_timeout(1000, async fn() { classified.wait() }) catch {
-            _ => "process_exit"
-          },
-        )
-      }
     }) catch {
-      _ => save_diagnostic("orca-tunnel", "process-error")
+      _ =>
+        if @fs.exists(enabled) {
+          save_diagnostic(
+            "orca-tunnel",
+            "process-error",
+            tunnel_directory=directory,
+          )
+        }
     }
+    stop_tunnel_master(state, directory, verify=true)
     if terminal {
       return
     }
@@ -779,7 +815,13 @@ pub async fn tunnel_worker(directory : String) -> Unit {
       tunnel_status(directory, "disconnected")
       attempt = if attempt < 6 { attempt + 1 } else { 6 }
       let delay = if attempt < 6 { 500 * (1 << attempt) } else { 30000 }
-      save_diagnostic("orca-tunnel", "retry", attempt~, retry_delay_ms=delay)
+      save_diagnostic(
+        "orca-tunnel",
+        "retry",
+        attempt~,
+        retry_delay_ms=delay,
+        tunnel_directory=directory,
+      )
       for elapsed = 0
           elapsed < delay && @fs.exists(enabled)
           elapsed = elapsed + 100 {

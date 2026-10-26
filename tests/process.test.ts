@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { children, processScope, run, start, terminate, until, waitForExit } from "../scripts/process.ts";
 import { Orca, ensureOrcaInstallation } from "./e2e/orca.ts";
 import { OrcaObservations } from "./e2e/observations.ts";
+import { DiagnosticError } from "./e2e/diagnostics.ts";
 import { cleanupDeadline } from "./e2e/control.ts";
 import { budgets } from "./e2e/timing.ts";
 import { services } from "./e2e/services.ts";
@@ -120,7 +121,7 @@ test("an interrupted Orca call rejects immediately while cleanup uses its own si
   let calls = 0;
   const phase = new AbortController();
   const cleanup = new AbortController();
-  const app = { evaluate: () => ++calls === 1 ? new Promise(() => {}) : Promise.resolve({ status: "cleaned" }) };
+  const app = { evaluate: () => ++calls === 1 ? new Promise(() => {}) : Promise.resolve({ ok: true, value: { status: "cleaned" } }) };
   const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations(), phase.signal]) as Orca;
   const active = orca.call("ephemeralVm", "resumeWorkspace");
   phase.abort(new Error("E2E interrupted"));
@@ -128,6 +129,16 @@ test("an interrupted Orca call rejects immediately while cleanup uses its own si
   await expect(orca.call("ephemeralVm", "resumeWorkspace")).rejects.toThrow("E2E interrupted");
   expect(await orca.call("ephemeralVm", "cleanup", undefined, cleanup.signal)).toEqual({ status: "cleaned" });
   expect(calls).toBe(2);
+});
+
+test("Orca renderer rejection retains classified IPC error without exposing its message", async () => {
+  const app = { evaluate: () => Promise.resolve({ ok: false, error: { name: "Error", code: "ECONNRESET", message: "fixture-private-password" } }) };
+  const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations()]) as Orca;
+  const error = await orca.call("ephemeralVm", "suspendWorkspace").catch(error => error);
+  expect(error).toBeInstanceOf(DiagnosticError);
+  if (!(error instanceof DiagnosticError)) throw error;
+  expect(error.category).toBe("connection_reset");
+  expect(JSON.stringify(error)).not.toContain("fixture-private-password");
 });
 
 test("SSH agent readiness stops retrying when execution is interrupted", async () => {

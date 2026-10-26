@@ -83,27 +83,32 @@ url = "https://github.com/apple/container/releases/download/1.5.0/container-1.5.
 url_api = "https://api.github.com/repos/apple/container/releases/assets/597136570"
 
 [[tools."github:devsy-org/devsy"]]
-version = "1.23.2"
+version = "1.25.0-beta.3"
 backend = "github:devsy-org/devsy"
-specifiers = ["1.23.2"]
+specifiers = ["1.25.0-beta.3"]
 
 [tools."github:devsy-org/devsy".options]
 matching = "devsy-"
 
 [tools."github:devsy-org/devsy"."platforms.linux-arm64"]
-checksum = "sha256:872cd988be2f5c37dc92da684c92fb6e9dd56153963366c1bdb143b78f816ae2"
-url = "https://github.com/devsy-org/devsy/releases/download/v1.23.2/devsy-linux-arm64"
-url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/632776050"
+checksum = "sha256:f69aff1cf3a337e62e7ec747e01498247f069e9832d675a12a588b5bc596d6aa"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.25.0-beta.3/devsy-linux-arm64"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/675478432"
 
 [tools."github:devsy-org/devsy"."platforms.linux-x64"]
-checksum = "sha256:0e9e703662575faa796c933e108bbaa9bcfbcf95046825da9c8eb3cf452e8891"
-url = "https://github.com/devsy-org/devsy/releases/download/v1.23.2/devsy-linux-amd64"
-url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/632776043"
+checksum = "sha256:9b5805d1142724f58e705f94f441cdad2a0f988693f8e74bf075bea2b04045d6"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.25.0-beta.3/devsy-linux-amd64"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/675478437"
 
 [tools."github:devsy-org/devsy"."platforms.macos-arm64"]
-checksum = "sha256:2de96ea53362219c378a971119d7fe4a97a550fb6d23272ef4ea7962a7915960"
-url = "https://github.com/devsy-org/devsy/releases/download/v1.23.2/devsy-darwin-arm64"
-url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/632776041"
+checksum = "sha256:6e18ff3a8367039c8a517b4608db32be0e618252b78014c94e59f37ca506bead"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.25.0-beta.3/devsy-darwin-arm64"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/675478436"
+
+[tools."github:devsy-org/devsy"."platforms.windows-x64"]
+checksum = "sha256:d8a4e85a5b45afc7cd10c7b103e66c908958eb6b1658e0322daf1455ed314d32"
+url = "https://github.com/devsy-org/devsy/releases/download/v1.25.0-beta.3/devsy-windows-amd64.exe"
+url_api = "https://api.github.com/repos/devsy-org/devsy/releases/assets/675478434"
 
 [[tools.hk]]
 version = "1.55.0"

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile, lstat } from "node:fs/promises";
 import { run as cleanupRun, start, processScope, withAbort, terminate, quote, type Environment, processFailureCategory } from "../../scripts/process.ts";
+import { resolve } from "node:path";
 import { type Orca, type Runtime } from "./orca.ts";
 import { type services } from "./services.ts";
 import { budgets, measure } from "./timing.ts";
@@ -231,28 +232,45 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
       }, budgets.recovery);
     };
+    const agentVersion = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/.exec(await exec(0, "/usr/local/bin/devsy --version"))?.[0];
+    assert(agentVersion);
     const recoverRelay = async () => {
-      const saved = JSON.parse(await readFile(state.tunnelDirectory + "/state.json", "utf8"));
-      const master = ["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", saved.socketDirectory + "/socket", "-O", "check", target];
       const pid = async () => {
+        const saved = JSON.parse(await readFile(state.tunnelDirectory + "/state.json", "utf8"));
+        const master = ["ssh", "-F", env.HOME + "/.ssh/config", "-o", "ProxyCommand=false", "-S", saved.socketDirectory + "/socket", "-O", "check", target];
         const output = await run(master, { env, timeout: budgets.operation, output: "stderr" });
         const value = /pid=(\d+)/.exec(output)?.[1];
         assert(value);
         return value;
       };
-      const before = await pid();
-      const server = (await exec(0, "pgrep -o -f '[d]evsy internal agent container credentials-server --user " + user + "'")).trim();
-      assert(/^\d+$/.test(server));
-      await measure("credential-relay-recovery", budgets.recovery, async () => {
-        await exec(0, "sudo kill -TERM " + server);
-        await Promise.all([checkClient(), until(async () => {
-          try {
-            const refs = await exec(1, `git ls-remote http://127.0.0.1:18080/w-${index}.git refs/heads/task-0`);
-            return /^[a-f0-9]{40}\s+refs\/heads\/task-0/.test(refs);
-          } catch { return false; }
-        }, budgets.recovery)]);
-      }, index);
-      assert.equal(await pid(), before, "Credential recovery must preserve the primary SSH master");
+      const wrapper = await readFile(resolve("tests/e2e/relay-transport.py"), "utf8");
+      await exec(0, "sudo mv /usr/local/bin/devsy /usr/local/bin/devsy-e2e-original && printf %s " + quote(wrapper) + " | sudo tee /usr/local/bin/devsy >/dev/null && sudo chmod 755 /usr/local/bin/devsy");
+      try {
+        await run([resolve("_build/native/release/build/cmd/main/main.exe"), "restart", "--receipt"], { env, timeout: budgets.lifecycle, input: JSON.stringify({ schemaVersion: 1, recipeResult: runtime.recipeResult }) });
+        for (const fault of ["rpc-hang", "relay-exit"] as const) {
+          const before = await pid();
+          const server = (await exec(0, "pgrep -o -f '[d]evsy-e2e-original internal agent container credentials-server --user " + user + "'")).trim();
+          assert(/^\d+$/.test(server));
+          await measure("credential-" + fault + "-recovery", budgets.lifecycle, async () => {
+            if (fault === "rpc-hang") {
+              await exec(0, "touch /tmp/orca-e2e-rpc-block; curl --disable --noproxy '*' -fsS --max-time 1 http://localhost:12049/ >/dev/null; test \"$(curl --disable --noproxy '*' -sS --max-time 1 -o /dev/null -w '%{http_code}' http://localhost:12049/ready)\" = 503");
+              assert.equal(await pid(), before, "SSH remains alive while the RPC probe fails");
+            } else {
+              await exec(0, "sudo kill -TERM " + server);
+            }
+            await until(async () => {
+              try {
+                const status = JSON.parse(await readFile(state.tunnelDirectory + "/status.json", "utf8"));
+                return status.status === "connected" && await pid() !== before;
+              } catch { return false; }
+            }, budgets.lifecycle);
+            assert(/^[a-f0-9]{40}\s+refs\/heads\/task-0/.test(await exec(1, "git ls-remote http://127.0.0.1:18080/w-" + index + ".git refs/heads/task-0")));
+            await checkClient();
+          }, index);
+        }
+      } finally {
+        await exec(0, "sudo cp --remove-destination /usr/local/bin/devsy-e2e-original /usr/local/bin/devsy; rm -f /tmp/orca-e2e-rpc-block");
+      }
       await check();
     };
     await check();
@@ -267,7 +285,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       assert(connected.ok);
     }
     console.log(`PASS workspace ${index}: three SSH sessions, signed Git push/fetch, agent, auth, files and HTTP isolation`);
-    return { runtime, index, exec, check, checkClient, serve, close, recoverRelay, crashWorker, path, id, serverVersion };
+    return { runtime, index, exec, check, checkClient, serve, close, recoverRelay, crashWorker, path, id, serverVersion, agentVersion };
   } catch (error) {
     await close(); throw error;
   }

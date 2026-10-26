@@ -288,6 +288,25 @@ async fn ssh_args(
 
 ///|
 async fn remote(state : Json, script : String, stage : String) -> String {
+  if field(state, "tunnelDirectory") is Some(Json::String(directory)) &&
+    @fs.exists(directory + "/state.json") {
+    let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
+    let reusable = try {
+      check_tunnel(saved, directory)
+      true
+    } catch {
+      _ => false
+    }
+    if reusable {
+      return command(
+        "ssh",
+        ["-o", "ProxyCommand=false", "-o", "ControlMaster=no"] +
+        ssh_args(state, services=false) +
+        ["-S", control_socket(saved, directory), script],
+        stage,
+      )
+    }
+  }
   command("ssh", ssh_args(state, services=false) + [script], stage)
 }
 
@@ -328,7 +347,7 @@ async fn notify(stage : String) -> Unit {
 }
 
 ///|
-async fn create_state(pinned_commit? : String) -> Json {
+async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   create_recording.attempt += 1
   create_recording.phase = "input-validation"
   save_diagnostic("create-input", "received", source=Inputs)
@@ -688,109 +707,117 @@ async fn create_state(pinned_commit? : String) -> Json {
     }
     initial_output
   }
-  let created = workspace(state).unwrap()
-  guard required(created, "uid") == uid else {
-    raise AdapterError("Created workspace identity does not match request")
-  }
-  let result = up_result(output)
-  set_field(state, "user", Json::string(required(result, "remoteUser")))
-  validate_state(state)
-  let root = required(result, "remoteWorkspaceFolder")
-  guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
-    raise AdapterError("Invalid remote workspace folder")
-  }
-  // Transient probes must not own the shared credential relay. Establish the
-  // persistent owner before checkout commands can need private Git access.
-  let port = if required(state, "connection") == "orca-server" {
-    Some(reserve_server_port(state))
-  } else {
-    None
-  }
-  ensure_ssh_worker(state, port, wait_for_git=mode != "provisioned-root")
-  ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
-  create_recording.phase = "checkout-verification"
-  let actual_commit = remote(
-      state,
-      "git -C " + quote(root) + " rev-parse HEAD",
-      "verify-build-commit",
-    )
-    .trim()
-    .to_owned()
-  save_diagnostic(
-    "build-checkout-head",
-    "observed",
-    source=AcquiredCommit(actual_commit),
-  )
-  if !pinned_build && resolved_branch is Some(branch) {
-    hash = remote(
+  let deadline = @env.now() + 60000
+  let retry = connection_timeout(deadline, async fn() {
+    let created = workspace(state).unwrap()
+    guard required(created, "uid") == uid else {
+      raise AdapterError("Created workspace identity does not match request")
+    }
+    let result = up_result(output)
+    set_field(state, "user", Json::string(required(result, "remoteUser")))
+    validate_state(state)
+    let root = required(result, "remoteWorkspaceFolder")
+    guard root.has_prefix("/") && !root.contains("\n") && !root.contains("\r") else {
+      raise AdapterError("Invalid remote workspace folder")
+    }
+    // Transient probes must not own the shared credential relay. Establish the
+    // persistent owner before checkout commands can need private Git access.
+    let port = if required(state, "connection") == "orca-server" {
+      Some(reserve_server_port(state))
+    } else {
+      None
+    }
+    ensure_ssh_worker(state, port, deadline~)
+    ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
+    create_recording.phase = "checkout-verification"
+    let actual_commit = remote(
         state,
-        "git -C " +
-        quote(root) +
-        " rev-parse " +
-        quote("refs/remotes/origin/" + branch + "^{commit}"),
-        "verify-build-source",
+        "git -C " + quote(root) + " rev-parse HEAD",
+        "verify-build-commit",
       )
       .trim()
       .to_owned()
-  }
-  let build_matches = valid_commit(hash) && actual_commit == hash
-  save_diagnostic(
-    "build-checkout",
-    if build_matches {
-      "success"
-    } else {
-      "mismatch"
-    },
-    source=Checkout(actual_commit, hash, build_matches),
-  )
-  if task_build &&
-    actual_commit != environment("ORCA_REPO_REF_HEAD") &&
-    pinned_commit is None {
     save_diagnostic(
-      "clone-fallback",
-      "started",
-      source=TaskHeadRetry(environment("ORCA_REPO_REF_HEAD")),
+      "build-checkout-head",
+      "observed",
+      source=AcquiredCommit(actual_commit),
     )
+    if !pinned_build && resolved_branch is Some(branch) {
+      hash = remote(
+          state,
+          "git -C " +
+          quote(root) +
+          " rev-parse " +
+          quote("refs/remotes/origin/" + branch + "^{commit}"),
+          "verify-build-source",
+        )
+        .trim()
+        .to_owned()
+    }
+    let build_matches = valid_commit(hash) && actual_commit == hash
+    save_diagnostic(
+      "build-checkout",
+      if build_matches {
+        "success"
+      } else {
+        "mismatch"
+      },
+      source=Checkout(actual_commit, hash, build_matches),
+    )
+    if task_build &&
+      actual_commit != environment("ORCA_REPO_REF_HEAD") &&
+      pinned_commit is None {
+      save_diagnostic(
+        "clone-fallback",
+        "started",
+        source=TaskHeadRetry(environment("ORCA_REPO_REF_HEAD")),
+      )
+      return true
+    }
+    guard build_matches else {
+      raise AdapterError(
+        "Remote build checkout does not match resolved build commit",
+      )
+    }
+    set_field(state, "buildCommit", Json::string(actual_commit))
+    set_field(state, "projectRoot", Json::string(root))
+    if mode == "provisioned-root" {
+      create_recording.phase = "task-checkout"
+      let head = environment("ORCA_REPO_REF_HEAD")
+      let branch = environment("ORCA_REPO_BRANCH")
+      guard valid_commit(head) && !branch.has_prefix("-") else {
+        raise AdapterError("Invalid provisioned-root checkout identity")
+      }
+      let present = remote(
+        state,
+        "cd " +
+        quote(root) +
+        " && if git cat-file -e " +
+        quote(head + "^{commit}") +
+        " 2>/dev/null; then printf present; else printf missing; fi",
+        "task-commit-presence",
+      )
+      match present {
+        "present" => ()
+        "missing" => wait_git_relay(required(state, "tunnelDirectory"))
+        _ => raise AdapterError("Invalid task commit presence result")
+      }
+      ignore(
+        remote(state, checkout_script(root, head, branch), "checkout-workspace"),
+      )
+    }
+    false
+  })
+  if retry {
     discard_created_workspace(state)
     save_diagnostic("create-attempt", "retry")
     attempt_complete = true
-    return create_state(pinned_commit=environment("ORCA_REPO_REF_HEAD"))
+    create_state(pinned_commit=environment("ORCA_REPO_REF_HEAD"))
+  } else {
+    attempt_complete = true
+    save_diagnostic("create-attempt", "success")
+    (state, deadline)
   }
-  guard build_matches else {
-    raise AdapterError(
-      "Remote build checkout does not match resolved build commit",
-    )
-  }
-  set_field(state, "buildCommit", Json::string(actual_commit))
-  set_field(state, "projectRoot", Json::string(root))
-  if mode == "provisioned-root" {
-    create_recording.phase = "task-checkout"
-    let head = environment("ORCA_REPO_REF_HEAD")
-    let branch = environment("ORCA_REPO_BRANCH")
-    guard valid_commit(head) && !branch.has_prefix("-") else {
-      raise AdapterError("Invalid provisioned-root checkout identity")
-    }
-    let present = remote(
-      state,
-      "cd " +
-      quote(root) +
-      " && if git cat-file -e " +
-      quote(head + "^{commit}") +
-      " 2>/dev/null; then printf present; else printf missing; fi",
-      "task-commit-presence",
-    )
-    match present {
-      "present" => ()
-      "missing" => wait_git_relay(required(state, "tunnelDirectory"))
-      _ => raise AdapterError("Invalid task commit presence result")
-    }
-    ignore(
-      remote(state, checkout_script(root, head, branch), "checkout-workspace"),
-    )
-  }
-  attempt_complete = true
-  save_diagnostic("create-attempt", "success")
-  state
 }
 
 ///|
@@ -862,11 +889,11 @@ async fn emit_connection(
   state : Json,
   install : Bool,
   existing? : Json,
-  wait_for_git~ : Bool = true,
+  deadline? : UInt64,
   restart~ : Bool = false,
 ) -> Unit {
   let connection = if required(state, "connection") == "ssh" {
-    ensure_ssh_worker(state, None, wait_for_git~, restart~)
+    ensure_ssh_worker(state, None, deadline?, restart~)
     let target : Json = {
       "label": "Devsy",
       "host": required(state, "workspaceId") + ".devsy",
@@ -885,13 +912,13 @@ async fn emit_connection(
       Some(Json::Number(port, ..)) => port.to_int()
       _ => raise AdapterError("Missing saved tunnel port")
     }
-    ensure_ssh_worker(state, Some(port), restart~)
+    ensure_ssh_worker(state, Some(port), deadline?, restart~)
     match field(result, "connection") {
       Some(value) => value
       None => raise AdapterError("Missing saved connection")
     }
   } else {
-    server_connection(state, install)
+    server_connection(state, install, deadline?)
   }
   let version = if required(state, "checkoutMode") == "provisioned-root" {
     2
@@ -912,17 +939,34 @@ async fn emit_connection(
 ///|
 async fn execute_inner(mode : String) -> Unit {
   notify(mode)
-  let (state, previous) = if mode == "create" {
-    (create_state(), Json::null())
+  let started = @env.now()
+  let (state, previous, deadline) = if mode == "create" {
+    let (state, expires) = create_state()
+    (state, Json::null(), Some(expires))
   } else {
-    lifecycle_state(mode)
+    let (state, previous) = if mode == "reconnect" {
+      connection_timeout(started + 60000, async fn() { lifecycle_state(mode) })
+    } else {
+      lifecycle_state(mode)
+    }
+    (
+      state,
+      previous,
+      if mode == "reconnect" {
+        Some(started + 60000)
+      } else {
+        None
+      },
+    )
   }
   match mode {
     "create" => {
       create_recording.phase = "connection"
       errdefer discard_created_workspace(state)
-      codex_addon(state)
-      emit_connection(state, true, wait_for_git=false)
+      connection_timeout(deadline.unwrap(), async fn() {
+        codex_addon(state)
+        emit_connection(state, true, deadline?)
+      })
     }
     "resume" => {
       ignore(
@@ -940,21 +984,28 @@ async fn execute_inner(mode : String) -> Unit {
           "workspace-resume",
         ),
       )
-      codex_addon(state)
-      if required(state, "connection") == "orca-server" &&
-        server_is_running(state) {
-        emit_connection(state, false, existing=previous)
-      } else {
-        emit_connection(state, false)
-      }
+      let expires = @env.now() + 60000
+      connection_timeout(expires, async fn() {
+        let port = if required(state, "connection") == "orca-server" {
+          Some(reserve_server_port(state))
+        } else {
+          None
+        }
+        ensure_ssh_worker(state, port, deadline=expires)
+        codex_addon(state)
+        if required(state, "connection") == "orca-server" &&
+          server_is_running(state) {
+          emit_connection(state, false, existing=previous, deadline=expires)
+        } else {
+          emit_connection(state, false, deadline=expires)
+        }
+      })
     }
-    "reconnect" | "restart" =>
-      emit_connection(
-        state,
-        false,
-        existing=previous,
-        restart=mode == "restart",
-      )
+    "reconnect" =>
+      connection_timeout(deadline.unwrap(), async fn() {
+        emit_connection(state, false, existing=previous, deadline?)
+      })
+    "restart" => emit_connection(state, false, existing=previous, restart=true)
     "suspend" => {
       ignore(
         devsy(
