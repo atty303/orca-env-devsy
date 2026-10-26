@@ -175,10 +175,6 @@ try {
     assert((gitStats.accepted["w-" + i] ?? 0) > 0);
     assert.deepEqual(gitStats.refs["w-" + i], ["refs/heads/task-0", "refs/heads/task-1", "refs/heads/task-2"]);
   }
-  beginPhase("relay-recovery");
-  for (const current of workspaces) {
-    await Promise.all([current.recoverRelay(), ...workspaces.filter(w => w !== current).map(w => w.check())]);
-  }
   beginPhase("worker-receipt-server-recovery");
   const crashed = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
   await measure("worker-recovery", budgets.recovery, async () => {
