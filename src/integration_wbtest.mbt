@@ -3031,11 +3031,7 @@ async test "saved SSH proxy survives pruning its original adapter installation" 
     "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
   )
   let installed = directory + "/installed-adapter"
-  @fs.write_file(
-    installed,
-    @fs.read_file(integration_binary()),
-    permission=0o700,
-  )
+  assert_eq(@process.run("/bin/cp", [integration_binary(), installed]), 0)
   let (status, output, errors) = @process.collect_output(
     installed,
     ["create"],
