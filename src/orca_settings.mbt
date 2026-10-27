@@ -1,7 +1,4 @@
 ///|
-extern "C" fn host_is_macos() -> Int32 = "orca_host_is_macos"
-
-///|
 priv suberror SettingsProcessError {
   SettingsProcessError(String, String, Int32)
 }
@@ -15,7 +12,10 @@ extern "C" fn process_executable(
 ) -> Int32 = "orca_process_executable"
 
 ///|
-fn settings_executable(pid : Int32) -> String raise {
+async fn settings_executable(pid : Int32) -> String {
+  if @async.platform is Linux {
+    return @fs.realpath("/proc/\{pid}/exe")
+  }
   let buffer = Bytes::make(4096, 0)
   let length = process_executable(pid, buffer, buffer.length())
   guard length > 0 && length < buffer.length() else {
@@ -36,7 +36,7 @@ async fn host_orca_settings() -> String {
   let user_data = @env.get_env_var("ORCA_USER_DATA_PATH")
     .filter(p => p != "")
     .unwrap_or(
-      if host_is_macos() == 1 {
+      if @async.platform is MacOS {
         home + "/Library/Application Support/orca"
       } else {
         @env.get_env_var("XDG_CONFIG_HOME")
@@ -54,7 +54,7 @@ async fn host_orca_settings() -> String {
     _ => raise AdapterError("Invalid host Orca runtime PID")
   }
   let executables = [settings_executable(pid)]
-  if host_is_macos() != 1 {
+  if @async.platform is Linux {
     let args = @fs.read_file("/proc/\{pid}/cmdline")
       .text()
       .split("\u0000")
