@@ -22,7 +22,7 @@ if (provider === "docker") {
   await run(["sudo", "tee", "/etc/apt/sources.list.d/docker.sources"], { input: `Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: ${architecture}\nSigned-By: /etc/apt/keyrings/docker.asc\n` });
 }
 await run(["sudo", "apt-get", "update"], { inherit: true });
-await run(["sudo", "apt-get", "install", "-y", "xvfb", "acl", "libasound2t64", "libatk-bridge2.0-0", "libatspi2.0-0", "libdrm2", "libgbm1", "libgtk-3-0", "libnss3", "libxcomposite1", "libxdamage1", "libxfixes3", "libxkbcommon0", "libxrandr2", ...(provider === "podman" ? ["podman=" + process.env.E2E_PODMAN_PACKAGE, "uidmap", "slirp4netns", "fuse-overlayfs"] : [])], { inherit: true, timeout: 180_000 });
+await run(["sudo", "apt-get", "install", "-y", "xvfb", "acl", "libarchive-tools", "libasound2t64", "libatk-bridge2.0-0", "libatspi2.0-0", "libdrm2", "libgbm1", "libgtk-3-0", "libnss3", "libxcomposite1", "libxdamage1", "libxfixes3", "libxkbcommon0", "libxrandr2", ...(provider === "podman" ? ["podman=" + process.env.E2E_PODMAN_PACKAGE, "uidmap", "slirp4netns", "fuse-overlayfs"] : [])], { inherit: true, timeout: 180_000 });
 if (provider === "docker") {
   const installed = new Set((await run(["dpkg-query", "-W", "-f=${Package}\n"])).trim().split("\n"));
   const conflicts = ["docker.io", "docker-compose", "docker-compose-v2", "docker-doc", "docker-buildx", "podman-docker", "containerd", "runc", "moby-engine", "moby-cli", "moby-buildx", "moby-containerd", "moby-runc"].filter(name => installed.has(name));

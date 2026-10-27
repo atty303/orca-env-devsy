@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, realpath, writeFile, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, realpath, writeFile, readFile, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { run as cleanupRun, processScope, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
 import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
@@ -85,6 +85,12 @@ try {
     podmanStoreOwned = true;
   }
   await mkdir(root + "/bin", { recursive: true });
+  if (process.platform === "linux") {
+    const tar = Bun.which("bsdtar");
+    assert(tar, "Linux E2E requires bsdtar (libarchive-tools)");
+    await symlink(tar, root + "/bin/tar");
+    versions.tar = await version([tar, "--version"]);
+  }
   if (provider === "microsandbox") await installMicrosandboxDiagnostics(root, env);
   const podman = provider === "podman" ? await installPodmanDiagnostics(root) : undefined;
   await writeFile(root + "/bin/ssh", '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
