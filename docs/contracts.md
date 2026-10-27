@@ -13,6 +13,7 @@ All settings below can appear in `devsy`, `devsy.profiles.<name>`, or
 | `context` | Existing Devsy context; omitted uses Devsy's default |
 | `buildRef` | Remote ref supplying the complete build checkout; required for `orca-worktree`, optional for `provisioned-root` |
 | `upArgs` | Array of native Devsy workspace-up arguments |
+| `orca-server.env` | Environment variables for a new Orca Server |
 | `addons.codexAuth` | Optional file-backed Codex ChatGPT authentication handoff; default false |
 | `profile` | Select one common profile; recipe selection overrides common selection |
 | `profiles` | Named settings mappings, owned by the common `devsy` section |
@@ -34,6 +35,23 @@ destroy and recover use that array without rereading YAML or expanding it again.
 Saved states from releases without this field use `["devsy"]`. Do not put
 credentials in command arguments or environment references used by this field;
 use Devsy's credential configuration instead.
+
+`orca-server.env` is a mapping of environment-variable names to strings. Common,
+selected profile, and recipe mappings merge by name in that order; a later value
+replaces an earlier value for the same name. Values support `${VAR}` and
+`${VAR?}` against the remote environment immediately before Server launch;
+undefined optional references become empty, while required references must be
+defined and may be empty. All references use the same pre-launch environment,
+not other values in the mapping. `DEVSY_REMOTE_WORKSPACE_FOLDER` refers to the
+remote workspace folder returned by Devsy. Values are not evaluated as shell
+code. Identifiable literal credentials are rejected; reference a remote variable
+instead.
+
+The effective mapping is saved at environment creation. When a Server is started
+again, the saved templates are resolved against the then-current remote
+environment; an already-running Server is reused without changing its environment.
+Without the mapping, the Server inherits the remote environment at launch
+without additional variable assignments.
 
 The adapter owns workspace identity, result format, context, state directory,
 and IDE launch policy. `upArgs` cannot override `--id`, `--home`, `--context`,

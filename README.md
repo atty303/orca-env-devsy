@@ -236,6 +236,21 @@ Keep credentials in Devsy's credential configuration, not command arguments.
 Effective settings are saved when an environment is created. Editing YAML changes
 new environments; existing ones keep their saved lifecycle settings.
 
+### Orca Server environment
+
+Set environment variables for a new Orca Server in `devsy.orca-server.env`:
+
+```yaml
+devsy:
+  orca-server:
+    env:
+      PATH: "${DEVSY_REMOTE_WORKSPACE_FOLDER?}/.local/bin:${PATH?}"
+```
+
+Here `DEVSY_REMOTE_WORKSPACE_FOLDER` is the remote checkout returned by Devsy,
+and `PATH` is the remote environment before the Server starts. See the
+[settings contract](docs/contracts.md#settings) for merging and restart behavior.
+
 ### Suspend, resume and destroy
 
 Orca invokes the recipe's lifecycle commands when you suspend, resume or delete
