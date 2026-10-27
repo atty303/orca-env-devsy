@@ -31,27 +31,107 @@ async fn ensure_supervisor(initial_workspace? : String) -> Unit {
     while !startup.try_lock(Exclusive) {
       @async.sleep(10)
     }
+    if @fs.exists(directory + "/shutdown") {
+      @fs.remove(directory + "/shutdown")
+    }
     if supervisor_alive(directory) {
       save_diagnostic("supervisor-launch", "reused", evidence={
         "stateDirectory": directory,
       })
       return
     }
-    let sink = @process.redirect_to_file("/dev/null", shared=true)
-    defer sink.close()
-    ignore(
-      @process.spawn_orphan(
-        saved_proxy_executable(),
-        ["--supervisor", directory] +
-        initial_workspace.map(value => [value]).unwrap_or([]),
-        stdin=@process.redirect_from_file("/dev/null"),
-        stdout=sink,
-        stderr=sink,
-      ),
-    )
-    while !supervisor_alive(directory) {
+    launch_supervisor(directory, initial_workspace?)
+  })
+}
+
+///|
+async fn launch_supervisor(
+  directory : String,
+  initial_workspace? : String,
+) -> Unit {
+  let sink = @process.redirect_to_file("/dev/null", shared=true)
+  defer sink.close()
+  ignore(
+    @process.spawn_orphan(
+      saved_proxy_executable(),
+      ["--supervisor", directory] +
+      initial_workspace.map(value => [value]).unwrap_or([]),
+      stdin=@process.redirect_from_file("/dev/null"),
+      stdout=sink,
+      stderr=sink,
+    ),
+  )
+  while !supervisor_alive(directory) {
+    @async.sleep(10)
+  }
+}
+
+///|
+async fn restart_supervisor() -> Int32 {
+  let directory = adapter_state_home()
+  save_diagnostic("supervisor-launch", "restart", evidence={
+    "stateDirectory": directory,
+  })
+  errdefer save_diagnostic(
+    "supervisor-launch",
+    "failed",
+    error_type="restart_failed",
+    evidence={ "stateDirectory": directory },
+  )
+  @fs.mkdir(directory, recursive=true, permission=0o700, allow_exist=true)
+  let startup = @fs.open(
+    directory + "/supervisor-startup.lock",
+    mode=ReadWrite,
+    create_mode=OpenOrCreate,
+    permission=0o600,
+  )
+  defer startup.close()
+  @async.with_timeout(30000, async fn() {
+    while !startup.try_lock(Exclusive) {
       @async.sleep(10)
     }
+    defer (@fs.remove(directory + "/shutdown") catch { _ => () })
+    if supervisor_alive(directory) {
+      @fs.write_file(directory + "/shutdown", "", permission=0o600)
+      while supervisor_alive(directory) {
+        @async.sleep(10)
+      }
+    }
+    if @fs.exists(directory + "/shutdown") {
+      @fs.remove(directory + "/shutdown")
+    }
+    let failures : Ref[Int32] = { val: 0, }
+    let transports = directory + "/transports"
+    if @fs.exists(transports) {
+      @async.with_task_group(async fn(group) {
+        let permits = @async.Semaphore(16)
+        for name in @fs.readdir(transports) {
+          let transport = transports + "/" + name
+          if @fs.exists(transport + "/state.json") &&
+            !@fs.exists(transport + "/done") {
+            permits.acquire()
+            group.spawn_bg(async fn() {
+              defer permits.release()
+              supervise_transport(transport, force=true) catch {
+                error => {
+                  failures.val += 1
+                  save_diagnostic(
+                    "supervisor-transport",
+                    "failed",
+                    error_type="transport_cleanup_failed",
+                    error_message=redact_credentials(error.to_string()),
+                    evidence={ "transport": transport },
+                  )
+                  progress_message("SSH transport cleanup failed: " + transport)
+                }
+              }
+            })
+          }
+        }
+      })
+    }
+    launch_supervisor(directory)
+    failures.val
   })
 }
 
@@ -104,7 +184,20 @@ pub async fn supervisor(
     guard canonical.has_prefix(@fs.realpath(directory) + "/tunnels/") else {
       raise AdapterError("Initial workspace is outside the state directory")
     }
-    environments.set(canonical, @env.get_env_vars())
+    let saved = @json.parse(
+      @fs.read_file(workspace + "/environment.json").text(),
+    )
+    guard saved is Json::Object(values) else {
+      raise AdapterError("Invalid saved workspace environment")
+    }
+    let environment : Map[String, String] = Map([])
+    for (name, value) in values {
+      guard value is Json::String(value) else {
+        raise AdapterError("Invalid saved workspace environment")
+      }
+      environment.set(name, value)
+    }
+    environments.set(canonical, environment)
     @fs.write_file(workspace + "/request", "", permission=0o600)
   }
   let registrations : Ref[Int32] = { val: 0, }
@@ -136,6 +229,9 @@ pub async fn supervisor(
       }
     })
     while @fs.exists(directory) {
+      if @fs.exists(directory + "/shutdown") {
+        return
+      }
       for workspace in environments.keys().to_array() {
         if !@fs.exists(workspace) {
           environments.remove(workspace)
@@ -272,7 +368,7 @@ pub async fn supervisor(
 }
 
 ///|
-async fn supervise_transport(directory : String) -> Unit {
+async fn supervise_transport(directory : String, force~ : Bool = false) -> Unit {
   let state = @json.parse(@fs.read_file(directory + "/state.json").text())
   let recording = field(state, "recording") != Some(Json::boolean(false))
   let pid = @string.parse_int(required(state, "pid"))
@@ -328,6 +424,9 @@ async fn supervise_transport(directory : String) -> Unit {
       recording~,
     )
   })
+  if force {
+    return
+  }
   while true {
     let owner_current = process_start(owner)
     let transport_current = process_start(pid)

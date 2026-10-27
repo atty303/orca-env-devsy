@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #ifdef __APPLE__
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -17,6 +18,29 @@
 #else
 #include <dirent.h>
 #endif
+
+int orca_socket_directory(char *buffer, int capacity, const char *runtime, const char *temp) {
+#ifndef __APPLE__
+  temp = NULL;
+#endif
+  const char *bases[] = {runtime, temp, "/tmp"};
+  for (int i = 0; i < 3; i++) {
+    const char *base = bases[i];
+    struct stat info;
+    if (!base || base[0] != '/' || stat(base, &info) != 0 || !S_ISDIR(info.st_mode)) continue;
+    if (i != 2 && (info.st_uid != geteuid() || (info.st_mode & 0777) != 0700)) continue;
+    int length = snprintf(buffer, (size_t)capacity, "%s/orca-env-devsy.XXXXXX", base);
+    if (length < 0 || length >= capacity || (size_t)length + 25 >= sizeof(((struct sockaddr_un *)0)->sun_path)) continue;
+    if (mkdtemp(buffer)) return length;
+  }
+  return -1;
+}
+
+int orca_validate_socket_directory(const char *path) {
+  struct stat info;
+  return lstat(path, &info) == 0 && S_ISDIR(info.st_mode) &&
+    info.st_uid == geteuid() && (info.st_mode & 0777) == 0700 ? 0 : -1;
+}
 
 int orca_process_executable(int pid, char *buffer, int capacity) {
 #ifdef __APPLE__

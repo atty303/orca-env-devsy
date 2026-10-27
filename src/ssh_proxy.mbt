@@ -140,7 +140,9 @@ async fn wait_ssh_proxy(state : Json, role : String) -> Unit {
     }
     let pending = owned_transports(adapter_state_home(), canonical)
     if !pending.is_empty() {
-      ensure_supervisor()
+      if !supervisor_alive(adapter_state_home()) {
+        ensure_supervisor()
+      }
       wait_transport_cleanup(pending)
     }
   })

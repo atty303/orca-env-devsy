@@ -130,6 +130,68 @@ fn control_socket(state : Json, directory : String) -> String {
 }
 
 ///|
+#borrow(buffer, runtime, temporary)
+extern "C" fn create_socket_directory(
+  buffer : Bytes,
+  capacity : Int32,
+  runtime : Bytes,
+  temporary : Bytes,
+) -> Int32 = "orca_socket_directory"
+
+///|
+#borrow(path)
+extern "C" fn validate_socket_directory(path : Bytes) -> Int32 = "orca_validate_socket_directory"
+
+///|
+fn socket_directory(environment : Map[String, String]) -> String raise {
+  let buffer = Bytes::make(4096, 0)
+  let length = create_socket_directory(
+    buffer,
+    buffer.length(),
+    @utf8.encode(environment.get("XDG_RUNTIME_DIR").unwrap_or("") + "\u0000"),
+    @utf8.encode(environment.get("TMPDIR").unwrap_or("") + "\u0000"),
+  )
+  guard length > 0 else {
+    raise AdapterError("Cannot create SSH socket directory")
+  }
+  @utf8.decode(buffer[:length])
+}
+
+///|
+async fn prepare_socket_directory(state : Json, directory : String) -> Unit {
+  let previous = required(state, "socketDirectory")
+  @fs.mkdir(previous, permission=0o700, allow_exist=true) catch {
+    error => {
+      let replacement = socket_directory(workspace_environment(state))
+      errdefer (@fs.rmdir(replacement) catch { _ => () })
+      let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
+      guard field(saved, "workspaceUid") == field(state, "workspaceUid") &&
+        field(saved, "socketDirectory") == Some(Json::string(previous)) else {
+        raise AdapterError("SSH socket ownership changed")
+      }
+      set_field(saved, "socketDirectory", Json::string(replacement))
+      publish_file(directory + "/state.json", saved.stringify())
+      set_field(state, "socketDirectory", Json::string(replacement))
+      save_diagnostic(
+        "orca-tunnel",
+        "retry",
+        tunnel_directory=directory,
+        error_type="control_socket",
+        error_message=redact_credentials(error.to_string()),
+        evidence={ "previous": previous, "replacement": replacement },
+        recording=workspace_recording(state),
+      )
+    }
+  }
+  guard validate_socket_directory(
+      @utf8.encode(required(state, "socketDirectory") + "\u0000"),
+    ) ==
+    0 else {
+    raise AdapterError("Invalid SSH socket directory ownership or permissions")
+  }
+}
+
+///|
 async fn stop_tunnel_master(
   state : Json,
   directory : String,
@@ -245,7 +307,10 @@ async fn ensure_ssh_worker(
     }
   })
   if @fs.exists(directory + "/state.json") {
-    register_workspace(directory)
+    register_workspace(
+      directory,
+      environment?=field(state, "executionEnvironment"),
+    )
     let saved = @json.parse(@fs.read_file(directory + "/state.json").text())
     guard field(saved, "workspaceUid") == field(state, "workspaceUid") &&
       field(saved, "localPort") ==
@@ -266,7 +331,7 @@ async fn ensure_ssh_worker(
     restart_tunnel(state, directory)
     expires = connection_deadline()
   }
-  let socket_directory = @fs.tmpdir(prefix="oe")
+  let socket_directory = socket_directory(workspace_environment(state))
   let saved = Json::empty_object()
   for
     name in [
@@ -383,18 +448,46 @@ pub async fn recover_all(restart~ : Bool = false) -> Unit {
 ///|
 async fn recover_all_inner(restart~ : Bool = false) -> Unit {
   notify(if restart { "restart" } else { "recover" })
+  @fs.mkdir(
+    adapter_state_home(),
+    recursive=true,
+    permission=0o700,
+    allow_exist=true,
+  )
+  let bulk_lock = @fs.open(
+    adapter_state_home() + "/bulk-recovery.lock",
+    mode=ReadWrite,
+    create_mode=OpenOrCreate,
+    permission=0o600,
+  )
+  defer bulk_lock.close()
+  @async.with_timeout(60000, async fn() {
+    while !bulk_lock.try_lock(Exclusive) {
+      @async.sleep(25)
+    }
+  })
   let base = adapter_state_home() + "/tunnels"
-  if !@fs.exists(base) && !@fs.exists(adapter_state_home() + "/transports") {
+  if !restart &&
+    !@fs.exists(base) &&
+    !@fs.exists(adapter_state_home() + "/transports") {
     save_diagnostic("recover", "success")
     return
   }
   ignore(saved_proxy_executable())
-  ensure_supervisor()
+  let transport_failures = if restart {
+    restart_supervisor()
+  } else {
+    ensure_supervisor()
+    0
+  }
   if !@fs.exists(base) {
+    guard transport_failures == 0 else {
+      raise AdapterError("Some SSH transports could not be cleaned up")
+    }
     save_diagnostic("recover", "success")
     return
   }
-  let mut failures = 0
+  let mut failures = transport_failures
   let permits = @async.Semaphore(4)
   @async.with_task_group(async fn(group) {
     for name in @fs.readdir(base, sort=true) {
@@ -403,6 +496,7 @@ async fn recover_all_inner(restart~ : Bool = false) -> Unit {
       group.spawn_bg(async fn() {
         defer permits.release()
         let mut target = name
+        let mut target_state : Json? = None
         try {
           if @fs.kind(directory, follow_symlink=false) !=
             @fs.FileKind::Directory ||
@@ -421,7 +515,8 @@ async fn recover_all_inner(restart~ : Bool = false) -> Unit {
             " running…",
           )
           set_field(state, "tunnelDirectory", Json::string(directory))
-          recover_connection(state, restart~)
+          target_state = Some(state)
+          recover_connection(state, restart~, saved_environment=true)
           progress_message(
             target +
             ": " +
@@ -446,7 +541,12 @@ async fn recover_all_inner(restart~ : Bool = false) -> Unit {
               } else {
                 ""
               }
-              let progress = Progress::new("recover")
+              let progress = Progress::new(
+                "recover",
+                environment?=target_state.map(state => {
+                  workspace_environment(state)
+                }),
+              )
               let detail = (message +
                 (if ssh_detail == "" {
                   ""
@@ -484,7 +584,10 @@ async fn recover_all_inner(restart~ : Bool = false) -> Unit {
 }
 
 ///|
-async fn connection_operation_lock(state : Json) -> @fs.File {
+async fn connection_operation_lock(
+  state : Json,
+  validate~ : Bool = true,
+) -> @fs.File {
   let directory = required(state, "tunnelDirectory")
   @fs.mkdir(directory, recursive=true, permission=0o700, allow_exist=true)
   let lock = @fs.open(
@@ -499,14 +602,16 @@ async fn connection_operation_lock(state : Json) -> @fs.File {
       @async.sleep(100)
     }
   })
-  @async.with_timeout(10000, async fn() {
-    match workspace(state) {
-      Some(current) if field(current, "uid") == field(state, "workspaceUid") =>
-        ()
-      None => ()
-      _ => raise AdapterError("Workspace replaced during lifecycle operation")
-    }
-  })
+  if validate {
+    @async.with_timeout(10000, async fn() {
+      match workspace(state) {
+        Some(current) if field(current, "uid") == field(state, "workspaceUid") =>
+          ()
+        None => ()
+        _ => raise AdapterError("Workspace replaced during lifecycle operation")
+      }
+    })
+  }
   lock
 }
 
@@ -623,10 +728,20 @@ async fn recover_connection(
   state : Json,
   restart~ : Bool = false,
   deadline? : UInt64,
+  saved_environment~ : Bool = false,
 ) -> Unit {
-  let operation = connection_operation_lock(state)
+  let operation = connection_operation_lock(state, validate=false)
   defer operation.close()
   let directory = required(state, "tunnelDirectory")
+  if saved_environment {
+    let environment = @json.parse(
+      @fs.read_file(directory + "/environment.json").text(),
+    )
+    guard environment is Json::Object(_) else {
+      raise AdapterError("Invalid saved workspace environment")
+    }
+    set_field(state, "executionEnvironment", environment)
+  }
   let deadline = deadline.unwrap_or(connection_deadline())
   connection_timeout(deadline, async fn() {
     let current = workspace(state)
@@ -897,11 +1012,12 @@ async fn close_tunnel(state : Json) -> Unit {
   // Only remove this worker's files; retain unexpected directory contents.
   for
     name in [
-      "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-      "request", "socket", "git-status", "git-established", "probe-request", "ssh-error.json",
-      "worker-error.json", "worker-error.json.tmp", "ssh-error.json.tmp", "server-relay-pending",
-      "recovery.lock", "idle.json", "idle.tmp", "idle-state.lock", "idle-enabled",
-      "operation.lock", "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
+      "state.json", "state.tmp", "environment.json", "environment.json.tmp", "environment.lock",
+      "status.json", "status.tmp", "worker.lock", "startup.lock", "request", "socket",
+      "git-status", "git-established", "probe-request", "ssh-error.json", "worker-error.json",
+      "worker-error.json.tmp", "ssh-error.json.tmp", "server-relay-pending", "recovery.lock",
+      "idle.json", "idle.tmp", "idle-state.lock", "idle-enabled", "operation.lock",
+      "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
     ] {
     if @fs.exists(directory + "/" + name) {
       @fs.remove(directory + "/" + name)
@@ -1063,11 +1179,7 @@ async fn tunnel_worker(
       if !adopted {
         stop_tunnel_master(state, directory, verify=true)
       }
-      @fs.mkdir(
-        required(state, "socketDirectory"),
-        permission=0o700,
-        allow_exist=true,
-      )
+      prepare_socket_directory(state, directory)
       let sink = @process.redirect_to_file("/dev/null", shared=true)
       defer sink.close()
       let (errors, stderr) = @process.read_from_process()
@@ -1344,10 +1456,20 @@ async fn tunnel_worker(
       }
     }) catch {
       error => {
-        let message = match error {
-          AdapterError(message) => Some(redact_credentials(message))
-          _ => None
-        }
+        let progress = Progress::new(
+          "orca-tunnel",
+          environment=workspace_environment(state),
+        )
+        let message = Some(
+          redact_credentials(error.to_string())
+          .split("\n")
+          .map(line => {
+            progress
+            .safe_message(line.to_owned())
+            .unwrap_or("[error detail unavailable]")
+          })
+          .join("\n"),
+        )
         if @fs.exists(enabled) && !@fs.exists(directory + "/paused") {
           if message is Some(detail) {
             let progress = Progress::new(

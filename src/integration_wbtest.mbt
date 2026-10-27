@@ -2177,7 +2177,7 @@ async test "restart refuses an SSH master that does not stop and preserves saved
   })
   let saved = @fs.read_file(worker + "/state.json").text()
   let socket = required(@json.parse(saved), "socketDirectory")
-  @fs.mkdir(socket, allow_exist=true)
+  @fs.mkdir(socket, permission=0o700, allow_exist=true)
   @fs.write_file(socket + "/socket", "")
   @fs.write_file(worker + "/enabled", "")
   @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
@@ -2369,18 +2369,28 @@ async test "bulk recovery skips disabled and stopped workspaces and reports repl
     assert_eq(after.split("-M\n").count(), args.split("-M\n").count())
     assert_true(@fs.exists(directory + "/stopped"))
     assert_false(worker_alive(worker))
+    let (status, _, errors) = invoke("restart", env, directory)
+    assert_eq(status, 0, msg=errors)
+    assert_true(errors.contains("workspace stopped; recovery skipped"))
+    assert_true(@fs.exists(directory + "/stopped"))
+    assert_false(worker_alive(worker))
     @fs.remove(directory + "/stopped")
     @fs.mkdir(base + "/blocked")
     let blocked = @json.parse(@fs.read_file(worker + "/state.json").text())
     set_field(blocked, "command", ["/bin/sh", "-c", "exec sleep 60", "sh"])
     @fs.write_file(base + "/blocked/state.json", blocked.stringify())
+    @fs.write_file(
+      base + "/blocked/environment.json",
+      @fs.read_file(worker + "/environment.json").text(),
+      permission=0o600,
+    )
     @fs.write_file(base + "/blocked/enabled", "")
     @fs.mkdir(base + "/corrupt")
     @fs.write_file(base + "/corrupt/enabled", "")
     @fs.write_file(base + "/corrupt/state.json", "{invalid")
-    let (status, _, _) = invoke("recover", env, directory)
+    let (status, _, errors) = invoke("recover", env, directory)
     assert_true(status != 0)
-    assert_true(worker_alive(worker))
+    assert_true(worker_alive(worker), msg=errors)
     @fs.remove(base + "/blocked/enabled")
     @fs.remove(base + "/corrupt/enabled")
     @fs.write_file(worker + "/enabled", "")
@@ -2389,6 +2399,11 @@ async test "bulk recovery skips disabled and stopped workspaces and reports repl
     // Use a separate inactive entry, leaving the live test worker owned by its receipt.
     @fs.mkdir(base + "/replaced")
     @fs.write_file(base + "/replaced/state.json", saved.stringify())
+    @fs.write_file(
+      base + "/replaced/environment.json",
+      @fs.read_file(worker + "/environment.json").text(),
+      permission=0o600,
+    )
     @fs.write_file(base + "/replaced/enabled", "")
     let (status, _, errors) = invoke("recover", env, directory)
     assert_true(status != 0, msg=errors)
@@ -2729,7 +2744,7 @@ async test "adoption rejects stopped or replaced workspaces and reaps the old ma
     })
     let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
     let socket = required(saved, "socketDirectory")
-    @fs.mkdir(socket, recursive=true, allow_exist=true)
+    @fs.mkdir(socket, recursive=true, permission=0o700, allow_exist=true)
     // Fake OpenSSH checks this owned marker as a live orphaned master.
     @fs.write_file(socket + "/socket", "")
     @fs.write_file(worker + "/enabled", "")
@@ -2929,7 +2944,7 @@ async test "adoption waits for Git options and validates the relay before connec
   })
   let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
   let socket = required(saved, "socketDirectory")
-  @fs.mkdir(socket, recursive=true, allow_exist=true)
+  @fs.mkdir(socket, recursive=true, permission=0o700, allow_exist=true)
   @fs.write_file(socket + "/socket", "")
   @fs.write_file(worker + "/enabled", "")
   @fs.write_file(worker + "/status.json", "{\"status\":\"connected\"}")
@@ -2992,7 +3007,7 @@ async test "adopted primary is stopped before recovering after a failed health c
   })
   let saved = @json.parse(@fs.read_file(worker + "/state.json").text())
   let socket = required(saved, "socketDirectory")
-  @fs.mkdir(socket, recursive=true, allow_exist=true)
+  @fs.mkdir(socket, recursive=true, permission=0o700, allow_exist=true)
   @fs.write_file(socket + "/socket", "")
   @fs.write_file(worker + "/enabled", "")
   @fs.write_file(worker + "/status.json", "{}")
@@ -4111,7 +4126,7 @@ async test "recover restores an externally stopped then started workspace and it
 }
 
 ///|
-async test "recover and restart reject Busy without replacing a live worker" {
+async test "workspace recover and restart reject Busy without replacing a live worker" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(
@@ -4130,6 +4145,9 @@ async test "recover and restart reject Busy without replacing a live worker" {
   @fs.write_file(directory + "/busy", "")
   for mode in ["recover", "restart"] {
     for receipt in [false, true] {
+      if mode == "restart" && !receipt {
+        continue
+      }
       let started = @env.now()
       let (status, _, _) = invoke(
         mode,
@@ -4144,7 +4162,13 @@ async test "recover and restart reject Busy without replacing a live worker" {
       assert_eq(@fs.read_file(directory + "/master-pid").text(), pid)
     }
   }
+  let (status, _, _) = invoke("restart", env, directory)
+  assert_true(status != 0)
+  assert_false(worker_alive(worker))
+  assert_eq(@fs.read_file(worker + "/state.json").text(), saved)
   @fs.remove(directory + "/busy")
+  let (status, _, errors) = invoke("recover", env, directory)
+  assert_eq(status, 0, msg=errors)
   let records = @fs.read_file(
     directory + "/.local/state/orca-env-devsy/events.jsonl",
   ).text()

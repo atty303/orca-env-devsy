@@ -19,6 +19,7 @@ async test "one supervisor isolates workspace environments, failures, recovery a
   second_env.set("DOCKER_HOST", "fixture-second-host")
   second_env.set("WORKSPACE_PRIVATE_TOKEN", "fixture-env-private-value")
   second_env.set("XDG_STATE_HOME", env.get("XDG_STATE_HOME").unwrap())
+  save_fixture_environment(first_saved, env)
   @async.with_task_group(async fn(group) {
     let launches = []
     for _ in 0..<4 {
@@ -36,7 +37,22 @@ async test "one supervisor isolates workspace environments, failures, recovery a
       assert_eq(launch.wait().0, 0)
     }
     let pid = supervisor_pid(root)
+    let original_master = @fs.read_file(first + "/master-pid").text()
+    let socket_directory = required(first_state, "socketDirectory")
+    @fs.rmdir(socket_directory, recursive=true)
+    assert_eq(
+      @process.collect_output("kill", [
+        "-TERM",
+        original_master.trim().to_owned(),
+      ]).0,
+      0,
+    )
+    idle_wait_for(async fn() {
+      @fs.exists(socket_directory + "/socket") &&
+      @fs.read_file(first + "/master-pid").text() != original_master
+    })
     @fs.rename(old_second, second_saved)
+    save_fixture_environment(second_saved, second_env)
     set_field(second_state, "tunnelDirectory", Json::string(second_saved))
     set_field(second_state, "workspaceId", Json::string("peer-vm"))
     set_field(second_state, "workspaceUid", Json::string("peer-uid"))
@@ -69,6 +85,11 @@ async test "one supervisor isolates workspace environments, failures, recovery a
     )
     assert_false(
       @fs.read_file(root + "/events.jsonl")
+      .text()
+      .contains("fixture-env-private-value"),
+    )
+    assert_true(
+      @fs.read_file(second_saved + "/environment.json")
       .text()
       .contains("fixture-env-private-value"),
     )
@@ -126,17 +147,18 @@ async test "one supervisor isolates workspace environments, failures, recovery a
     let (code, _, errors) = invoke("recover", env, first)
     assert_eq(code, 0, msg=errors)
     assert_false(supervisor_pid(root) == pid)
+    let recovered_pid = supervisor_pid(root)
     assert_eq(@fs.read_file(first + "/master-pid").text(), old_master)
     env.set("WORKSPACE_PRIVATE_TOKEN", "fixture-env-private-value")
     let (code, _, errors) = invoke("restart", env, first)
     assert_eq(code, 0, msg=errors)
+    assert_false(supervisor_pid(root) == recovered_pid)
     assert_false(@fs.read_file(first + "/master-pid").text() == old_master)
     close_tunnel(first_state)
     assert_true(worker_alive(second_saved))
     second_env.set("ORCA_ENV_DEVSY_RECORDING", "0")
     let (code, _, errors) = invoke("restart", second_env, second)
     assert_eq(code, 0, msg=errors)
-    let records = @fs.read_file(root + "/events.jsonl").text()
     let before = @fs.read_file(second + "/master-pid").text()
     assert_eq(
       @process.collect_output("kill", ["-TERM", before.trim().to_owned()]).0,
@@ -145,9 +167,12 @@ async test "one supervisor isolates workspace environments, failures, recovery a
     idle_wait_for(async fn() {
       @fs.read_file(second + "/master-pid").text() != before
     })
-    assert_true(
-      @fs.read_file(root + "/events.jsonl").text() == records,
-      msg="recording-disabled task appended diagnostic events",
+    let saved_environment = @json.parse(
+      @fs.read_file(second_saved + "/environment.json").text(),
+    )
+    assert_false(
+      field(saved_environment, "ORCA_ENV_DEVSY_RECORDING") ==
+      Some(Json::string("0")),
     )
     close_tunnel(second_state)
   })
@@ -237,6 +262,169 @@ async test "supervisor crash preserves transport streams and recover resumes cle
       idle_wait_for(() => process_start(@string.parse_int(transport)) == 0)
     })
   })
+}
+
+///|
+async test "bulk restart terminates active transport and replaces supervisor" {
+  for condition in ["running", "crashed", "corrupt"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    let workspace = if condition == "corrupt" {
+      @fs.write_file(
+        directory + "/orca.yaml",
+        "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+      )
+      let (code, output, errors) = invoke("create", env, directory)
+      assert_eq(code, 0, msg=errors)
+      Some(field(@json.parse(output), "userData").unwrap())
+    } else {
+      None
+    }
+    @fs.write_file(
+      directory + "/transport",
+      "#!/bin/sh\ntrap '' TERM\ncat\n",
+      permission=0o700,
+    )
+    @async.with_timeout(20000, async fn() {
+      @async.with_task_group(async fn(group) {
+        let (input, writer) = @process.write_to_process()
+        defer writer.close()
+        let (reader, output) = @process.read_from_process()
+        defer reader.close()
+        let proxy = @process.spawn(
+          group,
+          integration_binary(),
+          ["--ssh-proxy", "", directory + "/transport"],
+          extra_env=env,
+          stdin=input,
+          stdout=output,
+          no_wait=true,
+        )
+        writer.write(b"before")
+        assert_eq(reader.read_exactly(6), b"before")
+        let root = env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy"
+        let previous = supervisor_pid(root)
+        if condition == "crashed" {
+          assert_eq(
+            @process.collect_output("kill", [
+              "-KILL",
+              previous.trim().to_owned(),
+            ]).0,
+            0,
+          )
+          idle_wait_for(async fn() { !supervisor_alive(root) })
+        }
+        if condition == "corrupt" {
+          let invalid = root + "/transports/invalid"
+          @fs.mkdir(invalid)
+          @fs.write_file(invalid + "/state.json", "{}")
+        }
+        let (code, _, errors) = invoke("restart", env, directory)
+        if condition == "corrupt" {
+          assert_true(code != 0)
+          assert_true(errors.contains("SSH transport cleanup failed"))
+        } else {
+          assert_eq(code, 0, msg=errors)
+        }
+        assert_false(supervisor_pid(root) == previous)
+        idle_wait_for(() => proxy.try_wait() is Some(_))
+        assert_eq(reader.read_some(max_len=1), None)
+        if condition == "corrupt" {
+          @fs.rmdir(root + "/transports/invalid", recursive=true)
+          let state = workspace.unwrap()
+          let worker = required(state, "tunnelDirectory")
+          assert_true(worker_alive(worker))
+          assert_eq(
+            field(
+              @json.parse(@fs.read_file(worker + "/status.json").text()),
+              "status",
+            ),
+            Some(Json::string("connected")),
+          )
+          close_tunnel(state)
+        }
+      })
+    })
+  }
+}
+
+///|
+async test "supervisor reconnects when the socket runtime directory disappears" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  let runtime = directory + "/runtime"
+  @fs.mkdir(runtime, permission=0o700)
+  env.set("XDG_RUNTIME_DIR", runtime)
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (code, output, errors) = invoke("create", env, directory)
+  assert_eq(code, 0, msg=errors)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  let worker = required(state, "tunnelDirectory")
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  let old = @json.parse(@fs.read_file(worker + "/state.json").text())
+  assert_true(
+    required(old, "socketDirectory").has_prefix(runtime + "/orca-env-devsy."),
+  )
+  let master = @fs.read_file(directory + "/master-pid").text().trim().to_owned()
+  @fs.rmdir(runtime, recursive=true)
+  assert_eq(@process.collect_output("kill", ["-TERM", master]).0, 0)
+  idle_wait_for(async fn() {
+    let current = @json.parse(@fs.read_file(worker + "/state.json").text())
+    let replacement = required(current, "socketDirectory")
+    replacement != required(old, "socketDirectory") &&
+    @fs.exists(replacement + "/socket")
+  })
+}
+
+///|
+async test "bulk recovery reads workspace environment after the operation lock" {
+  let (directory, env, state) = idle_fixture(3600000)
+  defer cleanup_fixture(directory)
+  let worker = required(state, "tunnelDirectory")
+  @fs.remove(worker + "/idle-enabled")
+  let lock = @fs.open(
+    worker + "/operation.lock",
+    mode=ReadWrite,
+    create_mode=OpenOrCreate,
+    permission=0o600,
+  )
+  defer lock.close()
+  assert_true(lock.try_lock(Exclusive))
+  @async.with_timeout(20000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let (reader, stderr) = @process.read_from_process()
+      defer reader.close()
+      let child = @process.spawn(
+        group,
+        integration_binary(),
+        ["recover"],
+        extra_env=env,
+        stderr~,
+      )
+      let output = @buffer.Buffer()
+      while !@utf8.decode(output.to_bytes()).contains("recover running") {
+        let chunk = reader.read_some(max_len=4096).unwrap()
+        output.write_bytes(chunk)
+      }
+      env.set("DOCKER_HOST", "fixture-new-environment")
+      save_fixture_environment(worker, env)
+      lock.unlock()
+      assert_eq(child.wait(), 0)
+      let saved = @json.parse(
+        @fs.read_file(worker + "/environment.json").text(),
+      )
+      assert_eq(
+        field(saved, "DOCKER_HOST"),
+        Some(Json::string("fixture-new-environment")),
+      )
+    })
+  })
+  close_tunnel(state)
 }
 
 ///|

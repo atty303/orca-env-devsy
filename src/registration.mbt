@@ -31,13 +31,13 @@ async fn write_registration(socket : @socket.Tcp, value : Json) -> Unit {
 }
 
 ///|
-async fn register_workspace(directory : String) -> Unit {
+async fn register_workspace(directory : String, environment? : Json) -> Unit {
   let mut detail = "Supervisor registration endpoint is not ready"
   @async.with_timeout(10000, async fn() {
     while true {
       try {
         ensure_supervisor()
-        register_workspace_inner(directory)
+        register_workspace_inner(directory, environment?)
         return
       } catch {
         error => detail = redact_credentials(error.to_string())
@@ -52,7 +52,10 @@ async fn register_workspace(directory : String) -> Unit {
 }
 
 ///|
-async fn register_workspace_inner(directory : String) -> Unit {
+async fn register_workspace_inner(
+  directory : String,
+  environment? : Json,
+) -> Unit {
   let path = adapter_state_home() + "/supervisor.json"
   let descriptor = @json.parse(@fs.read_file(path).text())
   let pid = @string.parse_int(required(descriptor, "pid"))
@@ -74,10 +77,13 @@ async fn register_workspace_inner(directory : String) -> Unit {
     field(peer, "start") == field(descriptor, "start") else {
     raise AdapterError("Supervisor registration endpoint changed")
   }
-  let environment = Json::empty_object()
-  for (name, value) in @env.get_env_vars() {
-    set_field(environment, name, Json::string(value))
-  }
+  let environment = environment.unwrap_or_else(() => {
+    let values = Json::empty_object()
+    for (name, value) in @env.get_env_vars() {
+      set_field(values, name, Json::string(value))
+    }
+    values
+  })
   write_registration(socket, {
     "directory": directory,
     "environment": environment,
@@ -116,6 +122,28 @@ async fn accept_registration(
       }
       environment.set(name, value)
     }
+    let lock = @fs.open(
+      directory + "/environment.lock",
+      mode=ReadWrite,
+      create_mode=OpenOrCreate,
+      permission=0o600,
+    )
+    defer lock.close()
+    while !lock.try_lock(Exclusive) {
+      @async.sleep(10)
+    }
+    let temporary = directory + "/environment.json.tmp"
+    if @fs.exists(temporary) {
+      @fs.remove(temporary)
+    }
+    defer (@fs.remove(temporary) catch { _ => () })
+    @fs.write_file(
+      temporary,
+      field(request, "environment").unwrap().stringify(),
+      create_mode=CreateNew,
+      permission=0o600,
+    )
+    @fs.rename(temporary, directory + "/environment.json", replace=true)
     environments.set(directory, environment)
     if environment.get("ORCA_ENV_DEVSY_RECORDING") != Some("0") {
       save_diagnostic(

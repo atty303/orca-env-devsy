@@ -96,7 +96,24 @@ async fn idle_fixture(timeout : Int32) -> (String, Map[String, String], Json) {
     "idleProvider": "fixture-provider",
   }
   @fs.write_file(saved + "/state.json", state.stringify())
+  save_fixture_environment(saved, env)
   (directory, env, state)
+}
+
+///|
+async fn save_fixture_environment(
+  saved : String,
+  env : Map[String, String],
+) -> Unit {
+  let environment = Json::empty_object()
+  for (name, value) in env {
+    set_field(environment, name, Json::string(value))
+  }
+  @fs.write_file(
+    saved + "/environment.json",
+    environment.stringify(),
+    permission=0o600,
+  )
 }
 
 ///|
