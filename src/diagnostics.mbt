@@ -169,18 +169,18 @@ fn process_error_type(output : String) -> String {
 }
 
 ///|
-async fn tunnel_errors(reader : @process.ReadFromProcess) -> String {
+async fn tunnel_errors(
+  reader : @process.ReadFromProcess,
+  environment : Map[String, String],
+) -> (String, String, Bool) {
   defer reader.close()
-  let mut tail = ""
-  while reader.read_some(max_len=4096) is Some(bytes) {
-    // Decode chunks lossy: arbitrary process stderr need not be valid UTF-8.
-    let chunk = @utf8.decode_lossy(bytes)
-    tail += chunk
-    if tail.length() > 8192 {
-      tail = tail[tail.length() - 8192:].to_owned()
-    }
-  }
-  process_error_type(tail)
+  let progress = Progress::new("ssh-tunnel", environment~)
+  let tail = progress.read_output(reader, capture=false, raw_messages=true)
+  (
+    process_error_type(tail),
+    progress.failure_detail(),
+    progress.details_truncated,
+  )
 }
 
 ///|

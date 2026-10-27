@@ -131,11 +131,16 @@ fn server_update_prepare_script(version : String) -> String {
 }
 
 ///|
-fn server_update_process_script(root : String, version? : String) -> String {
+fn server_update_process_script(
+  root : String,
+  version? : String,
+  relay_mode? : String,
+) -> String {
   let script =
     #|const fs = require('fs');
     #|const root = process.argv[1];
     #|const expectedVersion = process.argv[2];
+    #|const relayMode = process.argv[3];
     #|const inodes = new Set();
     #|for (const table of ['tcp', 'tcp6']) {
     #|  for (const row of fs.readFileSync('/proc/net/' + table, 'utf8').trim().split('\n').slice(1)) {
@@ -155,21 +160,47 @@ fn server_update_process_script(root : String, version? : String) -> String {
     #|  } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'EACCES' && e.code !== 'EPERM') throw e; }
     #|}
     #|if (owners.length !== 1) throw Error('Cannot identify a unique Orca Server port owner');
+    #|const owner = owners[0];
+    #|const identity = fs.readFileSync('/proc/' + owner + '/stat', 'utf8').split(') ').pop().split(' ')[19];
+    #|if (relayMode) {
+    #|  const env = fs.readFileSync('/proc/' + owners[0] + '/environ').toString().split('\0');
+    #|  const entry = env.find(x => x.startsWith('DEVSY_GH_INSTANCE='));
+    #|  const instance = entry ? entry.slice('DEVSY_GH_INSTANCE='.length) : '';
+    #|  if (instance.length > 1024) throw Error('Server relay instance exceeds limit');
+    #|  if (!instance) { process.stdout.write(JSON.stringify({outcome:'skip',serverInstance:instance,relayInstance:null})); process.exit(0); }
+    #|  const cp = require('child_process');
+    #|  const raw = cp.execFileSync('curl', ['--disable', '--noproxy', '*', '--silent', '--show-error', '--fail', '--max-time', '2', '--max-filesize', '4096', 'http://localhost:12049/ready'], {encoding:'utf8', timeout:3000});
+    #|  const ready = JSON.parse(raw);
+    #|  if (typeof ready.instance !== 'string' || !ready.instance || ready.instance.length > 1024) throw Error('Relay instance unavailable');
+    #|  const outcome = ready.instance === instance ? 'match' : 'mismatch';
+    #|  if (outcome === 'match' || relayMode === 'verify') { process.stdout.write(JSON.stringify({outcome,serverInstance:instance,relayInstance:ready.instance})); process.exit(0); }
+    #|  global.relayEvidence = {outcome:'restart',serverInstance:instance,relayInstance:ready.instance};
+    #|}
     #|if (expectedVersion) {
     #|  const env = fs.readFileSync('/proc/' + owners[0] + '/environ').toString().split('\0');
     #|  if (!env.includes(expectedVersion)) throw Error('Listening Orca Server is not the updated process');
     #|  process.exit(0);
     #|}
-    #|process.kill(owners[0], 'SIGTERM');
+    #|const currentStat = fs.readFileSync('/proc/' + owner + '/stat', 'utf8').split(') ').pop().split(' ')[19];
+    #|const currentArgs = fs.readFileSync('/proc/' + owner + '/cmdline').toString().split('\0');
+    #|if (identity !== currentStat || !currentArgs.some(x => x.endsWith('/orcad-server.js')) || !currentArgs.some((x,i) => x === '--project-root' && currentArgs[i+1] === root) || !fs.readdirSync('/proc/' + owner + '/fd').some(fd => { try { return inodes.has(fs.readlinkSync('/proc/' + owner + '/fd/' + fd)); } catch (_) { return false; } })) throw Error('Orca Server ownership changed');
+    #|process.kill(owner, 'SIGTERM');
     #|const deadline = Date.now() + 10000;
-    #|const wait = () => { try { const stat = fs.readFileSync('/proc/' + owners[0] + '/stat', 'utf8'); if (/\) Z /.test(stat)) return; process.kill(owners[0], 0); } catch (e) { if (e.code === 'ESRCH' || e.code === 'ENOENT') return; throw e; } if (Date.now() >= deadline) throw Error('Orca Server did not stop'); setTimeout(wait, 100); };
+    #|const wait = () => { try { const stat = fs.readFileSync('/proc/' + owners[0] + '/stat', 'utf8'); if (/\) Z /.test(stat)) { if (relayMode) process.stdout.write(JSON.stringify(global.relayEvidence)); return; } process.kill(owners[0], 0); } catch (e) { if (e.code === 'ESRCH' || e.code === 'ENOENT') { if (relayMode) process.stdout.write(JSON.stringify(global.relayEvidence)); return; } throw e; } if (Date.now() >= deadline) throw Error('Orca Server did not stop'); setTimeout(wait, 100); };
     #|wait();
+  (if relay_mode is Some(mode) {
+    "# orca-server-relay-" + mode + "\n"
+  } else {
+    ""
+  }) +
   "base=\"$HOME/.local/share/orca-env-devsy/orca\"; binary=\"$base/current/orca-ide\"; if test ! -x \"$binary\"; then binary=\"$base/update-previous/orca-ide\"; fi; ELECTRON_RUN_AS_NODE=1 \"$binary\" -e " +
   quote(script) +
   " " +
   quote(root) +
   " " +
-  quote(version.unwrap_or(""))
+  quote(version.unwrap_or("")) +
+  " " +
+  quote(relay_mode.unwrap_or(""))
 }
 
 ///|

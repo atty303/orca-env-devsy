@@ -27,6 +27,34 @@ async fn tunnel_status(
 }
 
 ///|
+async fn connection_failure(
+  directory : String,
+  names : Array[String],
+) -> String? {
+  for name in names {
+    let event = @json.parse(@fs.read_file(directory + "/" + name).text()) catch {
+      _ => Json::null()
+    }
+    if field(event, "detail") is Some(Json::String(detail)) && detail != "" {
+      return Some(detail)
+    }
+  }
+  None
+}
+
+///|
+async fn save_connection_failure(
+  directory : String,
+  name : String,
+  detail : String,
+) -> Unit {
+  let value : Json = { "detail": detail }
+  let temporary = directory + "/" + name + ".tmp"
+  @fs.write_file(temporary, value.stringify(), permission=0o600)
+  @fs.rename(temporary, directory + "/" + name, replace=true)
+}
+
+///|
 async fn adapter_executable() -> String {
   let name = @env.args()[0]
   if name.contains("/") {
@@ -232,7 +260,7 @@ async fn ensure_ssh_worker(
       @fs.write_file(directory + "/enabled", "", permission=0o600)
       spawn_tunnel_worker(directory)
     }
-    wait_tunnel(directory, expires)
+    wait_tunnel(directory, expires, required(state, "workspaceId"))
     return
   } else if restart {
     restart_tunnel(state, directory)
@@ -262,7 +290,7 @@ async fn ensure_ssh_worker(
   }
   register_workspace(directory)
   spawn_tunnel_worker(directory)
-  wait_tunnel(directory, expires)
+  wait_tunnel(directory, expires, required(state, "workspaceId"))
 }
 
 ///|
@@ -374,6 +402,7 @@ async fn recover_all_inner(restart~ : Bool = false) -> Unit {
       permits.acquire()
       group.spawn_bg(async fn() {
         defer permits.release()
+        let mut target = name
         try {
           if @fs.kind(directory, follow_symlink=false) !=
             @fs.FileKind::Directory ||
@@ -384,13 +413,61 @@ async fn recover_all_inner(restart~ : Bool = false) -> Unit {
             @fs.read_file(directory + "/state.json").text(),
           )
           validate_state(state)
+          target = required(state, "workspaceId")
+          progress_message(
+            target +
+            ": " +
+            (if restart { "restart" } else { "recover" }) +
+            " running…",
+          )
           set_field(state, "tunnelDirectory", Json::string(directory))
           recover_connection(state, restart~)
+          progress_message(
+            target +
+            ": " +
+            (if restart { "restart" } else { "recover" }) +
+            " done",
+          )
         } catch {
-          _ =>
+          error =>
             if @fs.exists(directory) {
               failures += 1
-              save_diagnostic("recover", "failed", tunnel_directory=directory)
+              let message = match error {
+                AdapterError(message) => message
+                _ => error.to_string()
+              }
+              let ssh_detail = if message.contains(
+                  "SSH and relay readiness timed out",
+                ) &&
+                !message.contains("last connection failure:") {
+                connection_failure(directory, [
+                  "worker-error.json", "ssh-error.json",
+                ]).unwrap_or("SSH failure details unavailable")
+              } else {
+                ""
+              }
+              let progress = Progress::new("recover")
+              let detail = (message +
+                (if ssh_detail == "" {
+                  ""
+                } else {
+                  "\nlast connection failure: " + ssh_detail
+                }))
+                .split("\n")
+                .map(line => {
+                  progress
+                  .safe_message(line.to_owned())
+                  .unwrap_or("[error detail unavailable]")
+                })
+                .join("\n")
+              progress_message(target + ": failed: " + detail)
+              save_diagnostic(
+                "recover",
+                "failed",
+                tunnel_directory=directory,
+                error_type="target_failed",
+                error_message=detail,
+              )
             } else {
               save_diagnostic("recover", "target-removed")
             }
@@ -572,7 +649,13 @@ async fn recover_connection(
     )
     match status {
       "Running" => ()
-      "Stopped" => return
+      "Stopped" => {
+        progress_message(
+          required(state, "workspaceId") +
+          ": workspace stopped; recovery skipped",
+        )
+        return
+      }
       "Busy" =>
         raise AdapterError(
           "Workspace is Busy; wait for workspace up to finish before recover",
@@ -675,15 +758,27 @@ async fn[T] connection_timeout(deadline : UInt64, run : async () -> T) -> T {
 }
 
 ///|
-async fn wait_tunnel(directory : String, deadline : UInt64) -> Unit {
+async fn wait_tunnel(
+  directory : String,
+  deadline : UInt64,
+  target : String,
+) -> Unit {
   let started = @env.now()
-  progress_message("ssh-tunnel: connecting…")
+  progress_message(target + ": ssh-tunnel: connecting…")
   errdefer progress_message(
-    "ssh-tunnel: failed (" + progress_timing(started) + ")",
+    target + ": ssh-tunnel: failed (" + progress_timing(started) + ")",
   )
+  if @fs.exists(directory + "/worker-error.json") {
+    @fs.remove(directory + "/worker-error.json") catch {
+      _ => ()
+    }
+  }
   @fs.write_file(directory + "/probe-request", "", permission=0o600)
   connection_timeout(deadline, async fn() {
     while true {
+      if connection_failure(directory, ["worker-error.json"]) is Some(detail) {
+        raise AdapterError("Connection recovery failed: " + detail)
+      }
       if @fs.exists(directory + "/status.json") {
         let status = @json.parse(
           @fs.read_file(directory + "/status.json").text(),
@@ -724,8 +819,21 @@ async fn wait_tunnel(directory : String, deadline : UInt64) -> Unit {
       }
       @async.sleep(100)
     }
-  })
-  progress_message("ssh-tunnel: connected (" + progress_timing(started) + ")")
+  }) catch {
+    AdapterError(message) => {
+      if !message.contains("SSH and relay readiness timed out") {
+        raise AdapterError(message)
+      }
+      let detail = connection_failure(directory, [
+        "worker-error.json", "ssh-error.json",
+      ]).unwrap_or("SSH failure details unavailable")
+      raise AdapterError(message + "; last connection failure: " + detail)
+    }
+    error => raise error
+  }
+  progress_message(
+    target + ": ssh-tunnel: connected (" + progress_timing(started) + ")",
+  )
 }
 
 ///|
@@ -790,9 +898,10 @@ async fn close_tunnel(state : Json) -> Unit {
   for
     name in [
       "state.json", "state.tmp", "status.json", "status.tmp", "worker.lock", "startup.lock",
-      "request", "socket", "git-status", "git-established", "probe-request", "recovery.lock",
-      "idle.json", "idle.tmp", "idle-state.lock", "idle-enabled", "operation.lock",
-      "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
+      "request", "socket", "git-status", "git-established", "probe-request", "ssh-error.json",
+      "worker-error.json", "worker-error.json.tmp", "ssh-error.json.tmp", "server-relay-pending",
+      "recovery.lock", "idle.json", "idle.tmp", "idle-state.lock", "idle-enabled",
+      "operation.lock", "server.lock", "server-enabled", "paused", "pause-ack", "pairing-code",
     ] {
     if @fs.exists(directory + "/" + name) {
       @fs.remove(directory + "/" + name)
@@ -964,7 +1073,7 @@ async fn tunnel_worker(
       let (errors, stderr) = @process.read_from_process()
       defer errors.close()
       let classified = group.spawn(
-        async fn() { tunnel_errors(errors) },
+        async fn() { tunnel_errors(errors, workspace_environment(state)) },
         no_wait=true,
       )
       needs_cleanup = true
@@ -1030,15 +1139,21 @@ async fn tunnel_worker(
           continue
         }
         if child is Some(child) && child.try_wait() is Some(code) {
+          let (kind, detail, truncated) = @async.with_timeout(1000, async fn() {
+            classified.wait()
+          }) catch {
+            _ => ("process_exit", "SSH failure details unavailable", true)
+          }
+          save_connection_failure(directory, "ssh-error.json", detail) catch {
+            _ => ()
+          }
           save_diagnostic(
             "orca-tunnel",
             "disconnected",
             exit_code=code,
-            error_type=@async.with_timeout(1000, async fn() {
-              classified.wait()
-            }) catch {
-              _ => "process_exit"
-            },
+            error_type=kind,
+            error_message=detail,
+            details_truncated=truncated,
             tunnel_directory=directory,
             recording=workspace_recording(state),
           )
@@ -1066,12 +1181,68 @@ async fn tunnel_worker(
             Ready => {
               failures = 0
               attempt = 0
-              if !connected {
-                if @fs.exists(directory + "/server-enabled") &&
-                  !@fs.exists(directory + "/server-update-pending") {
+              if @fs.exists(directory + "/server-enabled") &&
+                !@fs.exists(directory + "/server-update-pending") {
+                let server_error = try {
                   @async.with_timeout(connection_timeout_ms(state~), async fn() {
                     ignore(recover_server(state))
                   })
+                  None
+                } catch {
+                  error =>
+                    if @async.is_being_cancelled() {
+                      raise error
+                    } else {
+                      Some(error.to_string())
+                    }
+                }
+                if server_error is Some(error) {
+                  let progress = Progress::new(
+                    "server-relay-sync",
+                    environment=workspace_environment(state),
+                  )
+                  let detail = error
+                    .split("\n")
+                    .map(line => {
+                      progress
+                      .safe_message(line.to_owned())
+                      .unwrap_or("[error detail unavailable]")
+                    })
+                    .join("\n")
+                  save_connection_failure(
+                    directory, "worker-error.json", detail,
+                  ) catch {
+                    _ => ()
+                  }
+                  save_diagnostic(
+                    "server-relay-sync",
+                    "retry",
+                    error_type="sync_failed",
+                    error_message=detail,
+                    retry_delay_ms=1000,
+                    tunnel_directory=directory,
+                    recording=workspace_recording(state),
+                  )
+                  connected = false
+                  tunnel_status(
+                    directory,
+                    "checking",
+                    recording=workspace_recording(state),
+                  )
+                  next_probe = @env.now() + 1000
+                  continue
+                }
+              }
+              if !connected {
+                if @fs.exists(directory + "/ssh-error.json") {
+                  @fs.remove(directory + "/ssh-error.json") catch {
+                    _ => ()
+                  }
+                }
+                if @fs.exists(directory + "/worker-error.json") {
+                  @fs.remove(directory + "/worker-error.json") catch {
+                    _ => ()
+                  }
                 }
                 connected = true
                 monitoring = false
@@ -1176,6 +1347,23 @@ async fn tunnel_worker(
           _ => None
         }
         if @fs.exists(enabled) && !@fs.exists(directory + "/paused") {
+          if message is Some(detail) {
+            let progress = Progress::new(
+              "orca-tunnel",
+              environment=workspace_environment(state),
+            )
+            let safe = detail
+              .split("\n")
+              .map(line => {
+                progress
+                .safe_message(line.to_owned())
+                .unwrap_or("[error detail unavailable]")
+              })
+              .join("\n")
+            save_connection_failure(directory, "worker-error.json", safe) catch {
+              _ => ()
+            }
+          }
           save_diagnostic(
             "orca-tunnel",
             "process-error",

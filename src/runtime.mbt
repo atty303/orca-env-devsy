@@ -33,6 +33,7 @@ async fn command_result(
   stage : String,
   environment? : Map[String, String],
   cwd? : StringView,
+  target? : String,
 ) -> (Int32, String, String) {
   let recording = environment
     .unwrap_or(@env.get_env_vars())
@@ -41,7 +42,8 @@ async fn command_result(
   save_diagnostic(stage, "started", recording~)
   let started = @env.now()
   let progress = Progress::new(stage, environment?)
-  progress_message(stage + ": running…")
+  let label = target.map(value => value + ": " + stage).unwrap_or(stage)
+  progress_message(label + ": running…")
   let mut failure_kind = "process_api"
   let mut failure_errno = None
   let mut failure_phase = None
@@ -61,7 +63,7 @@ async fn command_result(
         details_truncated=progress.details_truncated,
         recording~,
       )
-      progress_message(stage + ": failed (" + progress_timing(started) + ")")
+      progress_message(label + ": failed (" + progress_timing(started) + ")")
     }
     try {
       let (out, stdout) = @process.read_from_process()
@@ -123,7 +125,7 @@ async fn command_result(
     }
   }
   progress_message(
-    stage +
+    label +
     ": " +
     (if status == 0 { "done" } else { "failed (exit \{status})" }) +
     " (" +
@@ -168,6 +170,7 @@ async fn command(
   stage : String,
   environment? : Map[String, String],
   cwd? : StringView,
+  target? : String,
 ) -> String {
   let (status, output, detail) = command_result(
     program,
@@ -175,6 +178,7 @@ async fn command(
     stage,
     environment?,
     cwd?,
+    target?,
   )
   guard status == 0 else {
     raise AdapterError(command_failure(stage, status, detail))
@@ -279,6 +283,13 @@ async fn devsy_result(
     stage,
     environment~,
     cwd?=workspace_directory(state).map(path => path[:]),
+    target?=field(state, "workspaceId").map(value => {
+      if value is Json::String(name) {
+        name
+      } else {
+        ""
+      }
+    }),
   )
   result
 }
@@ -435,6 +446,13 @@ async fn remote(state : Json, script : String, stage : String) -> String {
     stage,
     environment=workspace_environment(state),
     cwd?=workspace_directory(state).map(path => path[:]),
+    target?=field(state, "workspaceId").map(value => {
+      if value is Json::String(name) {
+        name
+      } else {
+        ""
+      }
+    }),
   )
 }
 

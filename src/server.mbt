@@ -16,6 +16,53 @@ async fn server_connection(
 }
 
 ///|
+async fn server_relay_check(
+  state : Json,
+  mode : String,
+  stage : String,
+) -> String {
+  let output = remote(
+    state,
+    server_update_locked(
+      server_update_process_script(
+        required(state, "projectRoot"),
+        relay_mode=mode,
+      ),
+    ),
+    stage,
+  )
+  let result = @json.parse(output)
+  let outcome = required(result, "outcome")
+  guard ["match", "mismatch", "skip", "restart"].contains(outcome) else {
+    raise AdapterError("Invalid Orca Server relay comparison")
+  }
+  let progress = Progress::new(
+    "server-relay-sync",
+    environment=workspace_environment(state),
+  )
+  let evidence : Json = { "outcome": outcome }
+  for name in ["serverInstance", "relayInstance"] {
+    match field(result, name) {
+      Some(Json::String(value)) =>
+        set_field(
+          evidence,
+          name,
+          Json::string(progress.safe_message(value).unwrap_or("[unavailable]")),
+        )
+      _ => set_field(evidence, name, Json::null())
+    }
+  }
+  save_diagnostic(
+    "server-relay-sync",
+    outcome,
+    evidence~,
+    tunnel_directory=required(state, "tunnelDirectory"),
+    recording=workspace_recording(state),
+  )
+  outcome
+}
+
+///|
 async fn recover_server(
   state : Json,
   connection_result~ : Bool = false,
@@ -39,10 +86,52 @@ async fn recover_server(
   guard !@fs.exists(directory + "/server-update-pending") else {
     raise AdapterError("Server update is incomplete; retry the update")
   }
+  let pending = directory + "/server-relay-pending"
+  errdefer save_diagnostic(
+    "server-relay-sync",
+    "failed",
+    error_type="sync_failed",
+    tunnel_directory=directory,
+    recording=workspace_recording(state),
+  )
   let output = if !connection_result && server_is_running(state) {
+    let observed = server_relay_check(state, "verify", "server-relay-check")
+    let outcome = if observed == "mismatch" {
+      @fs.write_file(pending, "", permission=0o600)
+      server_relay_check(state, "sync", "server-relay-stop")
+    } else {
+      observed
+    }
+    if outcome == "restart" {
+      ignore(launch_server(state))
+      let verified = server_relay_check(state, "verify", "server-relay-verify")
+      guard verified == "match" else {
+        raise AdapterError("Orca Server relay instance changed during restart")
+      }
+      save_diagnostic(
+        "server-relay-sync",
+        "restarted",
+        tunnel_directory=directory,
+        recording=workspace_recording(state),
+      )
+    } else if outcome != "match" && outcome != "skip" {
+      raise AdapterError("Cannot compare Orca Server relay instance")
+    }
+    if @fs.exists(pending) {
+      guard outcome != "skip" else {
+        raise AdapterError(
+          "Orca Server relay instance unavailable after restart",
+        )
+      }
+      @fs.remove(pending)
+    }
     save_diagnostic(
       "recover-server",
-      "reuse",
+      if outcome == "restart" {
+        "restart"
+      } else {
+        "reuse"
+      },
       tunnel_directory=directory,
       recording=workspace_recording(state),
     )
@@ -70,6 +159,19 @@ async fn recover_server(
       }
     }
     let output = launch_server(state)
+    if @fs.exists(pending) {
+      let verified = server_relay_check(state, "verify", "server-relay-verify")
+      guard verified == "match" else {
+        raise AdapterError("Orca Server relay instance changed during restart")
+      }
+      @fs.remove(pending)
+      save_diagnostic(
+        "server-relay-sync",
+        "restarted",
+        tunnel_directory=directory,
+        recording=workspace_recording(state),
+      )
+    }
     configure_orca_project(state)
     output
   }

@@ -170,7 +170,8 @@ async test "state directories own independent supervisors" {
       })
     })
     for request in requests {
-      assert_eq(request.wait().0, 0)
+      let (code, _, errors) = request.wait()
+      assert_eq(code, 0, msg=errors.text())
     }
     let pid1 = supervisor_pid(
       env1.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",

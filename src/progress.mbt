@@ -449,6 +449,7 @@ async fn Progress::read_output(
   capture~ : Bool,
   statuses~ : Bool = false,
   messages~ : Bool = false,
+  raw_messages~ : Bool = false,
 ) -> String {
   let output = @buffer.Buffer(size_hint=4096)
   let pending = @buffer.Buffer(size_hint=4096)
@@ -472,7 +473,11 @@ async fn Progress::read_output(
               ""
             }
           }
-          self.line(line, statuses~, messages~)
+          if raw_messages {
+            self.message(line, debug=false, warning=true, emit=false)
+          } else {
+            self.line(line, statuses~, messages~)
+          }
         }
         pending.reset()
         oversized = false
@@ -494,7 +499,11 @@ async fn Progress::read_output(
         ""
       }
     }
-    self.line(line, statuses~, messages~)
+    if raw_messages {
+      self.message(line, debug=false, warning=true, emit=false)
+    } else {
+      self.line(line, statuses~, messages~)
+    }
   }
   if capture {
     @utf8.decode(output.to_bytes())

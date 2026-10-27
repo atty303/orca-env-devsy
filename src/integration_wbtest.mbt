@@ -67,6 +67,13 @@ async fn fixture() -> (String, Map[String, String]) {
     #|case "$*" in
     #|  *'candidate="$base/update-$version"'* )
     #|    test ! -f "$HOME/fail-update-prepare"; printf 'prepare\n' >> "$HOME/update-steps" ;;
+    #|  *'orca-server-relay-'*)
+    #|    test ! -f "$HOME/fail-server-check" || { printf 'cannot inspect server environment\n' >&2; exit 1; }
+    #|    if test -f "$HOME/server-instance-secret"; then printf '{"outcome":"match","serverInstance":"ghp_fixtureprivatetoken123","relayInstance":"ghp_fixtureprivatetoken123"}';
+    #|    elif test -f "$HOME/server-instance-unset"; then printf '{"outcome":"skip","serverInstance":"","relayInstance":null}';
+    #|    elif test -f "$HOME/server-instance-stale"; then
+    #|      case "$*" in *'orca-server-relay-verify'*) printf '{"outcome":"mismatch","serverInstance":"old","relayInstance":"current"}' ;; *) printf '{"outcome":"restart","serverInstance":"old","relayInstance":"current"}'; rm -f "$HOME/served" "$HOME/server-instance-stale"; printf 'relay-stop\n' >> "$HOME/update-steps" ;; esac
+    #|    else printf '{"outcome":"match","serverInstance":"current","relayInstance":"current"}'; fi ;;
     #|  *'const inodes = new Set'* )
     #|    case "$*" in *ORCA_ENV_DEVSY_UPDATE_*) test -f "$HOME/served"; printf 'owner-verified\n' >> "$HOME/update-steps" ;; *) test ! -f "$HOME/fail-update-stop"; printf 'stop\n' >> "$HOME/update-steps"; rm -f "$HOME/served" ;; esac ;;
     #|  *'candidate="$base/update-"'* )
@@ -117,7 +124,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
     #|      exit 1
     #|    fi
-    #|    test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
+    #|    test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; if test -f "$HOME/relay-changes-on-start"; then rm "$HOME/relay-changes-on-start"; touch "$HOME/server-instance-stale"; fi; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
     #|  *'-O check'*)
     #|    test -f "$control" ;;
     #|  *'-O exit'*) rm -f "$control" ;;
@@ -138,7 +145,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    fi
     #|    touch "$control"
     #|    while test -f "$control"; do
-    #|      if test -f "$HOME/drop-tunnel"; then rm "$HOME/drop-tunnel"; printf "Permission denied (publickey). private-stderr-secret\n" >&2; exit 1; fi
+    #|      if test -f "$HOME/drop-tunnel"; then rm "$HOME/drop-tunnel"; printf "Permission denied (publickey). password=private-stderr-secret\n" >&2; exit 1; fi
     #|      sleep 0.01
     #|    done ;;
     #|  *'-N'* )
@@ -427,6 +434,129 @@ async test "server CLI emits pairing separately and recover reuses a responding 
     assert_false(commands.text().contains("--recipe-json"))
     assert_false(commands.text().contains("releases/latest"))
   })
+}
+
+///|
+async test "recover synchronizes a changed server relay instance and skips an unset instance" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let result = @json.parse(output)
+    let state = field(result, "userData").unwrap()
+    let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    let workspace_id = required(state, "workspaceId")
+    @fs.write_file(directory + "/server-instance-stale", "")
+    @fs.write_file(directory + "/server-instance-unset", "")
+    let (status, _, errors) = invoke("recover", env, directory)
+    assert_eq(status, 0, msg=errors)
+    assert_true(errors.contains(workspace_id + ": recover done"), msg=errors)
+    assert_true(@fs.exists(directory + "/server-instance-stale"))
+    @fs.remove(directory + "/server-instance-unset")
+    @fs.write_file(directory + "/server-instance-secret", "")
+    let (status, _, errors) = invoke("recover", env, directory)
+    assert_eq(status, 0, msg=errors)
+    @fs.remove(directory + "/server-instance-secret")
+    let (status, _, errors) = invoke("restart", env, directory)
+    assert_eq(status, 0, msg=errors)
+    assert_true(errors.contains(workspace_id + ": restart done"), msg=errors)
+    assert_false(@fs.exists(directory + "/server-instance-stale"))
+    assert_true(
+      @fs.read_file(directory + "/update-steps").text().contains("relay-stop"),
+    )
+    let worker = required(state, "tunnelDirectory")
+    @fs.write_file(directory + "/server-instance-stale", "")
+    @fs.write_file(worker + "/probe-request", "")
+    @async.with_timeout(10000, async fn() {
+      while @fs.exists(directory + "/server-instance-stale") ||
+            @fs.exists(worker + "/probe-request") {
+        @async.sleep(25)
+      }
+    })
+    let before = @fs.read_file(directory + "/update-steps")
+      .text()
+      .split("relay-stop")
+      .count()
+    @fs.write_file(directory + "/server-instance-stale", "")
+    @fs.write_file(directory + "/relay-changes-on-start", "")
+    @fs.write_file(worker + "/probe-request", "")
+    @async.with_timeout(15000, async fn() {
+      while @fs.read_file(directory + "/update-steps")
+            .text()
+            .split("relay-stop")
+            .count() <
+            before + 2 ||
+            @fs.exists(worker + "/server-relay-pending") {
+        @async.sleep(25)
+      }
+    })
+    @fs.write_file(directory + "/fail-server-check", "")
+    @fs.write_file(worker + "/probe-request", "")
+    @async.with_timeout(10000, async fn() {
+      while !@fs.exists(worker + "/worker-error.json") {
+        @async.sleep(25)
+      }
+    })
+    @fs.remove(directory + "/fail-server-check")
+    @async.with_timeout(15000, async fn() {
+      while @fs.exists(worker + "/worker-error.json") {
+        @async.sleep(25)
+      }
+    })
+    let events = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(
+      events.contains(
+        "\"stage\":\"server-relay-sync\",\"status\":\"restarted\"",
+      ),
+    )
+    assert_true(events.contains("\"serverInstance\":\"old\""))
+    assert_true(events.contains("\"relayInstance\":\"current\""))
+    assert_false(events.contains("ghp_fixtureprivatetoken123"))
+  })
+}
+
+///|
+async test "restart reports the target and redacted SSH failure after timeout" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", "5000")
+  @fs.write_file(
+    directory + "/orca.yaml",
+    "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+  )
+  let (status, output, errors) = invoke("create", env, directory)
+  assert_eq(status, 0, msg=errors)
+  let result = @json.parse(output)
+  let state = field(result, "userData").unwrap()
+  let payload : Json = { "schemaVersion": 1, "recipeResult": result }
+  defer ignore(invoke("destroy", env, directory, payload~))
+  @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
+  let wrapper =
+    #|#!/bin/sh
+    #|case "$*" in *'-N'*) printf '[proxy] connection refused password=fixture-private-password\n' >&2; awk 'BEGIN { printf "password="; for (i=0;i<9000;i++) printf "x"; print "fixture-private-tail" }' >&2; exit 255 ;; esac
+    #|exec "$HOME/bin/ssh-original" "$@"
+  @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
+  let (status, _, errors) = invoke("restart", env, directory)
+  assert_true(status != 0)
+  assert_true(errors.contains(required(state, "workspaceId")), msg=errors)
+  assert_true(errors.contains("[proxy] connection refused"), msg=errors)
+  assert_false(errors.contains("fixture-private-password"), msg=errors)
+  assert_false(errors.contains("fixture-private-tail"), msg=errors)
+  let records = @fs.read_file(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+  ).text()
+  assert_true(records.contains("connection refused"))
+  assert_false(records.contains("fixture-private-password"))
+  assert_false(records.contains("fixture-private-tail"))
+  @fs.rename(directory + "/bin/ssh-original", directory + "/bin/ssh")
 }
 
 ///|
