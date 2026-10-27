@@ -27,6 +27,13 @@ remote machine while keeping the same Orca workflow.
 
 You configure a recipe once; ordinary task creation then happens in Orca.
 
+## Adapter requirements
+
+The host needs Git, OpenSSH, a POSIX shell and `env` supporting `-u`.
+
+Adapter binaries support macOS 13+ on Apple Silicon, and Linux x86_64/arm64 with
+glibc 2.31+. The container runs Linux x86_64 or arm64.
+
 ## Quick start: Docker
 
 This walkthrough starts with a repository that has no Dev Container configuration.
@@ -34,12 +41,8 @@ It creates one Docker recipe with an Orca Server connection. You need:
 
 - Orca desktop, [mise](https://mise.jdx.dev), and a running Docker daemon accessible
   through `docker`.
-- Git, OpenSSH, a POSIX shell and `env` supporting `-u` on the host.
 - A repository already added to Orca, with a Git remote the container can clone.
   For private repositories, prepare your host's Git credentials or SSH agent.
-
-Adapter binaries support macOS 13+ on Apple Silicon, and Linux x86_64/arm64 with
-glibc 2.31+. The container runs Linux x86_64 or arm64.
 
 ### 1. Add the tools
 
@@ -139,6 +142,19 @@ devsy:
       upArgs: ["--provider", "docker"]
     apple:
       upArgs: ["--provider", "apple", "--platform", "linux/arm64"]
+
+environmentRecipes:
+  - id: devsy-apple
+    name: Apple Container
+    checkoutMode: orca-worktree
+    devsy:
+      profile: apple
+      connection: orca-server
+      buildRef: main
+    create: mise exec -- orca-env-devsy recipe create
+    suspend: mise exec -- orca-env-devsy recipe suspend
+    resume: mise exec -- orca-env-devsy recipe resume
+    destroy: mise exec -- orca-env-devsy recipe destroy
 ```
 
 Set `devsy.profile: apple` on a recipe to select that profile. Settings apply in
