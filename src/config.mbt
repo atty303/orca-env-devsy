@@ -18,6 +18,7 @@ pub struct Settings {
   build_ref : String?
   up_args : Array[String]
   codex_auth : Bool
+  server_env : Json
   idle_timeout_ms : Int64?
   idle_timeout_source : String?
 } derive(Eq, Debug)
@@ -100,6 +101,21 @@ fn command_field(
 }
 
 ///|
+fn valid_env_name(name : String) -> Bool {
+  let characters = name.to_array()
+  characters.length() > 0 &&
+  !(characters[0] >= '0' && characters[0] <= '9') &&
+  characters
+  .iter()
+  .all(char => {
+    char == '_' ||
+    (char >= 'a' && char <= 'z') ||
+    (char >= 'A' && char <= 'Z') ||
+    (char >= '0' && char <= '9')
+  })
+}
+
+///|
 pub fn interpolate(
   value : String,
   lookup : (String) -> String?,
@@ -115,17 +131,7 @@ pub fn interpolate(
     let text = variable.to_owned()
     let required = text.has_suffix("?")
     let name = if required { text[:text.length() - 1].to_owned() } else { text }
-    let characters = name.to_array()
-    guard characters.length() > 0 &&
-      !(characters[0] >= '0' && characters[0] <= '9') &&
-      characters
-      .iter()
-      .all(char => {
-        char == '_' ||
-        (char >= 'a' && char <= 'z') ||
-        (char >= 'A' && char <= 'Z') ||
-        (char >= '0' && char <= '9')
-      }) else {
+    guard valid_env_name(name) else {
       raise InvalidConfig("\{location}: invalid environment variable reference")
     }
     match lookup(name) {
@@ -193,6 +199,7 @@ pub fn resolve_settings(
   let mut idle_timeout_ms = None
   let mut idle_timeout_source = None
   let args = []
+  let server_env = Json::empty_object()
   for index, layer in layers {
     let location = [
         "devsy",
@@ -230,6 +237,30 @@ pub fn resolve_settings(
         interpolate(argument, lookup, "\{location}.upArgs[\{argument_index}]"),
       )
     }
+    let server = object_field(layer, "orca-server", location)
+    let configured_env = object_field(server, "env", location + ".orca-server")
+    if configured_env is Json::Object(values) {
+      for name, value in values {
+        let setting_location = location + ".orca-server.env." + name
+        guard valid_env_name(name) else {
+          raise InvalidConfig(setting_location + " has an invalid name")
+        }
+        ignore(interpolate("${" + name + "}", _ => None, setting_location))
+        guard value is Json::String(text) && !text.contains("\u0000") else {
+          raise InvalidConfig(
+            setting_location + " must be a string without NUL",
+          )
+        }
+        let literal = interpolate(text, _ => Some(""), setting_location)
+        guard !(credential_field(name) && literal != "") &&
+          redact_credentials(text) == text else {
+          raise InvalidConfig(
+            setting_location + ": credential values must use remote references",
+          )
+        }
+        set_field(server_env, name, value)
+      }
+    }
     let addons = object_field(layer, "addons", location)
     if string_field(layer, "idleTimeout", location) is Some(raw) {
       idle_timeout_ms = Some(
@@ -263,6 +294,7 @@ pub fn resolve_settings(
     build_ref,
     up_args: args,
     codex_auth,
+    server_env,
     idle_timeout_ms,
     idle_timeout_source,
   }

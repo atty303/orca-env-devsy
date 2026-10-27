@@ -601,6 +601,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     "hostDirectory",
     Json::string(@env.current_dir().unwrap_or(environment("ORCA_REPO_PATH"))),
   )
+  set_field(state, "serverEnv", config.server_env)
   set_field(state, "command", Json::array(config.command.map(Json::string)))
   set_field(state, "devsyEnv", locations)
   if config.home is Some(value) {

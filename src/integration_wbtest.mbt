@@ -102,6 +102,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'project setups'*) printf '{"ok":true,"result":{"setups":[{"id":"fixture-setup","path":"/workspace/repo"}]}}\n' ;;
     #|  *'project setup-update'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/workspaces/.orca"}}}}\n' ;;
     #|  *'--recipe-json'*)
+    #|    if test -f "$HOME/real-serve"; then sh -c "$arg"; exit $?; fi
     #|    if test -f "$HOME/fail-tunnel-cleanup"; then
     #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
     #|      exit 1
@@ -343,6 +344,9 @@ async test "server CLI emits pairing separately and recover reuses a responding 
       #|devsy:
       #|  connection: orca-server
       #|  buildRef: refs/heads/main
+      #|  orca-server:
+      #|    env:
+      #|      PATH: "${DEVSY_REMOTE_WORKSPACE_FOLDER?}/.local/bin:${PATH?}"
       #|  addons:
       #|    codexAuth: true
       #|environmentRecipes:
@@ -368,6 +372,7 @@ async test "server CLI emits pairing separately and recover reuses a responding 
       @fs.read_file(required(state, "tunnelDirectory") + "/state.json").text(),
     )
     assert_eq(field(worker, "orcaVolume"), field(state, "orcaVolume"))
+    assert_eq(field(worker, "serverEnv"), field(state, "serverEnv"))
     assert_true(
       @fs.read_file(directory + "/args")
       .text()
@@ -718,7 +723,7 @@ async test "remote server launch returns JSON while the detached server remains 
   let output = @async.with_timeout(3000, async fn() {
     command(
       "sh",
-      ["-c", server_launch_script(directory, 12345)],
+      ["-c", server_launch_script(directory, 12345, Json::empty_object())],
       "fixture-serve",
       environment=env,
     )
@@ -4409,7 +4414,7 @@ async test "worker recovery reinstalls a missing server into the retained profil
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main, orca-server: {env: {PATH: '${DEVSY_REMOTE_WORKSPACE_FOLDER?}/.local/bin:${PATH?}'}}}\nenvironmentRecipes: [{id: test}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
@@ -4425,6 +4430,8 @@ async test "worker recovery reinstalls a missing server into the retained profil
     assert_eq(status, 0, msg=errors)
     let commands = @fs.read_file(directory + "/ssh-args").text()
     assert_true(commands.contains("releases/latest"))
+    assert_true(commands.contains("/workspace/repo"))
+    assert_true(commands.contains(".local/bin:"))
     assert_true(
       commands.contains("ORCA_USER_DATA_PATH=/workspaces/.orca/.profile"),
     )
@@ -4517,4 +4524,226 @@ async test "failed server creation reclaims only the assigned volume" {
   assert_false(@fs.exists(directory + "/created"))
   assert_false(@fs.exists(directory + "/volume-present"))
   assert_true(@fs.read_file(directory + "/volume-args").text().contains("rm\n"))
+}
+
+///|
+async test "server environment resolves remote values without shell evaluation" {
+  let directory = @fs.tmpdir(prefix="orca-server-env")
+  defer cleanup_fixture(directory)
+  let install = directory + "/.local/share/orca-env-devsy/orca/current"
+  @fs.mkdir(install + "/resources/app.asar/out/cli", recursive=true)
+  let bun = command("which", ["bun"], "fixture-bun").trim().to_owned()
+  @fs.symlink(install + "/orca-ide", target=bun)
+  @fs.write_file(
+    install + "/resources/app.asar/out/cli/index.js",
+    "console.log(process.env.PATH); console.log(process.env.LITERAL); console.log(process.env.COPY); console.log(process.env.HOME); console.log(process.env.PPID);\n",
+  )
+  let env = @env.get_env_vars()
+  env.set("HOME", directory)
+  env.set("PATH", "/usr/bin:/bin")
+  env.set("LITERAL", "remote original")
+  let settings : Json = {
+    "PATH": "${DEVSY_REMOTE_WORKSPACE_FOLDER?}/.local/bin:${PATH?}",
+    "LITERAL": "$(touch injected); 'quoted'",
+    "COPY": "${LITERAL?}",
+    "HOME": "/another-home",
+    "PPID": "fixture-ppid",
+  }
+  let output = command(
+    "sh",
+    ["-c", server_launch_script("/work space", 12345, settings)],
+    "fixture-serve-env",
+    environment=env,
+  )
+  assert_eq(
+    output, "/work space/.local/bin:/usr/bin:/bin\n$(touch injected); 'quoted'\nremote original\n/another-home\nfixture-ppid\n",
+  )
+  assert_false(@fs.exists(directory + "/injected"))
+}
+
+///|
+async test "server environment observations distinguish remote values and mask credentials" {
+  let directory = @fs.tmpdir(prefix="orca-server-observation")
+  defer cleanup_fixture(directory)
+  let install = directory + "/.local/share/orca-env-devsy/orca/current"
+  @fs.mkdir(install + "/resources/app.asar/out/cli", recursive=true)
+  let bun = command("which", ["bun"], "fixture-bun").trim().to_owned()
+  @fs.symlink(install + "/orca-ide", target=bun)
+  @fs.write_file(
+    install + "/resources/app.asar/out/cli/index.js",
+    "console.log(process.env.PPID_COPY);\n",
+  )
+  let env = @env.get_env_vars()
+  env.set("HOME", directory)
+  env.set("PATH", "/fixture/bin:/usr/bin")
+  env.set("EMPTY_OBSERVATION", "")
+  env.remove("MISSING_OBSERVATION")
+  env.set("AWS_SECRET_ACCESS_KEY", "synthetic-secret-value")
+  env.set("AZURE_STORAGE_KEY", "synthetic-azure-secret")
+  env.set("SECRET_ALIAS", "synthetic-alias-secret")
+  env.set("NPM_CONFIG__AUTH", "ZmFrZTpwYXNzd29yZA==")
+  env.set(
+    "BEARER_OBSERVATION", "{\"note\":\"Bearer synthetic-bearer-value\",\"next\":\"ok\"}",
+  )
+  env.set("LONG_OBSERVATION", "x".repeat(25000))
+  env.set("BAD_QUERY", "https://example.com/?%zz=x")
+  env.set(
+    "VALUE_OBSERVATION", "context Authorization: Bearer ghp_fixturetoken and tail",
+  )
+  let config : Json = {
+    "PATH": "${DEVSY_REMOTE_WORKSPACE_FOLDER?}:${PATH?}",
+    "A": "${EMPTY_OBSERVATION}",
+    "B": "${MISSING_OBSERVATION}",
+    "C": "${AWS_SECRET_ACCESS_KEY?}",
+    "D": "${VALUE_OBSERVATION?}",
+    "E": "${AZURE_STORAGE_KEY?}",
+    "F": "${LONG_OBSERVATION?}",
+    "G": "${BAD_QUERY?}",
+    "AWS_SECRET_ACCESS_KEY": "${SECRET_ALIAS?}",
+    "NONSECRET_ALIAS": "${SECRET_ALIAS?}",
+    "PPID_COPY": "${PPID?}",
+    "NPM_COPY": "${NPM_CONFIG__AUTH?}",
+    "BEARER_COPY": "${BEARER_OBSERVATION?}",
+  }
+  let output = command(
+    "sh",
+    ["-c", server_launch_script("/work space", 12345, config, recording=true)],
+    "fixture-observation",
+    environment=env,
+  )
+  assert_false(output.contains("synthetic-secret-value"))
+  assert_false(output.contains("ghp_fixturetoken"))
+  assert_false(output.contains("synthetic-azure-secret"))
+  assert_false(output.contains("synthetic-alias-secret"))
+  assert_false(output.contains("ZmFrZTpwYXNzd29yZA=="))
+  assert_false(output.contains("synthetic-bearer-value"))
+  guard output.split_once("\n") is Some((event_line, shell_ppid)) else {
+    fail("missing observation")
+  }
+  let event = @json.parse(event_line.to_owned())
+  let refs = field(event, "serverEnvironment").unwrap()
+  assert_eq(
+    field(field(refs, "BEARER_OBSERVATION").unwrap(), "value"),
+    Some(Json::string("{\"note\":\"Bearer [redacted]\",\"next\":\"ok\"}")),
+  )
+  assert_eq(
+    field(field(refs, "SECRET_ALIAS").unwrap(), "value"),
+    Some(Json::string("[redacted]")),
+  )
+  assert_eq(
+    field(field(refs, "PPID").unwrap(), "value"),
+    Some(Json::string(shell_ppid.trim().to_owned())),
+  )
+  assert_true(event.stringify().contains("LONG_OBSERVATION"))
+  assert_eq(
+    field(field(refs, "AZURE_STORAGE_KEY").unwrap(), "value"),
+    Some(Json::string("[redacted]")),
+  )
+  assert_eq(
+    field(field(refs, "LONG_OBSERVATION").unwrap(), "truncated"),
+    Some(Json::boolean(true)),
+  )
+  assert_eq(
+    field(field(refs, "PATH").unwrap(), "value"),
+    Some(Json::string("/fixture/bin:/usr/bin")),
+  )
+  assert_eq(
+    field(field(refs, "EMPTY_OBSERVATION").unwrap(), "state"),
+    Some(Json::string("empty")),
+  )
+  assert_eq(
+    field(field(refs, "MISSING_OBSERVATION").unwrap(), "state"),
+    Some(Json::string("unset")),
+  )
+  assert_eq(
+    field(field(refs, "AWS_SECRET_ACCESS_KEY").unwrap(), "value"),
+    Some(Json::string("[redacted]")),
+  )
+  assert_true(
+    required(field(refs, "VALUE_OBSERVATION").unwrap(), "value").contains(
+      "context",
+    ),
+  )
+  assert_eq(
+    field(field(refs, "DEVSY_REMOTE_WORKSPACE_FOLDER").unwrap(), "value"),
+    Some(Json::string("/work space")),
+  )
+}
+
+///|
+async test "dynamic shell references are expanded once with recording enabled or disabled" {
+  let directory = @fs.tmpdir(prefix="orca-server-dynamic")
+  defer cleanup_fixture(directory)
+  let install = directory + "/.local/share/orca-env-devsy/orca/current"
+  @fs.mkdir(install + "/resources/app.asar/out/cli", recursive=true)
+  let bun = command("which", ["bun"], "fixture-bun").trim().to_owned()
+  @fs.symlink(install + "/orca-ide", target=bun)
+  @fs.write_file(
+    install + "/resources/app.asar/out/cli/index.js",
+    "console.log(process.env.COPY);\n",
+  )
+  let env = @env.get_env_vars()
+  env.set("HOME", directory)
+  let config : Json = { "COPY": "${RANDOM?}" }
+  let recorded = command(
+    "bash",
+    ["-c", server_launch_script("/workspace", 12345, config, recording=true)],
+    "fixture-dynamic",
+    environment=env,
+  )
+  guard recorded.split_once("\n") is Some((line, actual)) else {
+    fail("missing observation")
+  }
+  let event = @json.parse(line.to_owned())
+  let refs = field(event, "serverEnvironment").unwrap()
+  assert_eq(
+    field(field(refs, "RANDOM").unwrap(), "value"),
+    Some(Json::string(actual.trim().to_owned())),
+  )
+  let disabled = command(
+    "bash",
+    ["-c", server_launch_script("/workspace", 12345, config)],
+    "fixture-dynamic",
+    environment=env,
+  )
+  assert_true(
+    disabled.trim().to_owned().to_array().iter().all(c => c >= '0' && c <= '9'),
+  )
+}
+
+///|
+async test "normal server launch retains redacted remote environment diagnostics" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    let install = directory + "/.local/share/orca-env-devsy/orca/current"
+    @fs.mkdir(install + "/resources/app.asar/out/cli", recursive=true)
+    let bun = command("which", ["bun"], "fixture-bun").trim().to_owned()
+    @fs.symlink(install + "/orca-ide", target=bun)
+    @fs.write_file(
+      install + "/resources/app.asar/out/cli/index.js",
+      "console.log(JSON.stringify({connection:{pairingCode:'fixture-pairing'}}));\n",
+    )
+    @fs.write_file(directory + "/real-serve", "")
+    env.set("NPM_CONFIG__AUTH", "ZmFrZTpwYXNzd29yZA==")
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main, orca-server: {env: {PATH: '${DEVSY_REMOTE_WORKSPACE_FOLDER?}/.local/bin:${PATH?}', COPY: '${NPM_CONFIG__AUTH?}'}}}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let payload : Json = {
+      "schemaVersion": 1,
+      "recipeResult": @json.parse(output),
+    }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    let log = @fs.read_file(
+      directory + "/.local/state/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_false(log.contains("ZmFrZTpwYXNzd29yZA=="))
+    assert_true(log.contains("server-environment"))
+    assert_true(log.contains("NPM_CONFIG__AUTH"))
+    assert_true(log.contains("[redacted]"))
+    assert_true(log.contains("/workspace/repo"))
+  })
 }

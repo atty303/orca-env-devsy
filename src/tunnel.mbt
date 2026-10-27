@@ -244,7 +244,7 @@ async fn ensure_ssh_worker(
     name in [
       "workspaceId", "workspaceUid", "orcaVolume", "orcaVolumeCleanup", "user", "command",
       "devsyEnv", "hostDirectory", "home", "context", "connection", "projectRoot",
-      "idleTimeoutMs", "idleProvider",
+      "idleTimeoutMs", "idleProvider", "serverEnv",
     ] {
     if field(state, name) is Some(value) {
       set_field(saved, name, value)

@@ -102,3 +102,86 @@ test "invalid commands report their layer and element without exposing values" {
     }
   }
 }
+
+///|
+test "server environment merges per key without host interpolation" {
+  let document : Json = {
+    "dev": "unused",
+    "devsy": {
+      "connection": "orca-server",
+      "profile": "chosen",
+      "orca-server": { "env": { "PATH": "${PATH?}", "A": "common" } },
+      "profiles": { "chosen": { "orca-server": { "env": { "A": "profile" } } } },
+    },
+    "environmentRecipes": [
+      {
+        "id": "test",
+        "devsy": { "orca-server": { "env": { "B": "${MISSING?}" } } },
+      },
+    ],
+  }
+  let settings = resolve_settings(document, "test", _ => Some("host"))
+  assert_eq(settings.server_env, {
+    "PATH": "${PATH?}",
+    "A": "profile",
+    "B": "${MISSING?}",
+  })
+}
+
+///|
+test "server credential settings require remote references" {
+  let document : Json = {
+    "devsy": {
+      "connection": "orca-server",
+      "orca-server": {
+        "env": { "AWS_SECRET_ACCESS_KEY": "fixture-private-value" },
+      },
+    },
+    "environmentRecipes": [{ "id": "test" }],
+  }
+  try {
+    ignore(resolve_settings(document, "test", _ => None))
+    fail("literal credential accepted")
+  } catch {
+    InvalidConfig(message) =>
+      assert_false(message.contains("fixture-private-value"))
+    _ => fail("unexpected error")
+  }
+  let server = field(field(document, "devsy").unwrap(), "orca-server").unwrap()
+  set_field(
+    field(server, "env").unwrap(),
+    "AWS_SECRET_ACCESS_KEY",
+    "${AWS_SECRET_ACCESS_KEY?}",
+  )
+  ignore(resolve_settings(document, "test", _ => None))
+  set_field(
+    field(server, "env").unwrap(),
+    "DOCKER_AUTH_CONFIG",
+    "{\"auth\":\"ZmFrZTpmaXh0dXJl\"}",
+  )
+  try {
+    ignore(resolve_settings(document, "test", _ => None))
+    fail("Docker credential accepted")
+  } catch {
+    InvalidConfig(message) => assert_false(message.contains("ZmFrZTpmaXh0dXJl"))
+    _ => fail("unexpected error")
+  }
+  set_field(
+    field(server, "env").unwrap(),
+    "DOCKER_AUTH_CONFIG",
+    "${DOCKER_AUTH_CONFIG?}",
+  )
+  set_field(
+    field(server, "env").unwrap(),
+    "NPM_CONFIG__AUTH",
+    "ZmFrZTpwYXNzd29yZA==",
+  )
+  try {
+    ignore(resolve_settings(document, "test", _ => None))
+    fail("npm credential accepted")
+  } catch {
+    InvalidConfig(message) =>
+      assert_false(message.contains("ZmFrZTpwYXNzd29yZA=="))
+    _ => fail("unexpected error")
+  }
+}

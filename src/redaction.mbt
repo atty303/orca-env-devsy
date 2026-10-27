@@ -6,13 +6,16 @@ fn credential_field(name : String) -> Bool {
     .to_lower()
     .replace_all(old="-", new="_")
   [
-    "authorization", "proxy_authorization", "cookie", "set_cookie", "password", "passwd",
-    "token", "access_token", "accesstoken", "refresh_token", "refreshtoken", "id_token",
-    "api_key", "apikey", "x_api_key", "credential", "credentials", "secret", "client_secret",
-    "clientsecret", "private_key", "privatekey", "signature", "sig", "x_amz_signature",
+    "auth", "authorization", "proxy_authorization", "cookie", "set_cookie", "password",
+    "passwd", "token", "access_token", "accesstoken", "refresh_token", "refreshtoken",
+    "id_token", "api_key", "apikey", "x_api_key", "credential", "credentials", "secret",
+    "client_secret", "clientsecret", "private_key", "privatekey", "aws_secret_access_key",
+    "azure_storage_key", "docker_auth_config", "signature", "sig", "x_amz_signature",
     "x_amz_security_token", "x_goog_signature",
   ].contains(name) ||
-  ["_password", "_passwd", "_token", "_secret", "_api_key", "_private_key"]
+  [
+    "_auth", "_password", "_passwd", "_token", "_secret", "_api_key", "_private_key",
+  ]
   .iter()
   .any(suffix => name.has_suffix(suffix))
 }
