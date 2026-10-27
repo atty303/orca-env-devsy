@@ -98,11 +98,13 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'repo add --json'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{}}\n' ;;
     #|  *'project setups'*) printf '{"ok":true,"result":{"setups":[{"id":"fixture-setup","path":"/workspace/repo"}]}}\n' ;;
     #|  *'project setup-update'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/workspaces/.orca"}}}}\n' ;;
-    #|  *'--recipe-json'*) test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
-    #|  *'-O check'*)
+    #|  *'--recipe-json'*)
     #|    if test -f "$HOME/fail-tunnel-cleanup"; then
     #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
+    #|      exit 1
     #|    fi
+    #|    test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
+    #|  *'-O check'*)
     #|    test -f "$control" ;;
     #|  *'-O exit'*) rm -f "$control" ;;
     #|  *'cat >'* ) test ! -f "$HOME/fail-addon"; cat > "$HOME/delivered-auth" ;;
@@ -1768,6 +1770,37 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
       "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
     )
     @fs.write_file(directory + "/fail-tunnel-cleanup", "")
+    defer @async.protect_from_cancel(async fn() {
+      let base = directory + "/.local/state/orca-env-devsy/tunnels"
+      if @fs.exists(base) {
+        for name in @fs.readdir(base) {
+          let worker = base + "/" + name
+          if @fs.exists(worker + "/state.json") {
+            @fs.remove(worker + "/state.json")
+          }
+          if @fs.exists(worker + "/enabled") {
+            @fs.remove(worker + "/enabled")
+          }
+          @async.with_timeout(5000, async fn() {
+            while worker_alive(worker) {
+              @async.sleep(100)
+            }
+          })
+        }
+      }
+      if @fs.exists(directory + "/ssh-args") {
+        for arg in @fs.read_file(directory + "/ssh-args").text().split("\n") {
+          if arg.has_suffix("/socket") {
+            let socket_directory = arg
+              .to_owned()
+              .replace_all(old="/socket", new="")
+            if @fs.exists(socket_directory) {
+              @fs.rmdir(socket_directory, recursive=true)
+            }
+          }
+        }
+      }
+    })
     let (status, output, errors) = invoke("create", env, directory)
     assert_true(status != 0)
     assert_eq(output, "")
@@ -1779,23 +1812,6 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
       .to_array()
     let sockets = args.filter(arg => arg.has_suffix("/socket"))
     assert_true(sockets.length() > 0)
-    let base = directory + "/.local/state/orca-env-devsy/tunnels"
-    let worker = base + "/" + @fs.readdir(base)[0]
-    let socket_directory = sockets[0]
-      .to_owned()
-      .replace_all(old="/socket", new="")
-    // Repair only this deliberately corrupted test state so the owned worker can stop.
-    @fs.remove(worker + "/state.json")
-    @fs.remove(worker + "/enabled")
-    @async.with_timeout(5000, async fn() {
-      while worker_alive(worker) {
-        @async.sleep(100)
-      }
-    })
-    @fs.rmdir(worker, recursive=true)
-    if @fs.exists(socket_directory) {
-      @fs.rmdir(socket_directory, recursive=true)
-    }
     let records = @fs.read_file(
       directory + "/.local/state/orca-env-devsy/events.jsonl",
     ).text()
@@ -4211,18 +4227,48 @@ async test "concurrent resume sleep and destroy serialize without recreating a d
 }
 
 ///|
+async fn fixture_events(directory : String) -> Array[Json] {
+  let file = @fs.open(
+    directory + "/.local/state/orca-env-devsy/events.jsonl",
+    mode=ReadOnly,
+  )
+  defer file.close()
+  let buffer = FixedArray::make(file.size().to_int(), b'\x00')
+  let size = file.read_at(buffer, position=0L)
+  let mut complete = size
+  while complete > 0 && buffer[complete - 1] != b'\n' {
+    complete -= 1
+  }
+  let content = @utf8.decode(buffer.unsafe_reinterpret_as_bytes()[:complete])
+  let events = []
+  let lines = content.split("\n").to_array()
+  for index in 0..<(lines.length() - 1) {
+    events.push(@json.parse(lines[index].to_owned()))
+  }
+  events
+}
+
+///|
+async test "fixture event snapshots only parse complete records" {
+  let directory = @fs.tmpdir(prefix="orca-event-snapshot")
+  defer @fs.rmdir(directory, recursive=true)
+  let root = directory + "/.local/state/orca-env-devsy"
+  @fs.mkdir(root, recursive=true)
+  let path = root + "/events.jsonl"
+  @fs.write_file(path, "{\"stage\":\"first\"}\n{\"stage\":\"")
+  assert_eq(fixture_events(directory).length(), 1)
+  @fs.write_file(path, b"\xe3", append=true, create_mode=OpenOrCreate)
+  assert_eq(fixture_events(directory).length(), 1)
+  @fs.write_file(path, b"\x81\x82\"}\n", append=true, create_mode=OpenOrCreate)
+  let events = fixture_events(directory)
+  assert_eq(events.length(), 2)
+  assert_eq(field(events[1], "stage"), Some(Json::string("あ")))
+}
+
+///|
 async fn monitor_wait_events(directory : String) -> Array[Json] {
   let events = []
-  for
-    line in @fs.read_file(
-      directory + "/.local/state/orca-env-devsy/events.jsonl",
-    )
-    .text()
-    .split("\n") {
-    if line == "" {
-      continue
-    }
-    let event = @json.parse(line.to_owned())
+  for event in fixture_events(directory) {
     if field(event, "stage") == Some(Json::string("monitor-wait")) {
       events.push(event)
     }

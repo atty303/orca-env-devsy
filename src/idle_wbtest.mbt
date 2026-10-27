@@ -247,16 +247,7 @@ async test "unknown after idle reaches the deadline but cannot authorize stoppin
       }
       @fs.write_file(directory + "/activity", observation.stringify())
       idle_wait_for(async fn() {
-        let events = @fs.read_file(
-          directory + "/.local/state/orca-env-devsy/events.jsonl",
-        ).text()
-        events
-        .split("\n")
-        .any(line => {
-          if line == "" {
-            return false
-          }
-          let event = @json.parse(line)
+        fixture_events(directory).any(event => {
           match field(event, "evidence") {
             Some(evidence) =>
               field(evidence, "observation") == Some(observation)
