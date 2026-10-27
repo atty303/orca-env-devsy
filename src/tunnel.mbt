@@ -1189,6 +1189,8 @@ async fn tunnel_worker(
                   })
                   None
                 } catch {
+                  AdapterError(message) if !@async.is_being_cancelled() =>
+                    Some(message)
                   error =>
                     if @async.is_being_cancelled() {
                       raise error

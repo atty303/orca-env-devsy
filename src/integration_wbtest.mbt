@@ -68,11 +68,14 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'candidate="$base/update-$version"'* )
     #|    test ! -f "$HOME/fail-update-prepare"; printf 'prepare\n' >> "$HOME/update-steps" ;;
     #|  *'orca-server-relay-'*)
-    #|    test ! -f "$HOME/fail-server-check" || { printf 'cannot inspect server environment\n' >&2; exit 1; }
+    #|    test ! -f "$HOME/fail-server-check" || { printf 'cannot inspect server environment token=ghp_fixtureprivatetoken123\n' >&2; exit 1; }
     #|    if test -f "$HOME/server-instance-secret"; then printf '{"outcome":"match","serverInstance":"ghp_fixtureprivatetoken123","relayInstance":"ghp_fixtureprivatetoken123"}';
-    #|    elif test -f "$HOME/server-instance-unset"; then printf '{"outcome":"skip","serverInstance":"","relayInstance":null}';
+    #|    elif test -f "$HOME/server-instance-unset"; then case "$*" in *'orca-server-relay-verify-required'*) printf '{"outcome":"skip","serverInstance":"","daemonInstance":null,"relayInstance":"current"}' ;; *) printf '{"outcome":"skip","serverInstance":"","relayInstance":null}' ;; esac;
+    #|    elif test -f "$HOME/daemon-instance-stale"; then
+    #|      case "$*" in *'orca-server-relay-verify'*) printf '{"outcome":"mismatch","serverInstance":"current","daemonInstance":"old","relayInstance":"current"}' ;; *) printf '{"outcome":"restart","serverInstance":"current","daemonInstance":"old","relayInstance":"current"}'; rm -f "$HOME/served" "$HOME/daemon-instance-stale"; printf 'relay-stop\n' >> "$HOME/update-steps" ;; esac
     #|    elif test -f "$HOME/server-instance-stale"; then
     #|      case "$*" in *'orca-server-relay-verify'*) printf '{"outcome":"mismatch","serverInstance":"old","relayInstance":"current"}' ;; *) printf '{"outcome":"restart","serverInstance":"old","relayInstance":"current"}'; rm -f "$HOME/served" "$HOME/server-instance-stale"; printf 'relay-stop\n' >> "$HOME/update-steps" ;; esac
+    #|    elif test -f "$HOME/relay-instance-next"; then printf '{"outcome":"match","serverInstance":"next","daemonInstance":null,"relayInstance":"next"}';
     #|    else printf '{"outcome":"match","serverInstance":"current","relayInstance":"current"}'; fi ;;
     #|  *'const inodes = new Set'* )
     #|    case "$*" in *ORCA_ENV_DEVSY_UPDATE_*) test -f "$HOME/served"; printf 'owner-verified\n' >> "$HOME/update-steps" ;; *) test ! -f "$HOME/fail-update-stop"; printf 'stop\n' >> "$HOME/update-steps"; rm -f "$HOME/served" ;; esac ;;
@@ -124,7 +127,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|      for state in "$XDG_STATE_HOME/orca-env-devsy/tunnels/"*/state.json; do printf '{invalid' > "$state"; done
     #|      exit 1
     #|    fi
-    #|    test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; if test -f "$HOME/relay-changes-on-start"; then rm "$HOME/relay-changes-on-start"; touch "$HOME/server-instance-stale"; fi; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
+    #|    test ! -f "$HOME/fail-serve"; printf 'serve\n' >> "$HOME/serve-count"; touch "$HOME/served"; if test -f "$HOME/relay-changes-on-start"; then rm "$HOME/relay-changes-on-start"; touch "$HOME/server-instance-stale"; fi; if test -f "$HOME/relay-changes-with-server"; then rm "$HOME/relay-changes-with-server"; touch "$HOME/relay-instance-next"; fi; printf '{"schemaVersion":1,"connection":{"type":"orca-server","pairingCode":"fixture-pairing","projectRoot":"/workspace/repo"}}\n' ;;
     #|  *'-O check'*)
     #|    test -f "$control" ;;
     #|  *'-O exit'*) rm -f "$control" ;;
@@ -458,6 +461,11 @@ async test "recover synchronizes a changed server relay instance and skips an un
     assert_eq(status, 0, msg=errors)
     assert_true(errors.contains(workspace_id + ": recover done"), msg=errors)
     assert_true(@fs.exists(directory + "/server-instance-stale"))
+    let pending_directory = required(state, "tunnelDirectory")
+    @fs.write_file(pending_directory + "/server-relay-pending", "")
+    let (retry_status, _, retry_errors) = invoke("recover", env, directory)
+    assert_eq(retry_status, 0, msg=retry_errors)
+    assert_false(@fs.exists(pending_directory + "/server-relay-pending"))
     @fs.remove(directory + "/server-instance-unset")
     @fs.write_file(directory + "/server-instance-secret", "")
     let (status, _, errors) = invoke("recover", env, directory)
@@ -471,6 +479,22 @@ async test "recover synchronizes a changed server relay instance and skips an un
       @fs.read_file(directory + "/update-steps").text().contains("relay-stop"),
     )
     let worker = required(state, "tunnelDirectory")
+    @fs.write_file(directory + "/daemon-instance-stale", "")
+    let (daemon_status, _, daemon_errors) = invoke("restart", env, directory)
+    assert_eq(daemon_status, 0, msg=daemon_errors)
+    assert_false(@fs.exists(directory + "/daemon-instance-stale"))
+    @fs.write_file(directory + "/daemon-instance-stale", "")
+    @fs.write_file(directory + "/relay-changes-with-server", "")
+    let (changed_status, _, changed_errors) = invoke("recover", env, directory)
+    assert_true(changed_status != 0, msg=changed_errors)
+    assert_true(
+      changed_errors.contains("relay instance changed"),
+      msg=changed_errors,
+    )
+    let (retry_status, _, retry_errors) = invoke("recover", env, directory)
+    assert_eq(retry_status, 0, msg=retry_errors)
+    assert_false(@fs.exists(worker + "/server-relay-pending"))
+    @fs.remove(directory + "/relay-instance-next")
     @fs.write_file(directory + "/server-instance-stale", "")
     @fs.write_file(worker + "/probe-request", "")
     @async.with_timeout(10000, async fn() {
@@ -503,6 +527,9 @@ async test "recover synchronizes a changed server relay instance and skips an un
         @async.sleep(25)
       }
     })
+    let worker_error = @fs.read_file(worker + "/worker-error.json").text()
+    assert_true(worker_error.contains("cannot inspect server environment"))
+    assert_false(worker_error.contains("ghp_fixtureprivatetoken123"))
     @fs.remove(directory + "/fail-server-check")
     @async.with_timeout(15000, async fn() {
       while @fs.exists(worker + "/worker-error.json") {
@@ -1487,8 +1514,10 @@ async test "RPC failure replaces the primary and transient failure preserves it"
     assert_eq(@fs.read_file(directory + "/master-pid").text(), before)
     @fs.write_file(directory + "/rpc-unavailable", "")
     @fs.write_file(directory + "/recover-on-master", "")
+    @fs.write_file(directory + "/daemon-instance-stale", "")
     let (status, _, errors) = invoke("recover", env, directory, payload~)
     assert_eq(status, 0, msg=errors)
+    assert_false(@fs.exists(directory + "/daemon-instance-stale"))
     assert_true(@fs.read_file(directory + "/master-pid").text() != before)
     assert_true(worker_alive(worker))
     let events = @fs.read_file(
