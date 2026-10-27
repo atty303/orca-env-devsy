@@ -19,6 +19,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|#!/bin/sh
     #|set -eu
     #|printf '%s\n' "$@" >> "$HOME/args"
+    #|if test -n "${FAKE_INVOCATION_LOG:-}"; then printf 'invoked\n' >> "$FAKE_INVOCATION_LOG"; fi
     #|previous=
     #|for arg in "$@"; do
     #|  if test "$previous" = --uid; then printf '%s' "$arg" > "$HOME/uid"; fi
@@ -1033,12 +1034,22 @@ async test "legacy saved state defaults to devsy and invalid saved commands fail
     let (status, _, errors) = invoke(mode, env, directory, payload~)
     assert_eq(status, 0, msg=errors)
   }
-  let before = @fs.read_file(directory + "/args").text()
+  let invocation_log = directory + "/invalid-command-invocations"
+  env.set("FAKE_INVOCATION_LOG", invocation_log)
+  let (status, _, _) = @process.collect_output(
+    directory + "/bin/devsy",
+    ["context", "list"],
+    extra_env=env,
+  )
+  assert_eq(status, 0)
+  assert_true(@fs.exists(invocation_log))
+  @fs.remove(invocation_log)
   set_field(state, "command", [])
   let (status, _, errors) = invoke("destroy", env, directory, payload~)
   assert_true(status != 0)
   assert_true(errors.contains("recipeResult.userData.command"))
-  assert_eq(@fs.read_file(directory + "/args").text(), before)
+  assert_false(@fs.exists(invocation_log))
+  env.remove("FAKE_INVOCATION_LOG")
   if state is Json::Object(map) {
     map.remove("command")
   }
