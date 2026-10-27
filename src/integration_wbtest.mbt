@@ -65,6 +65,9 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'-N'*) if test -f "$HOME/recover-on-master"; then rm -f "$HOME/rpc-unavailable" "$HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$HOME/primary-services" ;; *) printf enabled > "$HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
+    #|  *'-- import '* )
+    #|    cat > "$HOME/delivered-settings"
+    #|    if test -f "$HOME/fail-settings"; then printf '{"phase":"write","code":"ENOSPC"}' >&2; exit 1; fi ;;
     #|  *'const fs = require'* )
     #|    test -n "$control" && test -f "$control"
     #|    printf 'start\n' >> "$HOME/idle-starts"
@@ -172,6 +175,11 @@ async fn invoke(
   directory : String,
   payload? : Json,
 ) -> (Int32, String, String) {
+  if mode == "create" &&
+    @fs.exists(directory + "/orca.yaml") &&
+    @fs.read_file(directory + "/orca.yaml").text().contains("orca-server") {
+    settings_fixture(directory, env)
+  }
   let executable = integration_binary()
   let input = if payload is Some(value) {
     @fs.write_file(directory + "/stdin.json", value.stringify())
@@ -2425,6 +2433,14 @@ async test "filesystem failure reports safe timestamped elapsed time before any 
 async fn cleanup_fixture(directory : String) -> Unit {
   let leased = @fs.exists(directory + "/fixture-permit")
   defer (if leased { fixture_permits.release() })
+  if @fs.exists(directory + "/orca-host/orca-runtime.json") {
+    let metadata = @json.parse(
+      @fs.read_file(directory + "/orca-host/orca-runtime.json").text(),
+    )
+    if field(metadata, "pid") is Some(Json::Number(pid, ..)) {
+      ignore(proxy_signal(pid.to_int(), 15))
+    }
+  }
   let base = directory + "/.local/state/orca-env-devsy/tunnels"
   if @fs.exists(base) {
     for name in @fs.readdir(base) {

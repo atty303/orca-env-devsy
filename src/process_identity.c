@@ -18,6 +18,25 @@
 #include <dirent.h>
 #endif
 
+int orca_host_is_macos(void) {
+#ifdef __APPLE__
+  return 1;
+#else
+  return 0;
+#endif
+}
+
+int orca_process_executable(int pid, char *buffer, int capacity) {
+#ifdef __APPLE__
+  int length = proc_pidpath(pid, buffer, (uint32_t)capacity);
+  return length > 0 ? (int)strlen(buffer) : -1;
+#else
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+  return (int)readlink(path, buffer, (size_t)capacity);
+#endif
+}
+
 int64_t orca_process_start(int pid) {
 #ifdef __APPLE__
   struct kinfo_proc info;

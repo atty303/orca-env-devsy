@@ -7,6 +7,8 @@ async fn server_connection(
   if install {
     let script = server_install_script()
     ignore(remote(state, script, "orca-install"))
+    prepare_orca_storage(state)
+    initialize_orca_settings(state)
   }
   let output = recover_server(state, connection_result=true)
   ensure_ssh_worker(state, Some(reserve_server_port(state)), deadline?)
