@@ -65,6 +65,16 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'-N'*) if test -f "$HOME/recover-on-master"; then rm -f "$HOME/rpc-unavailable" "$HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$HOME/primary-services" ;; *) printf enabled > "$HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
+    #|  *'candidate="$base/update-$version"'* )
+    #|    test ! -f "$HOME/fail-update-prepare"; printf 'prepare\n' >> "$HOME/update-steps" ;;
+    #|  *'const inodes = new Set'* )
+    #|    case "$*" in *ORCA_ENV_DEVSY_UPDATE_*) test -f "$HOME/served"; printf 'owner-verified\n' >> "$HOME/update-steps" ;; *) test ! -f "$HOME/fail-update-stop"; printf 'stop\n' >> "$HOME/update-steps"; rm -f "$HOME/served" ;; esac ;;
+    #|  *'candidate="$base/update-"'* )
+    #|    test ! -f "$HOME/fail-update-switch"; printf 'switch\n' >> "$HOME/update-steps"; printf '1.4.242' > "$HOME/server-version" ;;
+    #|  *'rm -rf'*'update-previous'* )
+    #|    printf 'cleanup\n' >> "$HOME/update-steps" ;;
+    #|  *'dir="$base/current"'*'--version'* | *'base="$HOME/.local/share/orca-env-devsy/orca/current"'*'--version'* )
+    #|    if test -f "$HOME/server-version"; then cat "$HOME/server-version"; else printf '1.4.100'; fi ;;
     #|  *'-- import '* )
     #|    cat > "$HOME/delivered-settings"
     #|    if test -f "$HOME/fail-settings"; then printf '{"phase":"write","code":"ENOSPC"}' >&2; exit 1; fi ;;
@@ -4746,4 +4756,137 @@ async test "normal server launch retains redacted remote environment diagnostics
     assert_true(log.contains("[redacted]"))
     assert_true(log.contains("/workspace/repo"))
   })
+}
+
+///|
+async test "server update marker preserves configured environment" {
+  let directory = @fs.tmpdir(prefix="orca-update-env")
+  defer cleanup_fixture(directory)
+  let install = directory + "/.local/share/orca-env-devsy/orca/current"
+  @fs.mkdir(install + "/resources/app.asar/out/cli", recursive=true)
+  let bun = command("which", ["bun"], "fixture-bun").trim().to_owned()
+  @fs.symlink(install + "/orca-ide", target=bun)
+  @fs.write_file(
+    install + "/resources/app.asar/out/cli/index.js",
+    "console.log(process.env.ORCA_ENV_DEVSY_SERVER_UPDATE_VERSION + ':' + process.env.ORCA_ENV_DEVSY_UPDATE_123);\n",
+  )
+  let env = @env.get_env_vars()
+  env.set("HOME", directory)
+  env.remove("ORCA_ENV_DEVSY_UPDATE_123")
+  let settings : Json = { "ORCA_ENV_DEVSY_SERVER_UPDATE_VERSION": "user-value" }
+  let output = command(
+    "sh",
+    [
+      "-c",
+      server_launch_script(
+        "/work",
+        12345,
+        settings,
+        update_marker=("ORCA_ENV_DEVSY_UPDATE_123", "owned"),
+      ),
+    ],
+    "fixture-update-env",
+    environment=env,
+  )
+  assert_eq(output, "user-value:owned\n")
+}
+
+///|
+async test "remote update marker rejects overlap and permits retry after completion" {
+  let directory = @fs.tmpdir(prefix="orca-update-marker")
+  defer cleanup_fixture(directory)
+  @fs.mkdir(directory + "/.local/share/orca-env-devsy/orca", recursive=true)
+  let env = @env.get_env_vars()
+  env.set("HOME", directory)
+  let first = server_update_locked(
+    "touch \"$HOME/started\"; while ! test -f \"$HOME/finish\"; do sleep 0.05; done",
+  )
+  let second = server_update_locked("touch \"$HOME/second\"")
+  @async.with_timeout(10000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let task = group.spawn(async fn() {
+        @process.collect_output("sh", ["-c", first], extra_env=env)
+      })
+      while !@fs.exists(directory + "/started") {
+        @async.sleep(10)
+      }
+      let (busy, _, _) = @process.collect_output(
+        "sh",
+        ["-c", second],
+        extra_env=env,
+      )
+      assert_true(busy != 0)
+      assert_false(@fs.exists(directory + "/second"))
+      @fs.write_file(directory + "/finish", "")
+      let (code, _, errors) = task.wait()
+      assert_eq(code, 0, msg=errors.text())
+    })
+  })
+  let (code, _, errors) = @process.collect_output(
+    "sh",
+    ["-c", second],
+    extra_env=env,
+  )
+  assert_eq(code, 0, msg=errors.text())
+  assert_true(@fs.exists(directory + "/second"))
+  let marker = directory + "/.local/share/orca-env-devsy/orca/update-active"
+  @fs.mkdir(marker)
+  let (stale, _, _) = @process.collect_output(
+    "sh",
+    ["-c", second],
+    extra_env=env,
+  )
+  assert_true(stale != 0)
+  assert_true(@fs.exists(marker))
+  @fs.rmdir(marker)
+  let (cleared, _, errors) = @process.collect_output(
+    "sh",
+    ["-c", second],
+    extra_env=env,
+  )
+  assert_eq(cleared, 0, msg=errors.text())
+}
+
+///|
+async test "remote update marker survives caller exit until the child finishes" {
+  let directory = @fs.tmpdir(prefix="orca-update-abandon")
+  defer cleanup_fixture(directory)
+  @fs.mkdir(directory + "/.local/share/orca-env-devsy/orca", recursive=true)
+  let env = @env.get_env_vars()
+  env.set("HOME", directory)
+  let first = "printf '%s\\n' \"$$\" > \"$HOME/parent\"; " +
+    server_update_locked(
+      "touch \"$HOME/started\"; while ! test -f \"$HOME/finish\"; do sleep 0.05; done",
+    )
+  let retry = server_update_locked("touch \"$HOME/retried\"")
+  @async.with_timeout(10000, async fn() {
+    @async.with_task_group(async fn(group) {
+      let task = group.spawn(async fn() {
+        @process.collect_output("sh", ["-c", first], extra_env=env)
+      })
+      while !@fs.exists(directory + "/started") {
+        @async.sleep(10)
+      }
+      let pid = @fs.read_file(directory + "/parent").text().trim().to_owned()
+      assert_eq(@process.run("kill", ["-TERM", pid]), 0)
+      @async.sleep(100)
+      let (busy, _, _) = @process.collect_output(
+        "sh",
+        ["-c", retry],
+        extra_env=env,
+      )
+      assert_true(busy != 0)
+      assert_false(@fs.exists(directory + "/retried"))
+      @fs.write_file(directory + "/finish", "")
+      let (finished, _, _) = task.wait()
+      assert_true(finished != 0)
+    })
+  })
+  let (retried, _, errors) = @process.collect_output(
+    "sh",
+    ["-c", retry],
+    extra_env=env,
+  )
+  assert_eq(retried, 0, msg=errors.text())
+  assert_true(@fs.exists(directory + "/retried"))
 }

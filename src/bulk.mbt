@@ -1,5 +1,5 @@
 ///|
-pub let usage : String = "Usage: orca-env-devsy <status|stop [--force]|resume> --provider <name> [--jobs <n>]\n       orca-env-devsy recipe <create|resume|suspend|destroy|recover|restart>\n       orca-env-devsy <recover|restart>\n"
+pub let usage : String = "Usage: orca-env-devsy <status|stop [--force]|resume> --provider <name> [--jobs <n>]\n       orca-env-devsy recipe <create|resume|suspend|destroy|recover|restart>\n       orca-env-devsy <recover|restart>\n       orca-env-devsy update [--provider <name> [--workspace <id>]] [--force]\n"
 
 ///|
 priv struct BulkOptions {

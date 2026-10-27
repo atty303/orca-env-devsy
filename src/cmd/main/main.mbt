@@ -34,6 +34,7 @@ async fn main {
       | "recover"
       | "restart" as mode,
     ] => @adapter.execute(mode)
+    [_, "update", .. options] => @adapter.update_server(options.to_owned())
     [_, "status" | "stop" | "resume" as mode, .. options] =>
       @adapter.bulk(mode, options.to_owned())
     [_, "--help"] => @stdio.stdout.write(@adapter.usage)

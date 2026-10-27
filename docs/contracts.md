@@ -106,10 +106,18 @@ workspace with the same ID.
 Server environments validate and reuse an existing Orca installation. When none
 exists, they install the latest stable official Linux Orca. The public
 `serve --recipe-json --project-root` CLI starts the Server. Resume reuses the
-installed version, reusing a running Server and starting it when absent. Updates
-are explicit user operations, separate from
-resume; this version does not expose an update command. Compatibility follows Orca's
-protocol/capability negotiation.
+installed version, reusing a running Server and starting it when absent. The
+`update` command updates running workspaces to the running Desktop's
+version. A provider may be selected with `--provider`; `--workspace` requires a
+provider. Without a provider, all providers are selected. Stopped workspaces are
+reported without being started. Downgrades require `--force`. The update can
+interrupt active work. A remote marker prevents retry while a previous operation
+is running. After abnormal termination, inspect the remote marker at
+`~/.local/share/orca-env-devsy/orca/update-active` and remove it only after the
+previous operation has stopped, then retry. The update verifies the Server version and HTTP 101 response
+to a WebSocket upgrade request; it does not verify Desktop authentication.
+If startup fails after switching, recovery is suppressed and the previous
+installation is retained; rerun the update command to retry.
 
 Pairing data belongs to the connection result; it is never duplicated in
 `userData`. Local SSH control sockets belong to the adapter's tunnels and are

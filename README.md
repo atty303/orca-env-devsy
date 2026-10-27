@@ -188,6 +188,12 @@ devsy:
 The adapter installs the latest stable official Linux Orca when absent and starts
 its Server. Resume reuses that installation; it does not update Orca.
 
+Update existing running Servers to match the running Orca Desktop with
+`orca-env-devsy update`. Use `--provider <name>` to select a provider, or
+add `--workspace <id>` for one workspace. The update restarts each selected
+Server and can interrupt active work. Stopped workspaces are reported without
+being started; `--force` permits a downgrade.
+
 **SSH + Orca-managed worktree**: your desktop Orca manages the workspace over SSH
 and creates a linked task worktree in the container. The adapter provides the SSH
 connection rather than starting Orca Server.

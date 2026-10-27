@@ -1067,7 +1067,8 @@ async fn tunnel_worker(
               failures = 0
               attempt = 0
               if !connected {
-                if @fs.exists(directory + "/server-enabled") {
+                if @fs.exists(directory + "/server-enabled") &&
+                  !@fs.exists(directory + "/server-update-pending") {
                   @async.with_timeout(connection_timeout_ms(state~), async fn() {
                     ignore(recover_server(state))
                   })

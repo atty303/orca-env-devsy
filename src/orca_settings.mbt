@@ -31,7 +31,7 @@ fn settings_parent(path : String) -> String {
 }
 
 ///|
-async fn host_orca_settings() -> String {
+async fn host_orca_location() -> (String, String, String) {
   let home = environment("HOME")
   let user_data = @env.get_env_var("ORCA_USER_DATA_PATH")
     .filter(p => p != "")
@@ -76,19 +76,25 @@ async fn host_orca_settings() -> String {
           resources +
           "/app.asar.unpacked/out/main/persistence/profile-state/profile-state-domain-reader.js",
         ) {
-        let env = @env.get_env_vars()
-        env.set("ELECTRON_RUN_AS_NODE", "1")
-        env.remove("NODE_OPTIONS")
-        env.remove("NODE_REPL_EXTERNAL_MODULE")
-        return settings_process(
-          executable,
-          ["-e", orca_settings_script(), "--", "export", resources, user_data],
-          environment=env,
-        )
+        return (executable, resources, user_data)
       }
     }
   }
   raise AdapterError("Cannot locate the running host Orca resources")
+}
+
+///|
+async fn host_orca_settings() -> String {
+  let (executable, resources, user_data) = host_orca_location()
+  let env = @env.get_env_vars()
+  env.set("ELECTRON_RUN_AS_NODE", "1")
+  env.remove("NODE_OPTIONS")
+  env.remove("NODE_REPL_EXTERNAL_MODULE")
+  settings_process(
+    executable,
+    ["-e", orca_settings_script(), "--", "export", resources, user_data],
+    environment=env,
+  )
 }
 
 ///|

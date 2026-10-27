@@ -1226,6 +1226,13 @@ async fn execute_inner(mode : String) -> Unit {
         ),
       )
       cleanup_orca_volume(state)
+      if field(state, "tunnelDirectory") is Some(Json::String(directory)) {
+        for name in ["server-update-pending", "server-update-complete"] {
+          if @fs.exists(directory + "/" + name) {
+            @fs.remove(directory + "/" + name)
+          }
+        }
+      }
       close_tunnel(state)
     }
     _ => raise AdapterError("Unknown command")

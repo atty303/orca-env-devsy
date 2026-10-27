@@ -36,6 +36,9 @@ async fn recover_server(
   guard @fs.exists(directory + "/enabled") && !@fs.exists(directory + "/paused") else {
     raise AdapterError("Connection recovery cancelled")
   }
+  guard !@fs.exists(directory + "/server-update-pending") else {
+    raise AdapterError("Server update is incomplete; retry the update")
+  }
   let output = if !connection_result && server_is_running(state) {
     save_diagnostic(
       "recover-server",
@@ -75,7 +78,7 @@ async fn recover_server(
 }
 
 ///|
-async fn launch_server(state : Json) -> Json {
+async fn launch_server(state : Json, update_marker? : (String, String)) -> Json {
   let root = required(state, "projectRoot")
   let port = reserve_server_port(state)
   let configured_env = field(state, "serverEnv").unwrap_or(Json::empty_object())
@@ -88,12 +91,17 @@ async fn launch_server(state : Json) -> Json {
     }
   }
   let recording = workspace_recording(state)
-  let script = (if field(state, "orcaVolume") is Some(_) {
+  let launch = (if field(state, "orcaVolume") is Some(_) {
       "export ORCA_USER_DATA_PATH=/workspaces/.orca/.profile; "
     } else {
       ""
     }) +
-    server_launch_script(root, port, configured_env, recording~)
+    server_launch_script(root, port, configured_env, recording~, update_marker?)
+  let script = if update_marker is Some(_) {
+    server_update_locked(launch)
+  } else {
+    launch
+  }
   let (status, raw_output, detail) = command_result(
     workspace_program(state, "ssh"),
     mux_ssh_args(state) + [script],
@@ -179,6 +187,7 @@ fn server_launch_script(
   port : Int32,
   server_env : Json,
   recording~ : Bool = false,
+  update_marker? : (String, String),
 ) -> String raise {
   let names : Map[String, Bool] = Map([])
   guard server_env is Json::Object(values) else {
@@ -205,7 +214,19 @@ fn server_launch_script(
     )
   }
   if server_env == Json::empty_object() {
-    return "ELECTRON_RUN_AS_NODE=1 exec \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" \"$HOME/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js\" serve --recipe-json --project-root " +
+    let marker = update_marker
+      .map(pair => {
+        "if printenv " +
+        quote(pair.0) +
+        " >/dev/null; then exit 1; fi; export " +
+        pair.0 +
+        "=" +
+        quote(pair.1) +
+        "; "
+      })
+      .unwrap_or("")
+    return marker +
+      "ELECTRON_RUN_AS_NODE=1 exec \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" \"$HOME/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js\" serve --recipe-json --project-root " +
       quote(root) +
       " --port 47121 --pairing-address " +
       quote("ws://127.0.0.1:\{port}") +
@@ -266,6 +287,7 @@ fn server_launch_script(
     #|  });
     #|}
     #|if (missing) { process.stderr.write("Required remote environment variable " + missing + " is not defined\n"); process.exit(1); }
+    #|if (process.argv[6]) { if (Object.hasOwn(environment, process.argv[6])) { process.stderr.write("Server update marker collision\n"); process.exit(1); } environment[process.argv[6]] = process.argv[7]; }
     #|const cp = require("child_process");
     #|const cli = process.env.HOME + "/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js";
     #|const child = cp.spawnSync(process.execPath, [cli, "serve", "--recipe-json", "--project-root", process.argv[4], "--port", "47121", "--pairing-address", process.argv[5]], {env: environment, stdio: ["ignore", "inherit", "ignore"]});
@@ -287,7 +309,11 @@ fn server_launch_script(
   " " +
   quote(root) +
   " " +
-  quote("ws://127.0.0.1:\{port}")
+  quote("ws://127.0.0.1:\{port}") +
+  " " +
+  quote(update_marker.map(pair => pair.0).unwrap_or("")) +
+  " " +
+  quote(update_marker.map(pair => pair.1).unwrap_or(""))
 }
 
 ///|

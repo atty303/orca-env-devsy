@@ -192,6 +192,15 @@ try {
   }, crashed.index);
   await Promise.all(workspaces.map(w => w.check()));
   await measure("receipt-recover", budgets.recovery, async () => { await run([resolve("_build/native/release/build/cmd/main/main.exe"), "recipe", "recover"], { env, timeout: budgets.recovery, input: JSON.stringify({ schemaVersion: 1, recipeResult: crashed.runtime.recipeResult }) }); await crashed.checkClient(); }, crashed.index);
+  await measure("server-update", budgets.provision, async () => {
+    await crashed.stopServer();
+    const state = crashed.runtime.recipeResult.userData;
+    const output = JSON.parse(await run([adapter, "update", "--provider", provider!, "--workspace", state.workspaceId as string], { env: { ...env, ORCA_USER_DATA_PATH: root + "/profile" }, timeout: budgets.provision }));
+    assert.equal(output.failed, 0);
+    assert.equal(output.workspaces[0]?.outcome, "success");
+    assert.equal(output.targetVersion, release.version);
+    assert.equal(output.workspaces[0]?.reason, undefined);
+  }, crashed.index);
   await measure("server-recovery", budgets.lifecycle, async () => {
     await crashed.stopServer();
     await crashed.crashSupervisor();
