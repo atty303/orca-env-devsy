@@ -1648,7 +1648,7 @@ async test "server create returns recipe JSON while the tunnel child retains std
             extra_env=env,
           )
           @fs.remove(directory + "/hold-proxy-setup")
-          let result = @async.with_timeout(5000, async fn() { creation.wait() })
+          let result = creation.wait()
           (result, check)
         })
       },
@@ -2831,41 +2831,58 @@ async test "adopted primary is stopped before recovering after a failed health c
     #|esac
     #|exec "$HOME/bin/ssh-original" "$@"
   @fs.write_file(directory + "/bin/ssh", wrapper + "\n", permission=0o700)
-  @async.with_timeout(5000, async fn() {
-    @async.with_task_group(async fn(group) {
-      let sink = @process.redirect_to_file("/dev/null", shared=true)
-      defer sink.close()
-      let child = @process.spawn(
-        group,
-        integration_binary(),
-        [
-          "--supervisor",
-          env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
-          worker,
-        ],
-        extra_env=env,
-        stdout=sink,
-        stderr=sink,
-      )
-      defer (@fs.remove(worker + "/enabled") catch { _ => () })
-      while field(
-              @json.parse(@fs.read_file(worker + "/status.json").text()),
-              "status",
-            ) !=
-            Some(Json::string("connected")) {
-        @async.sleep(10)
-      }
-      @fs.write_file(directory + "/fail-next-check", "")
-      @fs.write_file(worker + "/probe-request", "")
-      while !@fs.exists(directory + "/master-recreated") &&
-            !@fs.exists(directory + "/master-conflict") {
-        @async.sleep(10)
-      }
-      assert_false(@fs.exists(directory + "/master-conflict"))
-      assert_true(@fs.exists(directory + "/master-recreated"))
-      @fs.remove(worker + "/enabled")
-      assert_eq(child.wait(), 0)
-    })
+  @async.with_task_group(async fn(group) {
+    let sink = @process.redirect_to_file("/dev/null", shared=true)
+    defer sink.close()
+    let child = @process.spawn(
+      group,
+      integration_binary(),
+      [
+        "--supervisor",
+        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
+        worker,
+      ],
+      extra_env=env,
+      stdout=sink,
+      stderr=sink,
+    )
+    defer (@fs.remove(worker + "/enabled") catch { _ => () })
+    @async.with_timeout(
+      5000,
+      async fn() {
+        while field(
+                @json.parse(@fs.read_file(worker + "/status.json").text()),
+                "status",
+              ) !=
+              Some(Json::string("connected")) {
+          @async.sleep(10)
+        }
+      },
+      error=AdapterError("Timed out waiting for adopted primary readiness"),
+    )
+    @fs.write_file(directory + "/fail-next-check", "")
+    @fs.write_file(worker + "/probe-request", "")
+    @async.with_timeout(
+      5000,
+      async fn() {
+        while !@fs.exists(directory + "/master-recreated") &&
+              !@fs.exists(directory + "/master-conflict") {
+          @async.sleep(10)
+        }
+      },
+      error=AdapterError("Timed out waiting for primary replacement"),
+    )
+    assert_false(@fs.exists(directory + "/master-conflict"))
+    assert_true(@fs.exists(directory + "/master-recreated"))
+    @fs.remove(worker + "/enabled")
+    assert_eq(
+      @async.with_timeout(
+        5000,
+        async fn() { child.wait() },
+        error=AdapterError("Timed out waiting for recovery supervisor shutdown"),
+      ),
+      0,
+    )
   })
 }
 
