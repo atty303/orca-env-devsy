@@ -1,0 +1,1 @@
+It is required for orca-worktree. buildRefが必要なのはorca-wroktreeで既定のrefをorcaが渡してこない制限があるから説明したほうがいい
