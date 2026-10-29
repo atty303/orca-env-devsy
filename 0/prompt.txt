@@ -1,0 +1,1 @@
+context内の特定providerのworkspaceを一括stopできる？
