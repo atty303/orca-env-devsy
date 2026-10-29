@@ -1,0 +1,3 @@
+> 今回の変更は新規環境の命名と永続化を追加するため、commit の release 影響は minor を提案します（push・release 実行は含めません）。この方針でよいですか？
+
+minor にする
