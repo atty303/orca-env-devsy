@@ -1,0 +1,110 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy`に、Glazeの`mise //:devsy stop`と`resume`相当の一括操作、および他の連携から利用できる`status`を実装してください。通常のstopはidleのVMだけを対象にしてください。
+
+移植元は以下です。
+- `/Users/a13400/src/CyberAgentAI/glaze/glaze/tasks/actor-all/devsy.ts`
+- 同ディレクトリの`devsy_test.ts`
+
+Glaze側は変更せず、完了報告にGlaze移行用の引き継ぎプロンプトを含めてください。
+
+## 目的
+- adapter管理VMの稼働状況と仕事の実行状態を、ローカルOrcaのAPIに依存せず調べられるようにする。
+- 実行中の仕事を保護しながら、VMを一括停止・再開できるようにする。
+- 他のツールが、判定結果と根拠をJSONとして利用できるようにする。
+
+## 成功条件
+- トップレベルに`status`、`stop`、一括操作用の`resume`がある。
+- recipe用操作は`recipe ...`配下へ移り、既存の一括操作用コマンドとの役割が明確である。
+- `status`はVMごとの起動状態、`idle / active / unknown`、その根拠を含む単一のpretty JSON文書を標準出力へ返す。
+- 通常の`stop`は、操作直前にidleと確認できたVMだけを停止する。
+- `stop --force`はactive・判定不能も停止対象にするが、対象範囲とVMの同一性確認を省略しない。
+- terminalの通常コマンド、terminal版エージェント、native chatを判定に含める。
+- 実行中、送信待ち、承認待ち、バックグラウンドタスク、観測失敗を判定根拠として扱える。
+- `resume`は停止済みの対象VMを起動し、その接続を復旧する。起動済みVMを重複起動しない。
+- 一部の対象で操作に失敗しても他の対象を続行し、結果を報告する。
+- idle判定不能によるスキップだけなら正常終了し、実際の停止・再開処理の失敗は非ゼロ終了する。
+- 通常コマンドの実行中／終了後、エージェントのidle→active→idle、native chatの同じ遷移、判定不能、強制停止を再現可能なテストで検証する。
+- 完了報告に、Glaze移行を別taskへ依頼できる自足的なプロンプトがある。
+
+## 決定事項
+- 通常操作をトップレベル、recipe用操作を`recipe ...`配下にする。
+  - 理由: 人間や他の連携が使う通常操作を簡潔にし、Orca recipe用のreceipt契約と分離するため。
+  - 主な棄却案: 一括操作を`vm ...`へまとめる案、`resume-all`を追加する案。
+- 旧呼び出しは一切考慮しない。
+  - 理由: 互換入口やstdinによる用途判別を保守しないため。
+  - 主な棄却案: 旧形式のalias、移行期間、receiptの有無による互換判別。旧呼び出し専用の検出・救済処理も追加しない。
+- 対象は指定context/provider内でadapterの保存情報があるVMだけとし、`status / stop / resume`で揃える。
+  - 理由: 接続先・所有関係・操作対象を対応付け、管理外VMを意図せず起動しないため。
+  - 主な棄却案: Devsyのcontext/provider内の全VMを操作する案。
+- contextはDevsy本来の解決規則に従い、`DEVSY_CONTEXT`を尊重する。`--provider`は必須とする。
+  - 理由: Devsyの仕様を利用し、Glaze固有の`cycloud-devbox`既定値をadapterへ持ち込まないため。
+  - 主な棄却案: `--context`も毎回必須にする案、省略時に全context/providerへ対象を広げる案。
+- idleは実行時点で判定し、一定時間idleだったことは要求しない。
+  - 理由: 手動の一括操作として使い、常駐監視や時刻の永続管理を増やさないため。
+  - 主な棄却案: idle継続時間を記録・監視する案。
+- idle判定はOrca管理の仕事に限定する。
+  - 理由: 実測済みの観測経路を使い、常駐サービスと利用者の仕事を区別する例外規則を増やさないため。
+  - 主な棄却案: 別SSH接続、nohup、systemdなどを含むVM全体のプロセス判定。
+- `status`は常にpretty JSONを返す。
+  - 理由: 人間の可読性と機械からの利用を両立するため。
+  - 主な棄却案: 人間向け表示を標準にして`--json`で切り替える案、JSONL。
+- 判定結果だけでなく、その根拠も返す。
+  - 理由: 他の連携が判定を検査し、問題時に何を観測できなかったか判断できるようにするため。
+  - 主な棄却案: booleanや集約状態だけを返す案。
+- 判定不能は通常のstopではスキップし、それだけでは失敗終了しない。
+  - 理由: 観測できないVMを停止せず、操作可能なVMの処理を進めるため。
+  - 主な棄却案: 判定不能が一件でもあれば非ゼロ終了する案。
+- `stop --force`はidle条件だけを外し、active・判定不能も停止対象にする。
+  - 理由: Orcaの観測経路が利用不能な場合にも、明示的に強制停止できるようにするため。
+  - 主な棄却案: forceでも判定不能をスキップする案。
+- OrcaのSleep統合は追加せず、Devsyを直接操作する。
+  - 理由: Glazeの現行taskと同じ操作経路を移植し、非公開Sleep処理へ依存しないため。
+  - 主な棄却案: ローカルOrcaの内部IPCやplugin経由でSleepへ統合する案。
+- 今回はadapterだけ変更し、Glaze移行用プロンプトを成果に含める。
+  - 理由: adapterの実装と利用側の移行を別taskとして扱うため。
+  - 主な棄却案: Glazeのtask・recipe・バージョン指定まで同時変更する案。
+
+## 制約
+- ローカルOrcaの稼働やAPIを、状態判定の依存先にしない。
+- VMの起動状態と、仕事の実行状態を別の情報として扱う。`Running`やWorktreeの`active`だけで仕事の実行中を判定しない。
+- 通信失敗、列挙の省略、対応API不足などをidleへ読み替えない。
+- 停止中VMをstatus取得やidle判定のために起動しない。
+- VMの同一性・所有関係が確認できない場合は、forceでも操作しない。
+- idle確認と停止は外部操作をまたぐため、原子的な保証があるかのように扱わない。
+- APIの根拠情報を返すために、プロンプト、会話本文、端末preview、認証情報を出力する必要はない。状態・識別・観測時刻・失敗理由など必要な情報へ絞る。
+- 実VMの停止・再開、release、pushは今回の実装依頼に含めない。walleyeへの読み取りはこの会話で許可済み。
+
+## 対象外
+- Glaze repositoryの変更。
+- Orca本体やpluginの変更。
+- Orca側のVM管理状態とDevsyの直接停止状態の不整合の解消。
+- 時間経過による自動停止スケジューラや常駐idle監視。
+- Orca管理外の仕事を含むVM全体のidle保証。
+- 旧CLIの互換対応。
+
+## 未検証の前提
+- 実装開始時のOrca ServerバージョンとRPCの互換性。下記の実測は1.4.241で行ったもの。
+- native chatの送信待ち・承認待ち・バックグラウンドタスクについて、各返却値の厳密な意味と欠落時の扱い。
+- SSH connection方式で、adapterから同じOrca観測経路を利用できる範囲。取得できない場合は判定不能として扱い、通常stopでは停止しない。
+- 保存済みVM情報とDevsyの一覧・状態情報からcontext/providerおよび同一性を照合する具体的な経路。
+
+## 実装時の指示
+- 移植元の実装・テストから、対象選択、同時実行数、状態確認、部分失敗後の続行、resume後の接続復旧を確認し、adapterの既存機構へ統合する。
+- receipt単位の`create / resume / suspend / destroy`を`recipe ...`へ移す。receipt単位の`recover / restart`も同じ整理に含め、既存の一括`recover / restart`とは区別する。
+- この会話ではwalleyeで以下を実測した。検証用コードをそのまま製品実装へ固定せず、利用可能な通信経路と契約を確認して利用する。
+  - adapterの保存済みSSH control socketからVMへ接続し、VM内OrcaのRPCを呼べた。ローカルOrcaのAPIは使っていない。
+  - `terminal.list`でterminal handleを列挙でき、`requireFreshPtyLiveness: true`と`truncated`を確認できた。
+  - `terminal.inspectProcess`へ`scanChildProcesses: true`を渡すと、結果の`process`に前面プロセス・子プロセス情報・観測証拠が返った。
+  - 通常端末の`sleep 300`実行中は`foregroundProcess: "sleep"`、`hasChildProcesses: true`。終了後は`foregroundProcess: null`、`hasChildProcesses: false`となった。
+  - terminal版Codexは、`worktree.ps`の該当agentにある`state`と`programStatus.state`で、1秒間隔の`done / idle → working / working → done / idle`を確認できた。
+  - Codexのプロセスが生存していても仕事は完了していた。`terminal.agentStatus`の`status`は当時nullだったため、それ単独へ依存しない。
+  - native chatは`terminal.list`に現れなかった。`agentSession.subscribeStatus`のsnapshotからworkspaceIdに対応するsessionIdを取得できた。
+  - native chatの購読には通常の単発RPCとは別のsubscription transportと、`agent-session.structured.v1`などの互換能力宣言が必要だった。これは権限拡張ではなく通信上の対応機能宣言。
+  - `agentSession.history`を`{ sessionId, direction: "tail", limit: 1 }`で呼び、`result.page.working`の`false → true → false`を1秒間隔で確認できた。
+  - 同じpageには`queuedMessages`、`actionablePromptIds`、`backgroundTasks`などがあった。native chatの購読statusがnullでもhistoryのworkingは取得できた。
+- statusと通常stopで判定ロジックを共有し、stop専用の異なるidle定義を作らない。
+- JSONのVM単位の結果に、Devsy上の起動状態、activity、判定に使った観測情報、判定不能の理由を対応付ける。
+- CLI再編に必要なadapter内の呼び出し元、help、テスト、既存recipe例を更新する。
+- 完了時のGlaze移行用プロンプトには、移植元のstop/resumeをadapterへの委譲へ置き換えること、recipe呼び出しを`recipe ...`へ変えること、公開済みバージョンの確認後にpin/lockを更新すること、新しいprovider指定・JSON契約・idleスキップ・forceの扱い、必要な利用側検証を含める。存在しないrelease番号を指定しない。
