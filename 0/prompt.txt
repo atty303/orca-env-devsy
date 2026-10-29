@@ -1,0 +1,1 @@
+B. 特にworkspace upは1分は掛かるし、devcontainer buildの進捗が見えないと実質意味がない
