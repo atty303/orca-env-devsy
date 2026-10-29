@@ -1,0 +1,15 @@
+B. 原因は、Apple container 自体の停止ではなく、**SSH の制御ソケットを置くホスト側ディレクトリが存在しないこと**です。
+
+`glaze-quail-43` の container は `running` で、内部の `sshd` もポート 2222 で待ち受けています。Devsy を使った直接の SSH 接続も成功しました。一方、recover が使う `/tmp/oe.17496.64482cee` は存在せず、同じソケットパスを指定して SSH を実行すると、次のエラーで終了コード 255 になりました。
+
+```text
+unix_listener: cannot bind to path /tmp/oe.17496.64482cee/socket...: No such file or directory
+```
+
+そのため SSH 接続の確立後、制御ソケットを作れずに終了し、recover が 60 秒待ってタイムアウトしたと考えられます。`SSH failure details unavailable` は、元の SSH エラーが診断記録に残っていなかったためです。
+
+**ディレクトリが消えた理由はまだ不明です。** 記録上、recover 0.9.2 は稼働中の 0.7.4 supervisor を再利用しており、その supervisor が失敗後も再接続を繰り返しています。バージョン差とディレクトリ消失の因果関係は、この証拠だけでは確定できません。環境や設定の変更は行っていません。
+
+
+
+supervisorにこの問題はあるか？
