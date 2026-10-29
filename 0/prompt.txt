@@ -1,0 +1,111 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy` の接続管理を変更し、adapter が管理する接続について、Devsy fork の `fix/credential-relay-remote-wait` に依存せず relay の確立・維持・自動復旧を行えるようにしてください。
+
+今回は adapter の実装と検証まで行ってください。
+
+## 目的
+- relay を利用できない接続を、接続成功として返さない。
+- SSH が生きていても gRPC が timeout して relay を利用できない状態から、自動で回復する。
+- relay のサービスを開始する接続を管理用 SSH master に一本化し、接続交代時の競合も adapter 側で回復する。
+
+## 成功条件
+- SSH 接続と relay の RPC 往復の両方を確認してから、接続成功を返す。
+- 起動・resume・reconnect・restart、および稼働中の異常から、実際の credential 取得まで回復する。
+- 初回取得失敗、旧 relay の終了遅延、通信断、worker 消失、relay 単独終了、SSH と HTTP listener を生かしたままの RPC ハングを検証する。
+- 通常時に、管理用 master と競合する別のサービス接続を開始しない。
+- `/ready` 非対応を、一時障害と区別して明示的に報告する。
+- upstream 最新 beta の公式 host/agent を使用し、remote-wait を含む fork 修正なしで検証を通す。
+- 必要な既存検証と変更経路の検証を完了し、実行環境・確認結果・未確認範囲を区別して報告する。
+
+## 決定事項
+- 保証対象は adapter 管理下の接続に限定する。
+  - 理由: adapter 内でサービス接続を単一化して所有・復旧を扱うため。
+  - 主な棄却案: adapter 管理外の `devsy ssh` との所有権引き継ぎを保証する。
+
+- relay 異常時は管理用 master 全体を終了・再作成する。
+  - 理由: 接続を単一の復旧単位とし、relay 専用の lifecycle 管理を増やさないため。
+  - 主な棄却案: 手動 restart のみで回復する、master を維持して別のサービス接続を開始する。
+  - Orca Server モードでポート転送が一時切断されることは許容する。
+
+- 正常性確認には Devsy の既存 `GET /ready` を使用する。
+  - 理由: credential を取得せず、既存の Ping RPC でホストへの往復を確認できるため。
+  - 主な棄却案: `/`・`/owner` のみ、不正形式の credential リクエスト、health API の追加、relay proxy の追加。
+  - `/ready` は Git forwarding の有効・無効にかかわらず確認する。Git helper の設定確認は Git forwarding が有効な場合に限る。
+  - `/ready` の成功は共有 RPC 経路の応答性を意味し、個々の credential helper や外部サービスの認証成功とは区別する。
+
+- `/ready` HTTP リクエストの期限は1秒とする。
+  - 理由: 採用予定 beta の内部 Ping 期限500msに HTTP 処理の余裕を持たせるため。
+  - 主な棄却案: HTTP リクエストにも5秒待つ。
+  - probe を実行する SSH command 全体の期限とは分け、SSH 側の失敗も正常性判定に含める。
+
+- 稼働中は通常10秒間隔で確認し、失敗時は直ちに再確認する。
+  - 理由: 一時的な遅延を一度許容しながら、継続する異常を早く検出するため。
+  - 主な棄却案: 1回の失敗で再接続する。
+  - 2回連続失敗で master を再作成する。成功時は失敗回数をリセットし、probe は重複実行しない。
+
+- 利用者が待つ接続確立の期限は、対象ごとに合計60秒とする。
+  - 理由: SSH と RPC の確認、および接続再試行に時間を確保するため。
+  - 主な棄却案: 30秒、操作ごとに異なる期限。
+  - 起点は次のとおり。
+    - `create`／`resume`: `devsy workspace up` 正常終了直後。
+    - `reconnect`: 対象の接続確保処理の開始時。
+    - `restart`: 旧接続の終了完了直後。
+  - workspace up の所要時間は含めない。restart の旧接続終了には既存の終了期限を別に適用する。
+  - 接続確立の再試行で60秒の期限をリセットしない。
+
+- relay 未準備のまま接続成功を返さない。
+  - 理由: relay がなければ workspace は実用にならないため。
+  - 主な棄却案: 警告だけで接続情報を返し、背景で準備する。
+  - `create` の失敗時は既存の失敗時処理で作成 workspace を削除する。
+  - `resume`／`reconnect`／`restart` の期限切れは呼び出し元へ失敗を返すが、worker は背景で復旧を続ける。
+
+- 自動復旧は回復するまで継続する。
+  - 理由: 一時的な障害やスリープから、手動操作なしで回復するため。
+  - 主な棄却案: 背景復旧も60秒で打ち切る。
+  - 再試行間隔は最大30秒の backoff とし、SSH と RPC の両方が成功した時点でリセットする。
+  - workspace 停止・所有権変更・明示的な終了では停止する。workspace を自動起動しない。
+
+- `/ready` 非対応の旧 Devsy はサポート対象外とする。
+  - 理由: readiness 契約と検証経路を一本化するため。
+  - 主な棄却案: 不正形式リクエストへの fallback。
+  - 非対応は明確なエラーにし、復旧目的の再接続を繰り返さない。
+
+- テスト用 Devsy は upstream の最新 beta を採用し、正確なバージョンを固定する。
+  - 理由: fork 修正に依存しないことを、現行 upstream の契約で確認するため。
+  - 主な棄却案: atty303 fork、既存の stable pin、テストのたびに無記録で変わる版。
+  - 設計時に確認した最新は `v1.25.0-beta.3`。実装開始時に再確認する。
+  - テスト結果には prerelease suffix まで含む正確なバージョンを残す。
+
+## 制約
+- 今回変更する repository は `orca-env-devsy` とする。
+- upstream／fork Devsy のソースや fork 生成設定は変更しない。
+- サービス開始を無効にしている Orca の SSH と一時 remote command の性質を維持する。
+- 既存の workspace UID 照合、接続の排他制御、保存済み接続情報・ポートの維持を保つ。
+- probe の request/response body や credential を診断記録へ残さない。復旧理由と状態遷移を既存の診断経路で追えるようにする。
+- push・PR 作成・release は行わない。
+
+## 対象外
+- adapter 管理外の Devsy 接続との共存・所有権引き継ぎ。
+- VM・container・workspace・remote Orca Server の自動再起動。
+- 個々の credential helper や外部サービスの認証障害を、master 再接続で修復すること。
+- relay proxy、新規 health API、旧版用の代替 probe。
+- Devsy fork から remote-wait を除去する作業。
+
+## 未検証の前提
+- 実装開始時点の upstream 最新 beta の正確なタグと、その版の `/ready` の応答 schema・内部期限・起動順序。
+- 最新 beta でのポート取得・helper cleanup・RPC cancellation の実装が、接続交代時の adapter 側再試行に与える影響。
+- 現環境で利用可能な E2E provider と、host/agent 両方に公式 beta を適用する方法。
+
+## 実装時の指示
+- 主な調査箇所は `src/tunnel.mbt`、`src/git_relay.mbt`、`src/runtime.mbt`、`src/ssh_proxy.mbt`、`tests/e2e/`、テスト用 Devsy の mise 定義・lock。
+- 現在の `wait_tunnel` は relay の待機失敗を警告だけで済ませる。これを接続成功の必須条件へ変更する。
+- 現在の relay 監視は異常を記録するだけである。worker が管理用接続を終了・再作成する経路へ統合する。
+- 新規接続と既存 master の引き継ぎの両方で、RPC 確認を省略しない。
+- `/ready` の availability と Git helper 設定完了は同義と決めつけず、採用 beta の起動順序に沿って判定する。
+- 稼働中 probe と起動時判定の責務を揃え、再接続処理を二重に走らせない。
+- 既存 E2E の「relay 復旧時に master の PID を維持する」という条件は、今回の設計に合わせて更新する。復旧後の実際の credential 利用まで確認する。
+- RPC ハングの検証では、SSH と HTTP listener が生存していても正常扱いしないことを確認する。HTTP endpoint 自体の停止だけで代用しない。
+- 公式 beta の検証に fork agent が混ざらないよう、host と remote agent の取得元・バージョンを確認する。
+- 検証用に作る変更や fixture は synthetic credential を使用する。
