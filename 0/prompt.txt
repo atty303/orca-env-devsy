@@ -1,0 +1,68 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy` で、実装途中の workspace 命名・Orca 永続化の変更を保持し、adapter 専用 volume の自動削除を追加して完成させてください。
+
+## 目的
+- 再作成後も Orca の profile・worktree を保持する。
+- workspace の破棄時には、adapter が追加した専用 volume を可能な範囲で回収する。
+- provider 固有処理の対応範囲を限定する。
+
+## 成功条件
+- ローカルの Apple・Docker・Podman で、workspace 削除成功後に adapter 専用 volume を個別削除する。
+- 削除対象は、adapter がその workspace 用に明示的に割り当て、state に保存した専用 volume 一つだけとする。
+- suspend・resume・再作成では、その volume を保持して再利用する。
+- volume の削除失敗は destroy の成功を妨げず、volume 名と原因を警告・診断記録に残す。
+- 対象外の provider も作成を許可し、個別削除を省略したことと volume 名を警告・診断記録に残す。ただし、専用 VM の削除で回収される場合はその経路を記録する。
+- 作成失敗時も、所有権を確認できた専用 volume の回収を試みる。回収失敗は警告とし、元の作成エラーを保持する。
+- `mise run check` と `mise run test` が通る。承認済みの使い捨て環境で実際の回収を確認し、未検証の境界を明示する。
+
+## 決定事項
+- 個別削除の対応範囲はローカルの Apple・Docker・Podman とする。
+  - 理由: ホストが残る主要な構成を対象にし、実装・検証負担を限定する。
+  - 主な棄却案: 全 provider への対応、Apple だけへの対応。
+- 通常の Cycloud は専用 VM の削除による回収を Devsy に任せる。
+  - 理由: VM 内の volume を個別削除する必要がない。
+  - 主な棄却案: VM 削除前の不要な volume 削除。
+- 削除失敗時も destroy は成功扱いとする。
+  - 理由: volume 回収の失敗で workspace の破棄完了を妨げない。
+  - 主な棄却案: volume 削除失敗による destroy の失敗扱い。
+- 自動削除の対象外の provider も利用を許可する。
+  - 理由: 自動回収への対応状況で provider の利用を制限しない。
+  - 主な棄却案: 未対応構成での新規 Server 環境作成の拒否。
+- 削除対象は state に記録した adapter 専用 volume に限定する。
+  - 理由: adapter が所有するリソースだけを回収する。
+  - 主な棄却案: workspace に接続された全 volume の削除、一括 prune。
+- Devsy 管理用ラベルによる回収は利用しない。
+  - 理由: 確認した Docker 実装では再作成時にも回収され、永続化を壊す。
+  - 主な棄却案: 追加 volume を Devsy 内部の管理対象としてラベル付けする方法。
+
+## 制約
+- Devsy 本体、各利用 repo の共有 `devcontainer.json`、Orca client の設定は変更しない。
+- 既存環境の移行実装は追加しない。
+- repo が指定した volume、checkout 用ストレージ、Devsy 内部 volume、他の workspace の volume は削除しない。
+- 強制削除や一括 prune は使わない。
+- 状態変更を伴う検証は、承認された使い捨て環境で行う。通常の Cycloud 環境で cloud resource を変更しない。
+- release 影響は承認済みの minor とする。push・deploy・release は行わない。
+
+## 対象外
+- 全 provider を扱う汎用 volume 管理機構。
+- Devsy の volume 管理 API の追加。
+- 既存 workspace・profile・worktree の移行、改名、移動。
+- 自動削除の失敗を必須の再試行処理へ発展させること。
+
+## 未検証の前提
+- 対象 workspace が実際に使用する runtime の実行ファイル・接続先・必要な実行設定を、Devsy の公開情報から取得できる範囲を確認する。
+- Apple・Docker・Podman それぞれについて、volume 不在、使用中、runtime 到達不能時の終了状態と診断方法を確認する。
+- 作成途中の各失敗段階で、専用 volume の存在と所有権を確認できる範囲を確認する。
+
+## 実装時の指示
+- まず現在の git status と差分を確認する。既存の staged 差分は、今回の命名・永続化実装として確認・継続し、上書きや破棄をしない。
+- 既存実装の `<repo名>-<動物名>-<2文字suffix>`、保存された workspace ID・UID、adapter 間の作成排他を維持する。外部 Devsy CLI との原子的な作成競合への対応は不要。
+- `/workspaces/.orca` の専用 volume、`ORCA_USER_DATA_PATH=/workspaces/.orca/.profile`、公開 Orca CLI による `worktreeBasePath=/workspaces/.orca` の設定を維持する。
+- runtime の実行ファイルや接続先を決め打ちせず、Devsy が使用する設定を尊重する。削除先や所有権を確認できない場合は削除せず、警告・診断記録に理由を残す。
+- workspace UID が不一致の場合は、既存の同一性確認を維持し、別 workspace やその volume を操作しない。
+- volume が既に存在しない場合と、照会自体に失敗した場合を区別する。
+- volume の個別削除は workspace の削除成功後に行う。workspace 削除自体の失敗を成功扱いへ変えない。
+- 既存 E2E の後片付けが product 側の volume 削除漏れを隠さないよう、adapter の destroy 直後に回収結果を確認する。
+- 再作成時の profile・worktree・登録の保持と、destroy 時の専用 volume 回収を別々に検証する。
