@@ -1,0 +1,1 @@
+includeされた側で変数置換はできない？ versionとかshaとか
