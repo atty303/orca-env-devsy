@@ -1,0 +1,1 @@
+orcaがdevcontainer.jsonのmountに依存するとadapter利用の前提が増える
