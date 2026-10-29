@@ -1,0 +1,107 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy`で、初回workspace作成時にホストOrcaの自動命名関連設定をRemoteのOrca Serverへ引き継ぐ暫定対処を実装してください。
+
+## 目的
+- Remote側の設定未指定によって、ホストで選んだCodexではなくClaudeが自動命名に使われる問題を解消する。
+- Orca側の不具合が修正された際に撤去しやすい、小さな初期設定処理にする。
+
+## 成功条件
+- Orca Serverのinstall後、自動命名が動き始める前かつworkspaceを利用可能にする前に設定が適用される。
+- ホストのデフォルトAgentがCodex、Claudeが無効の場合、その設定がServerにも反映される。
+- 下記の転送対象がSQLiteへ保存され、Serverの設定解決・自動命名経路で使用される。
+- 設定取得・転送・適用の失敗時は初期化を失敗させる。
+- resume・recover・restartでは再転送せず、VM側の設定を保持する。
+- Macホスト、Linuxホスト、Linux VMで、対象Orcaの特定と同梱処理の利用を検証する。未検証の環境を検証済みとして報告しない。
+- ビルドハッシュの変更だけで対象モジュールを見失わない。
+
+## 決定事項
+- 引き継ぎは初回作成時だけとする。
+  - 理由: 初期設定の欠落を補い、その後のVM側の変更を保持するため。
+  - 主な棄却案: resume等での継続同期。VM側設定を上書きするため。
+
+- ホストの全体設定から、次の項目を引き継ぐ。
+  - `defaultTuiAgent`
+  - `disabledTuiAgents`
+  - `sourceControlAi.agentId`
+  - `sourceControlAi.actions.branchName`と`sourceControlAi.actions.conversationName`の`agentId`、`commandInputTemplate`、`agentArgs`
+  - 共通のモデル選択・思考レベルと、上記2操作のモデル選択・思考レベル
+  - ホスト別モデル選択の`local`分
+  - `autoRenameBranchFromWork`
+  - `branchPrefix`
+  - `branchPrefixCustom`
+  - 理由: Server側のブランチ名・会話名の自動生成が実際に参照する設定を補うため。
+  - 主な棄却案: Source Control AI全体のコピー。手動操作はホスト設定や解決済みパラメーターをRemoteへ送っており、今回の転送対象を広げる必要がないため。
+
+- 指示・旧設定はOrca自身の正規化処理で対象操作のテンプレート等へ反映し、その結果から転送対象を抽出する。
+  - 理由: adapter独自の設定解釈を持たないため。
+  - 主な棄却案: 指示・旧設定を個別に転送してadapter側で変換する方式。
+
+- `agentArgs`は解析・検査・変換せず、そのまま転送する。
+  - 理由: 任意引数の解釈をadapterへ追加しないため。
+  - 主な棄却案: パス・認証値・モデル引数等を検出して除去する方式。
+  - 引数内の`--model`やホスト固有パスも加工しない。
+
+- リポジトリ別設定は転送しない。
+  - 理由: リポジトリ登録の対応付けや個別設定の移植を暫定対処に追加しないため。
+  - 主な棄却案: ホストの対象リポジトリ設定の転送。
+  - Server自身に保存されたリポジトリ別設定との優先順位はOrcaに任せる。
+
+- SQLiteのみを扱い、Orca同梱の読み書き処理を再利用する。
+  - 理由: DBスキーマ、revision、内容ハッシュ等をadapter側で再実装しないため。
+  - 主な棄却案: 旧JSON対応、adapter独自のSQLite更新処理。
+
+- 同梱モジュールのビルドハッシュは固定しない。
+  - 理由: Orcaの通常更新で壊れる依存を避けるため。
+  - 主な棄却案: `profile-state-database-DjpyEFQJ.js`等の完全なファイル名の固定。
+  - 現行Mac版では、固定名の入口モジュールを読み込み、その直接依存から対象モジュールを探索する方法で、一時SQLite DBの作成・書き込み・再読み取りを確認済み。
+
+- ホストとVMでOrca本体の特定方法を分ける。
+  - Macホスト: user dataディレクトリの`orca-runtime.json`にあるPIDから、`proc_pidpath`で実行中Orcaの実体へ到達する。
+  - Linuxホスト: runtime metadataのPIDと`/proc/<pid>/exe`を使う。独立daemonの場合は起動元の情報も確認する。
+  - VM: adapter管理のinstall先を直接使用する。
+  - 理由: ホストでは実行中のOrcaを選び、起動前のVMでは既知のinstall先を使うため。
+  - 主な棄却案: `/Applications/Orca.app`等の固定、PATH上の任意のOrcaの利用。
+
+## 制約
+- 設定値や認証情報をログ・診断記録へ出さない。
+- ホストの設定DBを変更しない。
+- DB全体をVMへコピーしない。
+- モジュール探索と設定適用は、実際に使用するOrcaの配置・profileに対応させる。
+- `autoRenameBranchFromWork=false`がServerの読み込み時の補正で有効へ戻らないようにする。必要な内部フラグの扱いはOrcaの実装に従う。
+
+## 対象外
+- `sourceControlAi.customAgentCommand`
+- `agentCmdOverrides`
+- Agent全体の追加引数、環境変数、権限設定
+- 他のSource Control AI操作の設定
+- リポジトリ別設定
+- 他Remote向けのモデル設定
+- モデル探索キャッシュ
+- 認証情報の設定、ホスト固有パスの設定。ただし`agentArgs`内の文字列は前述のとおり加工しない。
+- モデル探索キャッシュ不足によるフォールバックの修正
+- 既存workspaceへの設定移行
+- Orca本体の修正
+
+## 未検証の前提
+- 実際のrecipe起動環境で、呼び出し元Orcaのuser dataディレクトリとprofileを正しく特定できること。
+- Linuxホストで、Electron本体または独立daemonから対応するOrcaの配置を特定できること。現行実装にはdaemonの`--spawner-exec-path`がある。
+- Linux配布物でも対象の同梱モジュールを探索・実行できること。
+- VMで初期profileを準備し、Server起動前にSQLiteへ設定を保存できること。
+- ホストとServerのバージョンが異なる場合の、対象設定と同梱処理の互換性。
+- 調査したMac配布物はOrca 1.4.241。実装時に現在の実体を再確認すること。
+
+## 実装時の指示
+- まず上記の実体特定・同梱モジュール探索・profile初期化を、一時領域で確認する。
+- 現行Mac版で確認した固定名の入口は次のとおり。
+  - `out/main/persistence/profile-state/profile-state-active-location.js`
+  - `out/main/persistence/profile-state/profile-state-domain-reader.js`
+  - `out/main/persistence/profile-state/profile-state-offline-settings.js`
+  - `out/shared/source-control-ai-settings.js`
+- 読み取り入口の直接依存からDBモジュール、offline設定入口の直接依存からSQLite書き込みモジュールを探索できた。単純なディレクトリ内prefix検索は関連モジュールとも一致するため、曖昧な候補を選ばない。
+- VMの実行ファイルは既存install処理が管理する`$HOME/.local/share/orca-env-devsy/orca/current/orca-ide`を使う。永続profileのuser dataディレクトリは`/workspaces/.orca/.profile`。
+- 既存の`src/server.mbt`のinstall・起動経路と、`src/storage.mbt`の永続profile準備に接続する。
+- 設定の保存だけでなく、Serverでの再読み込み後のAgent選択、対象操作の設定解決、ブランチ自動命名の無効設定の保持を確認する。
+- 一時resourceは検証後に削除する。
+- 範囲は設定の引き継ぎのみでそれ以上の補正はしない。それで解決しないとしても追加処理を増やさず報告する
