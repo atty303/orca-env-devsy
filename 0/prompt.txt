@@ -1,0 +1,74 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy` で、checkout mode に応じたビルド元の解決と、不要な full clone の抑止を実装してください。実 Orca を通る E2E で環境作成から作業開始まで保証してください。
+
+## 目的
+- 通常の環境作成で取得量を抑える。
+- devcontainer 開発時には、作業開始元と異なるビルド元を指定できる。
+- Orca が開始 ref を渡す場合は、その情報を利用して直接ビルドする。
+
+## 成功条件
+- `orca-worktree` では `buildRef` を必須とし、未指定は環境作成や clone の前に設定エラーにする。
+- `provisioned-root` では `buildRef` を省略でき、省略時は Orca が渡した開始 ref／commit をビルド元に使う。
+- `buildRef` を指定した場合は、その ref をビルド元に使う。
+- ビルドと lifecycle command は、選ばれたビルド元のリポジトリ全体のソースで実行する。
+- 次のシナリオを検証する。
+  - `orca-worktree` の通常経路：`buildRef` と Orca の基底ブランチが一致し、adapter 起因の不要な full clone・履歴取得・fallback を発生させず、実 Orca が feature branch／worktree を作成できる。
+  - 異なる ref の経路：例えば `buildRef: fix/devcontainer`、Orca の基底を `origin/master` とする。ビルドと lifecycle command はビルド用 ref のソースを使い、実 Orca は指定した基底から worktree を作成できる。full clone は許容するが、ref の違いを理由に失敗させない。
+  - `provisioned-root` の省略経路：`buildRef` なしで、Orca が渡した開始 ref／commit からビルド・lifecycle command・作業開始まで成功する。別のビルド元を経由する不要な取得を発生させない。
+- Devsy 1.23.2 を使用し、必要な check・test が成功する。
+
+## 決定事項
+- `buildRef` 必須化は `orca-worktree` に適用する。
+  - 理由: この経路では Orca の基底ブランチ指定が adapter に渡らず、ビルド元を明示する必要がある。
+  - 主な棄却案: remote HEAD、固定の master、ローカル HEAD への暗黙の fallback、対話入力。
+- `provisioned-root` は必須化の対象外とする。
+  - 理由: Orca が最初から開始 ref を渡すため、そのソースで直接ビルドできる。
+  - 主な棄却案: Orca が渡す情報と重複する `buildRef` の必須指定。
+- `buildRef` と Orca の作業開始元は独立している。
+  - 理由: devcontainer 開発ではビルド元だけを別ブランチにする必要がある。
+  - 主な棄却案: 両者の一致を利用条件にすること。
+- ビルド元にはリポジトリ全体を使い、lifecycle command の完了まで維持する。
+  - 理由: Dockerfile、build context、設定、呼び出すスクリプトの整合性を保つ。
+  - 主な棄却案: `.devcontainer` だけを別 ref から取得すること、lifecycle command を別ソースで実行すること。
+- 通常経路の shallow clone を優先し、異なる ref やエッジケースでは full clone を許容する。
+  - 理由: 高頻度の経路の取得量を抑えつつ、低頻度の利用も成功させる。
+  - 主な棄却案: 通常経路も full clone にすること、全ケースで shallow clone を必須にすること。
+- master／main は名前の選択であり、個別ケースや実装分岐にしない。
+  - 理由: 保証する挙動は同じである。
+  - 主な棄却案: 名前を変えただけの重複テストや特別扱い。
+- branch／worktree の作成は Orca が制御する。
+  - 理由: adapter の責任は環境と必要なリポジトリを提供するところまでである。
+  - 主な棄却案: adapter が Orca の代わりに作業ブランチや worktree を作成すること。
+- Orca の仕様による remote 更新処理は受け入れる。
+  - 理由: 抑止する対象は adapter が追加する不要な取得である。
+  - 主な棄却案: 全体のネットワーク取得回数を一回に固定すること。
+
+## 制約
+- `orca-worktree` でも Orca の基底ブランチ指定を受け取れる、という前提を置かない。
+- 任意のビルド用ブランチを指定できることを維持する。
+- 通常用・開発用の追加設定を要求しない。
+- 利用側への `--git-clone-strategy=` 追加だけで解決しない。
+- Orca の固定バージョンは、今回の依頼だけを理由に変更しない。
+- 個別の spike 成功を、接続した E2E の成功として扱わない。
+
+## 対象外
+- Orca 本体の仕様変更。
+- 全エッジケースの取得量最適化。
+- Devsy 内部の取得をすべて一回へ統合すること。
+
+## 未検証の前提
+- `orca-worktree` で基底ブランチ指定を受け取れない条件下で、通常経路の浅い取得と、異なる基底からの作業開始を両立させる具体的な取得方法。
+- Devsy が解決・固定した commit を公開出力から取得し、実際のビルド元と照合する方法。
+- repository が固定している Orca で、環境作成から remote worktree 作成まで通す IPC／RPC 経路。
+- `provisioned-root` で渡される ref と確定 commit の契約、および浅い取得でその commit を確実に利用する方法。
+
+## 実装時の指示
+- 最初に現状の source と作業ツリーを確認する。adapter 本体は、この会話ではまだ変更していない。
+- 明示依頼済みの Devsy 更新として、`mise.toml` と `mise.lock` に変更がある。1.23.2 と CLI asset 選択用の `matching=devsy-` を確認し、保持する。
+- spike 結果は `/tmp/orca-devsy-shallow-spike-20261016.json` にある。一時環境と spike スクリプトは削除済み。
+- spike では Devsy 1.23.2／Apple の環境作成・lifecycle command と、実 Orca 1.4.225 のローカル worktree 作成を別々に確認した。後者は作成後も shallow・履歴一 commitだった。
+- SHA 付きの source 指定では Devsy の事前検査の深さ制限が外れ、ブランチだけの指定では事前検査と workspace の clone が両方 depth 1 になることを観測した。取得量と commit の整合性の両方を検証する。
+- 既存 E2E は commit SHA の `buildRef` を使っており、今回の通常経路を検証できていない。
+- mode ごとの必須条件に合わせ、設定例・契約文書・既存テストを整合させる。
