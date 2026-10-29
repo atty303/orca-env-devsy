@@ -1,0 +1,1 @@
+idle監視が別processではなくtaskで、masterを使うsshを起動したらいいのでは？5分間隔とかでしょ？
