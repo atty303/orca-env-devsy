@@ -1,0 +1,1 @@
+refとshaを持つのはいい。それらの全objectはfetchしておきたくない
