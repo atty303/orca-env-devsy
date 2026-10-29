@@ -1,0 +1,1 @@
+Replace main with your usual base branch.  これは当たり前すぎていちいち書かなくていい
