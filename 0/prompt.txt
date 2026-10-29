@@ -1,0 +1,1 @@
+zigはcross buildで必要だがhostでmbtx実行には不要だよね
