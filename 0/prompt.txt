@@ -1,0 +1,5 @@
+"MN-240 クリーンアップ" このworkspaceのorca serverに繋がらないがadapter不具合か？ orca version mismatchか？ [Image #1]
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/e45c65b1-47ae-4322-ac9a-9bd24a8b230c/orca-paste-1793078350632-bdb8b697-1c1c-4798-90d7-e48fecb68ba6.png">
+
+</image>
