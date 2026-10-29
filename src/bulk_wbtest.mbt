@@ -259,7 +259,10 @@ async test "server update reports failures, suppresses recovery, and retries" {
       extra_env=env,
     )
     assert_true(version_status != 0)
-    assert_true(version_errors.text().contains("desktop version lookup failed"))
+    assert_true(
+      version_errors.text().contains("desktop version lookup failed"),
+      msg=version_errors.text(),
+    )
     assert_true(
       fixture_events(directory)
       .iter()

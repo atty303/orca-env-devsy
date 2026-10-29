@@ -317,7 +317,33 @@ async test "bulk restart terminates active transport and replaces supervisor" {
           assert_true(code != 0)
           assert_true(errors.contains("SSH transport cleanup failed"))
         } else {
-          assert_eq(code, 0, msg=errors)
+          let cleanup_diagnostics = fixture_events(directory)
+            .filter(event => {
+              field(event, "stage") ==
+              Some(Json::string("supervisor-transport")) &&
+              field(event, "status") == Some(Json::string("failed"))
+            })
+            .map(event => {
+              "errorType=" +
+              field(event, "errorType")
+              .map(value => value.stringify())
+              .unwrap_or("unknown") +
+              " errorMessage=" +
+              field(event, "errorMessage")
+              .map(value => value.stringify())
+              .unwrap_or("missing")
+            })
+            .join("\n")
+          assert_eq(
+            code,
+            0,
+            msg=errors +
+              (if cleanup_diagnostics == "" {
+                "\nno supervisor-transport failure event was recorded"
+              } else {
+                "\n" + cleanup_diagnostics
+              }),
+          )
         }
         assert_false(supervisor_pid(root) == previous)
         idle_wait_for(() => proxy.try_wait() is Some(_))
