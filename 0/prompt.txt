@@ -1,0 +1,1 @@
+B. masterとmainのぶれがある。glazeはmasterだが他repoはそうではない
