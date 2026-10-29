@@ -1,0 +1,1 @@
+追加。buildRef必須はprovisioned-rootの場合は除く。その場合、orcaから最初からrefが渡ってくるので最初からそこでbuildできる
