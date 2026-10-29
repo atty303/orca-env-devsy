@@ -1,0 +1,1 @@
+これで通常masterからのcreateではshallow維持で、branchが不足したぶんだけfetchになるのね
