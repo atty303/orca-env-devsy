@@ -1,0 +1,1 @@
+まず基本シナリオとしてbuildRefはmasterが普通だ。devcontainer自体を編集する（低い頻度）ときbuildRefを指定する。workspaceはmasterからfeature branchを作ってそこで作業する。これが最低限のfetchになることが優先。それ以外のエッジケースはfull cloneになってもいい
