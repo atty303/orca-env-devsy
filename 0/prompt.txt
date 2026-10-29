@@ -1,0 +1,1 @@
+flockまで使わずmarker fileぐらいでいいんじゃない？
