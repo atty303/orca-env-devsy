@@ -1,0 +1,1 @@
+B. devsy workspace id生成を見直す。orca-UUIDは長いし読みづらい
