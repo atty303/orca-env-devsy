@@ -1,0 +1,13 @@
+[Image #2] [Image #1] この手順で削除した。 [Image #3] 直後の表示
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/105dd9a3-817b-42b4-aa72-5ea0cae65c58/orca-paste-1792995434172-b775d240-e405-4896-ace7-93dc43fb4da7.png">
+
+</image>
+
+<image name=[Image #2] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/05f0135d-0caa-4d62-934a-51ddf99a0dc6/orca-paste-1792995445492-1d5403b5-6e8a-4745-a18f-4351f3bd21a1.png">
+
+</image>
+
+<image name=[Image #3] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/52b74370-a468-427a-80d5-9ef75f1f39b1/orca-paste-1792995461953-84894955-a56a-4795-ba74-07c488190a96.png">
+
+</image>
