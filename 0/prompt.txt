@@ -1,0 +1,3 @@
+> sysinfoで独自FFIをなくすには、既存クロスビルドへMac SDKを追加する対応が必要です。SDK依存とbuild設定の変更まで進めますか？ develop-repositoryの新規依存の事前承認規則に従う確認です。
+
+sysinfoがMac依存を無条件コンパイルしてるからクロスビルドができないのか？
