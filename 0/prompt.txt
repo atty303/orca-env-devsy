@@ -1,0 +1,3 @@
+> crash・メモリ破壊・process 全体の停止の影響を workspace 単位に限定できる。
+
+そんなことある？ それが起きるならホスト障害かadapterバグなのでworkspace単位である必要ないよね
