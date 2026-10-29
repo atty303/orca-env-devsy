@@ -1,0 +1,3 @@
+codex addonで起動したらこのエラー。移植元のdevsy_codex.tsでは動いていたから、勝手に挙動を変えているところだあるだろ。
+❯ codex
+Error loading configuration: Your authentication session could not be refreshed automatically. Please log out and sign in again.
