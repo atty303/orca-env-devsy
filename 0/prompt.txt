@@ -1,0 +1,3 @@
+> この変更をcommitする場合のrelease影響は、復旧機能の拡張としてminor（feat）を推奨します。この扱いでよいですか？ develop-repositoryスキルのrelease判断規則に基づく確認です。実装・検証は回答を待たず進めます。
+
+minor（feat）
