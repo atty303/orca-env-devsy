@@ -195,7 +195,7 @@ async fn launch_server(state : Json, update_marker? : (String, String)) -> Json 
   }
   let recording = workspace_recording(state)
   let launch = (if field(state, "orcaVolume") is Some(_) {
-      "export ORCA_USER_DATA_PATH=/workspaces/.orca/.profile; "
+      "export ORCA_USER_DATA_PATH=/worktrees/.orca; "
     } else {
       ""
     }) +

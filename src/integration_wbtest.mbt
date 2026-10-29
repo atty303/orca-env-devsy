@@ -121,7 +121,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'Sec-WebSocket-Version'*) if test -f "$HOME/served"; then printf 101; else printf 000; fi ;;
     #|  *'repo add --json'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{}}\n' ;;
     #|  *'project setups'*) printf '{"ok":true,"result":{"setups":[{"id":"fixture-setup","path":"/workspace/repo"}]}}\n' ;;
-    #|  *'project setup-update'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/workspaces/.orca"}}}}\n' ;;
+    #|  *'project setup-update'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{"result":{"setup":{"worktreeBasePath":"/worktrees"}}}}\n' ;;
     #|  *'--recipe-json'*)
     #|    if test -f "$HOME/real-serve"; then sh -c "$arg"; exit $?; fi
     #|    if test -f "$HOME/fail-tunnel-cleanup"; then
@@ -405,13 +405,13 @@ async test "server CLI emits pairing separately and recover reuses a responding 
     assert_true(
       @fs.read_file(directory + "/args")
       .text()
-      .contains("type=volume,source=" + volume + ",target=/workspaces/.orca"),
+      .contains("type=volume,source=" + volume + ",target=/worktrees"),
     )
     let ssh = @fs.read_file(directory + "/ssh-args").text()
-    assert_true(ssh.contains("ORCA_USER_DATA_PATH=/workspaces/.orca/.profile"))
+    assert_true(ssh.contains("ORCA_USER_DATA_PATH=/worktrees/.orca"))
     assert_true(
       ssh.contains(
-        "project setup-update --json --host local --setup 'fixture-setup' --worktree-base-path /workspaces/.orca",
+        "project setup-update --json --host local --setup 'fixture-setup' --worktree-base-path /worktrees",
       ),
     )
     assert_eq(field(state, "pairingCode"), None)
@@ -4652,9 +4652,7 @@ async test "worker recovery reinstalls a missing server into the retained profil
     assert_true(commands.contains("releases/latest"))
     assert_true(commands.contains("/workspace/repo"))
     assert_true(commands.contains(".local/bin:"))
-    assert_true(
-      commands.contains("ORCA_USER_DATA_PATH=/workspaces/.orca/.profile"),
-    )
+    assert_true(commands.contains("ORCA_USER_DATA_PATH=/worktrees/.orca"))
     assert_false(@fs.exists(directory + "/missing-orca"))
   })
 }

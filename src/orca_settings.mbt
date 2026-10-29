@@ -156,9 +156,9 @@ async fn initialize_orca_settings(state : Json) -> Unit {
   @async.with_timeout(30000, async fn() {
     let payload = host_orca_settings()
     phase = "remote"
-    let script = "unset NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE; ORCA_USER_DATA_PATH=/workspaces/.orca/.profile ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
+    let script = "unset NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE; ORCA_USER_DATA_PATH=/worktrees/.orca ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
       quote(orca_settings_script()) +
-      " -- import \"$HOME/.local/share/orca-env-devsy/orca/current/resources\" /workspaces/.orca/.profile"
+      " -- import \"$HOME/.local/share/orca-env-devsy/orca/current/resources\" /worktrees/.orca"
     let env = workspace_environment(state)
     ignore(
       settings_process(
@@ -284,7 +284,14 @@ fn orca_settings_script() -> String {
     #|      const location = { databaseFile: profile.stateDatabaseFile, profileId: profile.profile.id };
     #|      const dbModule = dependency(readerEntry, 'profile-state-database');
     #|      const authority = dependency(offlineEntry, 'profile-state-sqlite-authority');
-    #|      const defaults = dependency(offlineEntry, 'constants').s(os.homedir()).settings;
+    #|      const constants = dependency(offlineEntry, 'constants');
+    #|      let defaults;
+    #|      for (const fn of [constants.s, constants.a]) {
+    #|        if (typeof fn !== 'function') continue;
+    #|        try { defaults = fn(os.homedir())?.settings; } catch { continue; }
+    #|        if (defaults?.sourceControlAi?.actions) break;
+    #|      }
+    #|      if (!defaults?.sourceControlAi?.actions) throw new Error('INCOMPATIBLE');
     #|      database = dbModule.n(location.databaseFile, location.profileId);
     #|      const current = reader.readProfileStateDomainsWithRevisionFromDatabase(database.db, ['settings']);
     #|      if (current.kind !== 'values') throw new Error('INVALID');

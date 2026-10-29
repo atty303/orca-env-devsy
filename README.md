@@ -265,9 +265,9 @@ restores the connection. Destroying deletes the workspace and cleans up the
 adapter's owned connection state.
 
 Server environments keep task worktrees and the Orca profile in a dedicated
-volume at `/workspaces/.orca`. Keep that volume mounted when recreating a
-container to preserve them. Destroy attempts volume cleanup; unsupported provider
-layouts or cleanup failures produce warnings.
+volume. Keep that volume mounted when recreating a container to preserve them.
+Destroy attempts volume cleanup; unsupported provider layouts or cleanup
+failures produce warnings.
 
 For example, the resume entry in each recipe is:
 

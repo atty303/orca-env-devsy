@@ -240,15 +240,15 @@ try {
   const volume = state.orcaVolume;
   assert.equal(typeof volume, "string");
   assert.equal((state.workspaceId as string).slice(-8), (state.orcaInstanceId as string).slice(-8));
-  const worktreePath = `/workspaces/.orca/${persistent.path.split("/").at(-1)}/feature-e2e`;
-  await persistent.exec(0, `set -eu; test -f ${quote(worktreePath + "/worktree-usable.txt")}; test -f /workspaces/.orca/.profile/orca-profile-index.json; printf preserved > /workspaces/.orca/.profile/e2e-marker; printf volatile > "$HOME/e2e-volatile"`);
+  const worktreePath = `/worktrees/${persistent.path.split("/").at(-1)}/feature-e2e`;
+  await persistent.exec(0, `set -eu; test -f ${quote(worktreePath + "/worktree-usable.txt")}; test -f /worktrees/.orca/orca-profile-index.json; printf preserved > /worktrees/.orca/e2e-marker; printf volatile > "$HOME/e2e-volatile"`);
   await persistent.close();
   const receipt = JSON.stringify({ schemaVersion: 1, recipeResult: persistent.runtime.recipeResult });
   await run([adapter, "recipe", "suspend"], { env, timeout: budgets.lifecycle, input: receipt });
-  await measure("recreate-persistent-server", budgets.provision, () => d(["workspace", "up", state.workspaceId as string, "--recreate", "--ide-launch", "skip", "--mount", `type=volume,source=${volume},target=/workspaces/.orca`]), persistent.index);
+  await measure("recreate-persistent-server", budgets.provision, () => d(["workspace", "up", state.workspaceId as string, "--recreate", "--ide-launch", "skip", "--mount", `type=volume,source=${volume},target=/worktrees`]), persistent.index);
   await run([adapter, "recipe", "recover"], { env, timeout: budgets.lifecycle, input: receipt });
   const checkPersistence = async () => {
-    await d(["workspace", "ssh", state.workspaceId as string, "--start-services=false", "--agent-forwarding=false", "--user", state.user as string, "--command", `set -eu; test ! -e "$HOME/e2e-volatile"; test "$(cat /workspaces/.orca/.profile/e2e-marker)" = preserved; test "$(cat ${quote(worktreePath + "/worktree-usable.txt")})" = usable; git -C ${quote(worktreePath)} rev-parse --is-inside-work-tree`]);
+    await d(["workspace", "ssh", state.workspaceId as string, "--start-services=false", "--agent-forwarding=false", "--user", state.user as string, "--command", `set -eu; test ! -e "$HOME/e2e-volatile"; test "$(cat /worktrees/.orca/e2e-marker)" = preserved; test "$(cat ${quote(worktreePath + "/worktree-usable.txt")})" = usable; git -C ${quote(worktreePath)} rev-parse --is-inside-work-tree`]);
     await persistent.checkClient();
     const response = await orca!.call<{ ok: boolean; result: { worktrees: { id: string; path: string }[] } }>("runtimeEnvironments", "call", { selector: persistent.runtime.runtimeEnvironmentId, method: "worktree.list", params: { repo: persistent.path }, timeoutMs: budgets.operation });
     assert(response.ok);

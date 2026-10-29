@@ -151,7 +151,7 @@ async fn observe_activity(state : Json) -> Json {
 ///|
 fn activity_command(state : Json) -> String {
   (if field(state, "orcaVolume") is Some(_) {
-    "ORCA_USER_DATA_PATH=/workspaces/.orca/.profile "
+    "ORCA_USER_DATA_PATH=/worktrees/.orca "
   } else {
     ""
   }) +

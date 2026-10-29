@@ -2,7 +2,7 @@
 fn orca_storage_args(state : Json) -> Array[String] {
   match field(state, "orcaVolume") {
     Some(Json::String(volume)) =>
-      ["--mount", "type=volume,source=" + volume + ",target=/workspaces/.orca"]
+      ["--mount", "type=volume,source=" + volume + ",target=/worktrees"]
     _ => []
   }
 }
@@ -18,8 +18,8 @@ async fn prepare_orca_storage(state : Json) -> Unit {
   )
   let user = required(state, "user")
   let uid = required(state, "workspaceUid")
-  let script = "set -eu; root=/workspaces/.orca; " +
-    "grep -q ' /workspaces/.orca ' /proc/self/mountinfo || { echo 'Orca storage mount is missing' >&2; exit 1; }; " +
+  let script = "set -eu; root=/worktrees; " +
+    "grep -q ' /worktrees ' /proc/self/mountinfo || { echo 'Orca storage mount is missing' >&2; exit 1; }; " +
     "if test -f \"$root/.owner\"; then test \"$(cat \"$root/.owner\")\" = " +
     quote(uid) +
     "; else test -z \"$(find \"$root\" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit)\" || { echo 'Orca storage has unowned contents' >&2; exit 1; }; printf '%s' " +
@@ -58,7 +58,7 @@ async fn prepare_orca_storage(state : Json) -> Unit {
 ///|
 fn remote_orca_cli(state : Json) -> String {
   (if field(state, "orcaVolume") is Some(_) {
-    "ORCA_USER_DATA_PATH=/workspaces/.orca/.profile "
+    "ORCA_USER_DATA_PATH=/worktrees/.orca "
   } else {
     ""
   }) +
@@ -101,7 +101,7 @@ async fn configure_orca_project(state : Json) -> Unit {
       cli +
       "project setup-update --json --host local --setup " +
       quote(required(matches[0], "id")) +
-      " --worktree-base-path /workspaces/.orca",
+      " --worktree-base-path /worktrees",
       "orca-project-configure",
     ),
   )
@@ -113,7 +113,7 @@ async fn configure_orca_project(state : Json) -> Unit {
       ).unwrap(),
       "worktreeBasePath",
     ) ==
-    Some(Json::string("/workspaces/.orca")) else {
+    Some(Json::string("/worktrees")) else {
     raise AdapterError("Orca did not retain the worktree base path")
   }
   save_diagnostic(

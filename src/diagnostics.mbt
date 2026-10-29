@@ -294,9 +294,9 @@ fn CreateEvidence::to_json(self : CreateEvidence) -> Json {
           Json::string(redact_credentials(root))
         },
         "volume": volume,
-        "mountPath": "/workspaces/.orca",
-        "profilePath": "/workspaces/.orca/.profile",
-        "worktreeBasePath": "/workspaces/.orca",
+        "mountPath": "/worktrees",
+        "profilePath": "/worktrees/.orca",
+        "worktreeBasePath": "/worktrees",
       }
     Inputs => {
       let inputs = Json::empty_object()
