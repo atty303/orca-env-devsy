@@ -1,0 +1,10 @@
+❯ node -e 'process.stdout.write(JSON.stringify({schemaVersion:1,mode:"destroy",recipeId:"devsy-cycloud-large-server",instanceId:"orca-1b805df8-2139-40f7-810c-33899c1baad1",projectId:"github:cyberagentai/glaze",workspaceId:"f24830f3-2b7a-4a19-b2dd-433b84355222::/home/me/orca/workspaces/orca-1b805df8-2139-40f7-810c-33899c1baad1/walleye",workspaceName:"walleye",recipeResult:{schemaVersion:1,userData:{adapterVersion:1,workspaceId:"orca-1b805df8-2139-40f7-810c-33899c1baad1",connection:"orca-server",checkoutMode:"orca-worktree",codexAuth:true,command:["/Users/a13400/.local/share/mise/shims/mise","-C","/Users/a13400/src/CyberAgentAI/glaze/glaze","-E","devenv-host,stage-local,actor-agent","exec","--","env","-u","SNOWFLAKE_ENABLE_AWS_WIF_OUTBOUND_TOKEN","devsy"],devsyEnv:{HOME:"/Users/a13400",DEVSY_HOME:null,XDG_CONFIG_HOME:null,XDG_DATA_HOME:null,XDG_CACHE_HOME:null,XDG_STATE_HOME:null,XDG_RUNTIME_DIR:null},context:"glaze",buildCommit:"932c9797d79b2e76ac7e55610054d50671dc6265",buildRef:"chore/update-devsy-v1.25.0-beta.3",workspaceUid:"oe-create-.40906.32fd144f-1793008355978",user:"me",projectRoot:"/workspaces/orca-1b805df8-2139-40f7-810c-33899c1baad1",localPort:51131,tunnelDirectory:"/Users/a13400/.local/state/orca-env-devsy/tunnels/workspace-oe-create-.40906.32fd144f-1793008355978"}}}))' | mise exec -- orca-env-devsy recipe destroy
+12:42:54 destroy: running…
+12:42:54 workspace-list: running…
+12:42:55 workspace-list: done (1.0s, elapsed 1.0s)
+12:42:55 workspace-list: running…
+12:42:55 workspace-list: done (0.8s, elapsed 1.8s)
+12:43:10 destroy: failed (16.8s, elapsed 16.8s)
+atty303/orca-env-devsy.AdapterError.AdapterError
+
+これは旧バージョンだから？
