@@ -1,0 +1,1 @@
+なるほど、adapter経由なら実質gRPC idleは発生しなくなったということか。devsy relayのgrpc connにtimeoutがあるはず
