@@ -1,0 +1,6 @@
+[Image #1] 
+ここで表示されてるVM識別子ってなに？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/b19896de-0a76-49b0-a870-b500098979f7/orca-paste-1793240515098-e8bba0a3-7ecc-443b-9859-5a9a47d45950.png">
+
+</image>
