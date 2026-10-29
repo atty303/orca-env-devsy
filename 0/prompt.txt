@@ -1,0 +1,1 @@
+$dig まず、restart/reconnectを整えないといけない。reconnectはrecoverに変えよう。主にホスト再起動などでworkerが死んだ状況からの復帰だ。restartはworkerを終了してからrecoverするもので、未知の異常時の復帰を試行するためのもの
