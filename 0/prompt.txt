@@ -1,0 +1,57 @@
+# 実装依頼
+
+## 依頼
+/Users/a13400/src/atty303/orca-env-devsy に `orca-env-devsy restart` と `orca-env-devsy restart --receipt` を実装してください。対象接続の終了処理を先に実行し、その後は既存の reconnect 処理を再利用してください。
+
+## 目的
+- workspace を停止せず、adapter が管理する接続一式を作り直して、認証転送などの不調を手動復旧できるようにする。
+
+## 成功条件
+- `restart` は、引数なしの reconnect と同じ対象を終了・再接続する。
+- `restart --receipt` は、既存の `reconnect --receipt` と同じ lifecycle payload を stdin から受け取り、同じ一対象を終了・再接続する。
+- 終了フェーズで対象 worker と管理 SSH の終了を確認し、古い接続を再利用せず reconnect に進む。
+- 再接続フェーズの対象選択、停止中 workspace の扱い、出力、待機、警告、成功判定は既存 reconnect に従う。
+- 既存 reconnect の振る舞いを変更しない。
+- worker と管理 SSH が生存する状態から restart すると接続が再生成されること、および再接続完了までを検証する。
+- `mise run check` と `mise run test` が成功する。
+
+## 決定事項
+- CLI は既存 reconnect と同じ二形式にする。
+  - 理由: 既存の対象指定と処理を共有するため。
+  - 主な棄却案: workspace-id 指定や `--all` の新設。今回は操作体系を増やさない。
+- restart の振る舞いは「対象接続を終了してから既存 reconnect を実行する」とする。
+  - 理由: 実環境で確認できた手動復旧操作をコマンド化するため。
+  - 主な棄却案: restart 専用の再接続処理や、新しい認証 RPC の確認処理。既存処理と重複するため。
+- 成功判定を強化しない。
+  - 理由: ユーザーが「reconnectを再利用する。振る舞いはその前に終了をいれるだけだ」と指定したため。
+  - 主な棄却案: GitHub 認証や認証 RPC の応答を追加の成功条件にする。
+- 終了対象は adapter が所有する接続プロセスに限定する。
+  - 理由: workspace の停止や無関係な接続の切断を避けるため。
+  - 主な棄却案: workspace stop/up、広い名前一致によるプロセス終了。
+
+## 制約
+- workspace、VM、コンテナ、リモート Orca Server の停止・再作成を行わない。
+- 現在の checkout で作業する。
+- push、release、cloud resource の変更は依頼範囲に含めない。
+- 既存の対象識別・所有権検証・排他処理を維持する。
+- 終了できなかった対象について、終了済みとして再接続を進めない。
+
+## 対象外
+- Devsy 本体の変更。
+- gRPC idle timeout の変更。
+- 認証 RPC の追加監視。
+- sleep/wake 後の自動復旧の変更。
+- 新しい対象指定方式の導入。
+
+## 未検証の前提
+- 現 checkout と実行中の配布バイナリで、接続終了・再利用の実装が一致するか。
+- 既存の終了処理を、再接続に必要な保存情報を維持して再利用できるか。
+- worker が生存する場合、終了している場合、管理 SSH だけが残る場合の既存の終了経路。
+
+## 実装時の指示
+- 実環境では、Mac 側で adapter の監視 worker に通常の `kill`（SIGTERM）を送り、`orca-env-devsy reconnect` を実行して復旧した。
+- 操作前後で worker、管理 SSH、Devsy の PID と管理ソケットがすべて変わり、接続一式が再生成されたことを確認済み。
+- 調査した実装では、MoonBit async runtime が SIGTERM をタスクのキャンセルへ変換し、タスク内で起動した管理 SSH の終了処理も実行する。
+- 一方、既存 reconnect は worker が死んでいても管理 SSH が生存していれば再利用する。restart では、その再利用が起きないよう終了を完了させる。
+- 主要な確認箇所は `src/tunnel.mbt` の `ensure_ssh_worker`、`spawn_tunnel_worker`、`tunnel_worker`、終了処理、`reconnect_all_inner`、および `src/runtime.mbt` と `src/cmd/main/main.mbt` の CLI／receipt 経路。
+- 30分 idle 後の認証 RPC 停止は有力な原因候補であり、ローカル再現も得られたが、今回の実プロセスの内部スタックによる原因確定はできていない。この原因の修正を本タスクに含めない。
