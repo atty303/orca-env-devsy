@@ -1,0 +1,1 @@
+user.signingkeyをpubにしたらgit単体で署名できなくなるのでは？
