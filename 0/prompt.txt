@@ -1,0 +1,1 @@
+B. ssh masterのstdin/stdout pipeは使ってるの？
