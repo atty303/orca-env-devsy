@@ -1,0 +1,5 @@
+設定を開いて閉じただけで [Image #1] こうなった
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/70691703-a0de-499f-a6e5-4362975556a9/orca-paste-1792995540868-1c6eed1c-948e-4763-b428-dfa1c9ddaca2.png">
+
+</image>
