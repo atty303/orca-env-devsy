@@ -1,0 +1,5 @@
+これが通常の指定だ。origin/masterをOrcaが選んでいるが、この指定がadapterに渡ってこない。adapterもorigin/masterを既定とすれば通常フローのfetchを最小化できるか？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/native-chat-pastes/orca-paste-1792133006144-e28ac13f-0b80-406f-8dc4-847184324cda.png">
+
+</image>
