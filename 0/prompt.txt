@@ -1,0 +1,1 @@
+Orca側の仕様ならそれは受け入れる。adapterが無駄にfull cloneを抑止したい
