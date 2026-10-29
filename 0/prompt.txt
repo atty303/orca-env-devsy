@@ -1,0 +1,7 @@
+❯ r //:devsy stop
+stop: context=glaze provider=cycloud-devbox targets=1
+orca-a21cc14f-6372-484a-8141-3f331b67f3a8: success (stop)
+success=1 failed=0 skipped=0
+Diagnostic log: /Users/a13400/Library/Logs/glaze/devsy/diagnostics/run-9ea0c26c-586c-4648-8677-b4678fef5163.succeeded.jsonl
+
+これでstopした。状態はどうなってる？
