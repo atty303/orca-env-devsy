@@ -1,0 +1,1 @@
+orcaにidle vmの自動sleepはないんだっけ？
