@@ -37,15 +37,21 @@ async fn settings_fixture(
     @process.run("cp", [@fs.realpath(bun.text().trim()), host + "/orca-ide"]),
     0,
   )
-  let (status, pid, errors) = @process.collect_output("sh", [
-    "-c",
-    quote(host + "/orca-ide") +
-    " -e 'setInterval(() => {}, 1000)' </dev/null >/dev/null 2>&1 & echo $!",
-  ])
-  assert_eq(status, 0, msg=errors.text())
+  let sink = @process.redirect_to_file("/dev/null", shared=true)
+  defer sink.close()
+  let pid = @process.spawn_orphan(
+    host + "/orca-ide",
+    ["-e", "setInterval(() => {}, 1000)"],
+    extra_env=env,
+    stdin=@process.redirect_from_file("/dev/null"),
+    stdout=sink,
+    stderr=sink,
+  )
+  let executable = settings_executable(pid)
+  assert_eq(executable, @fs.realpath(host + "/orca-ide"))
   @fs.write_file(
     host + "/orca-runtime.json",
-    "{\"pid\":" + pid.text().trim().to_owned() + "}",
+    "{\"pid\":" + pid.to_string() + "}",
   )
 }
 

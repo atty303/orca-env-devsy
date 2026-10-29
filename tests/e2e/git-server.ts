@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { processScope, run as cleanupRun, terminate, type Environment } from "../../scripts/process.ts";
 import { budgets } from "./timing.ts";
 
-export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]> };
+export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]>; hostGateway: string };
 export type GitServerOptions = { devsy: string; home: string; provider: string; source: string };
 
 function sshErrorCategories(text: string) {
@@ -45,7 +45,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     const ssh = [...args, "workspace", "ssh", id, "--start-services=false", "--agent-forwarding=false", "--user", "root"];
     for (const [index, command] of [
       [...ssh, "--command", "python3 /usr/local/bin/git-fixture.py"],
-      [...ssh, "-L", `${port}:127.0.0.1:18081`],
+      [...ssh, "-g", "-L", `0.0.0.0:${port}:127.0.0.1:18081`],
     ].entries()) {
       const connection = processScope().start(command, { env });
       connection.stdout?.resume();
@@ -75,6 +75,14 @@ export async function gitServer(root: string, env: Environment, options: GitServ
         })),
       };
     };
-    return { port, sourceUrl: `http://127.0.0.1:${port}/source.git`, stats, diagnostics, close };
+    const hostGateway = (await stats()).hostGateway;
+    return {
+      port,
+      localSourceUrl: `http://127.0.0.1:${port}/source.git`,
+      sourceUrl: `http://${hostGateway}:${port}/source.git`,
+      stats,
+      diagnostics,
+      close,
+    };
   } catch (error) { await close().catch(() => {}); throw error; }
 }

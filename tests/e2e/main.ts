@@ -102,12 +102,13 @@ try {
   await d(["provider", "add", provider, ...options]);
   source = await fixture(root, env, release.version, phase.signal);
   shared = await services(root, env, { devsy, home: dhome, provider, source: source.bare }, phase.signal);
-  await source.connect(shared.sourceUrl);
+  await source.connect(shared.localSourceUrl);
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
   const definitions = await recipes(source.source, devsy, dhome, provider, adapter);
   orca = await Orca.launch(release.executable, root + "/profile", env, phase.signal);
   const added = await orca.call<{ repo?: { id: string }; error?: string }>("repos", "add", { path: source.source });
   assert(added.repo, "Orca must register the fixture repository");
+  await source.setOrigin(shared.sourceUrl);
   const connected = Promise.withResolvers<void>();
   void connected.promise.catch(() => {});
   let readyCount = 0;

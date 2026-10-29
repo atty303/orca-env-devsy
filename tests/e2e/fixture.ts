@@ -28,6 +28,8 @@ export async function fixture(root: string, env: Environment, version: string, s
   return { source, build, task, customBuild, bare: root + "/source.git", async connect(url: string) {
     await git(["remote", "add", "origin", url]);
     await git(["fetch", "origin"]);
+  }, async setOrigin(url: string) {
+    await git(["remote", "set-url", "origin", url]);
   } };
 }
 
