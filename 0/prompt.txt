@@ -1,0 +1,1 @@
+devsyが実際にadapterを使うrepoのmiseにしか入れていない
