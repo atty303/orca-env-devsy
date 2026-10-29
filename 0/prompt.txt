@@ -1,0 +1,5 @@
+[Image #1]  project名がVM側のものに変化したのはなぜ？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/810ac3ce-1d33-4f88-9a4c-1176c556743f/orca-paste-1792999281673-a724a403-0ad6-43ab-9989-cc0e041c27e2.png">
+
+</image>
