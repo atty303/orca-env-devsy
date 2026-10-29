@@ -1,0 +1,2 @@
+❯ which gh
+/workspaces/.orca/glaze/cleanup/.local/bin/gh
