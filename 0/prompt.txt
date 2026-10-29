@@ -1,0 +1,1 @@
+terminalのcodexで指示してみるから、1秒間隔でstatus監視して。idle -> active -> idleのほうに変化を見たら止めて
