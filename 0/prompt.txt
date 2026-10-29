@@ -1,0 +1,1 @@
+$dig codex addonに加えてclaude addonも追加する
