@@ -1,0 +1,135 @@
+03:36:10 workspace-create: E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?
+03:36:10 workspace-create: waiting for dpkg lock to be released
+03:36:15 workspace-create: remote: Total 664554 (delta 2366), reused 1738 (delta 1729), pack-reused 661369 (from 5)
+03:36:20 workspace-create: running command: DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Timeout="30" -o Acquire::https::Timeout="30" -o Acquire::Retries="3" install -y -qq apt-transport-https ca-certificates curl >/dev/null
+03:36:20 workspace-create: DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Timeout="30" -o Acquire::https::Timeout="30" -o Acquire::Retries="3" install -y -qq apt-transport-https ca-certificates curl >/dev/null
+03:36:22 workspace-create: command succeeded
+03:36:22 workspace-create: running command: mkdir -p /etc/apt/keyrings && chmod -R 0755 /etc/apt/keyrings
+03:36:22 workspace-create: mkdir -p /etc/apt/keyrings && chmod -R 0755 /etc/apt/keyrings
+03:36:22 workspace-create: command succeeded
+03:36:22 workspace-create: running command: curl -fsSL "https://download.docker.com/linux/ubuntu/gpg" | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+03:36:22 workspace-create: curl -fsSL "https://download.docker.com/linux/ubuntu/gpg" | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+03:36:22 workspace-create: command succeeded
+03:36:22 workspace-create: running command: chmod a+r /etc/apt/keyrings/docker.gpg
+03:36:22 workspace-create: chmod a+r /etc/apt/keyrings/docker.gpg
+03:36:22 workspace-create: command succeeded
+03:36:22 workspace-create: running command: echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list
+03:36:22 workspace-create: echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list
+03:36:22 workspace-create: command succeeded
+03:36:22 workspace-create: running command: apt-get -o Acquire::http::Timeout="30" -o Acquire::https::Timeout="30" -o Acquire::Retries="3" update -qq >/dev/null
+03:36:22 workspace-create: apt-get -o Acquire::http::Timeout="30" -o Acquire::https::Timeout="30" -o Acquire::Retries="3" update -qq >/dev/null
+03:36:23 Clone repository: done (25.6s, elapsed 92.5s)
+03:36:24 workspace-create: command succeeded
+03:36:24 workspace-create: running command: DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Timeout="30" -o Acquire::https::Timeout="30" -o Acquire::Retries="3" install -y -qq --no-install-recommends docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin >/dev/null
+03:36:24 workspace-create: DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::http::Timeout="30" -o Acquire::https::Timeout="30" -o Acquire::Retries="3" install -y -qq --no-install-recommends docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin >/dev/null
+03:36:25 workspace-create: command succeeded
+03:36:25 workspace-create: + docker version
+03:36:25 workspace-create: Client: Docker Engine - Community
+03:36:25 workspace-create: Version:           29.9.1
+03:36:25 workspace-create: API version:       1.56
+03:36:25 workspace-create: Go version:        go1.26.9
+03:36:25 workspace-create: Git commit:        dfc520d
+03:36:25 workspace-create: Built:             Wed Oct 14 18:32:55 2026
+03:36:25 workspace-create: OS/Arch:           linux/amd64
+03:36:25 workspace-create: Context:           default
+03:36:25 workspace-create: Server: Docker Engine - Community
+03:36:25 workspace-create: Engine:
+03:36:25 workspace-create: Version:          29.9.1
+03:36:25 workspace-create: API version:      1.56 (minimum version 1.40)
+03:36:25 workspace-create: Go version:       go1.26.9
+03:36:25 workspace-create: Git commit:       b26fb77
+03:36:25 workspace-create: Built:            Wed Oct 14 18:32:55 2026
+03:36:25 workspace-create: OS/Arch:          linux/amd64
+03:36:25 workspace-create: Experimental:     false
+03:36:25 workspace-create: containerd:
+03:36:25 workspace-create: Version:          v2.4.2
+03:36:25 workspace-create: GitCommit:        b7a25261e029d68978bbf290df0a62fc819b3c51
+03:36:25 workspace-create: runc:
+03:36:25 workspace-create: Version:          1.5.2
+03:36:25 workspace-create: GitCommit:        v1.5.2-0-g29dd3dc2
+03:36:25 workspace-create: docker-init:
+03:36:25 workspace-create: Version:          0.19.0
+03:36:25 workspace-create: GitCommit:        de40ad0
+03:36:25 workspace-create: ================================================================================
+03:36:25 workspace-create: To run Docker as a non-privileged user, consider setting up the
+03:36:25 workspace-create: Docker daemon in rootless mode for your user:
+03:36:25 workspace-create: dockerd-rootless-setuptool.sh install
+03:36:25 workspace-create: Visit https://docs.docker.com/go/rootless/ to learn about rootless mode.
+03:36:25 workspace-create: To run the Docker daemon as a fully privileged service, but granting non-root
+03:36:25 workspace-create: users access, refer to https://docs.docker.com/go/daemon-access/
+03:36:25 workspace-create: WARNING: Access to the remote API on a privileged Docker daemon is equivalent
+03:36:25 workspace-create: to root access on the host. Refer to the 'Docker daemon attack surface'
+03:36:25 workspace-create: documentation for details: https://docs.docker.com/go/attack-surface/
+03:36:25 workspace-create: ================================================================================
+03:36:25 workspace-create: configuring docker daemon
+03:36:25 Resolve devcontainer config: running…
+03:36:25 Resolve devcontainer config: done (0.0s, elapsed 94.7s)
+03:36:25 Initialize: running…
+03:36:25 Initialize: done (0.0s, elapsed 94.8s)
+03:36:25 Prepare devcontainer: running…
+03:36:25 Start container: running…
+03:36:32 Build image: running…
+03:36:32 Build #1: [internal] load build definition from Dockerfile-with-features
+03:36:32 Build #1: DONE 0.0s
+03:36:34 Build #2: DONE 2.0s
+03:36:35 Build #3: DONE 0.5s
+03:36:35 Build #4: [internal] load metadata for docker.io/library/buildpack-deps:24.04-scm
+03:36:36 Build #4: DONE 1.7s
+03:36:37 Build #5: [internal] load .dockerignore
+03:36:37 Build #5: DONE 0.0s
+03:36:37 Build #6: [internal] load build context
+03:36:37 Build #6: DONE 0.0s
+03:36:37 Build #7: [dev_container_auto_added_stage_label  1/15] FROM docker.io/library/buildpack-deps:24.04-scm@sha256:59d4f4d8581d741bb2c31f4bfd00a557ca94d182d082c81bd56d32afbad8dfc9
+03:36:37 Build #7: DONE 0.0s
+03:36:37 Build #9: [auth] devcontainer-cache/glaze:pull token for 7wdfsy5w2fhlhpr742c3bmfgwq.tky02.cr.cycloud.jp
+03:36:37 Build #9: DONE 0.0s
+03:36:38 Build #8: DONE 1.2s
+03:36:38 Build #6: [internal] load build context
+03:36:38 Build #6: DONE 0.0s
+03:36:38 Build #7: [dev_container_auto_added_stage_label  1/15] FROM docker.io/library/buildpack-deps:24.04-scm@sha256:59d4f4d8581d741bb2c31f4bfd00a557ca94d182d082c81bd56d32afbad8dfc9
+03:36:39 Build #7: DONE 1.3s
+03:36:39 Build #7: [dev_container_auto_added_stage_label  1/15] FROM docker.io/library/buildpack-deps:24.04-scm@sha256:59d4f4d8581d741bb2c31f4bfd00a557ca94d182d082c81bd56d32afbad8dfc9
+03:36:39 Build #7: DONE 1.5s
+03:36:39 Build #7: [dev_container_auto_added_stage_label  1/15] FROM docker.io/library/buildpack-deps:24.04-scm@sha256:59d4f4d8581d741bb2c31f4bfd00a557ca94d182d082c81bd56d32afbad8dfc9
+03:36:40 Build #7: DONE 2.4s
+03:36:40 Build #10: [dev_container_auto_added_stage_label  2/15] RUN if id "ubuntu" &>/dev/null; then     echo "Deleting user 'ubuntu'" && userdel -f -r ubuntu || echo "Failed to delete ubuntu user";   else     echo "User 'ubuntu' does not exist";   fi
+03:36:41 Build #10: DONE 0.4s
+03:36:41 Build #11: [dev_container_auto_added_stage_label  3/15] RUN groupadd --gid 1000 me
+03:36:41 Build #11: DONE 0.2s
+03:36:41 Build #12: [dev_container_auto_added_stage_label  4/15] RUN useradd -s /bin/bash --uid 1000 --gid me -m me
+03:36:41 Build #12: DONE 0.2s
+03:36:41 Build #13: [dev_container_auto_added_stage_label  5/15] RUN sed -i '/^PATH=/d' /etc/environment && printf 'PATH="%s"\n' "/home/me/.local/bin:/home/me/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> /etc/environment
+03:36:41 Build #13: DONE 0.2s
+03:36:41 Build #14: [dev_container_auto_added_stage_label  6/15] RUN echo "Asia/Tokyo" >/etc/timezone  && ln -sf /usr/share/zoneinfo/Asia/Tokyo /etc/localtime  && DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive tzdata
+03:36:42 Build #14: DONE 0.3s
+03:36:42 Build #15: [dev_container_auto_added_stage_label  7/15] RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && apt-get upgrade -y
+03:36:51 Build #15: DONE 10.1s
+03:36:52 Build #16: [dev_container_auto_added_stage_label  8/15] RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && apt-get install -y unminimize && yes | unminimize
+03:37:29 Build #16: DONE 37.8s
+03:37:29 Build #17: [dev_container_auto_added_stage_label  9/15] RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && apt-get install locales  && sed -i 's/^# *ja_JP.UTF-8 UTF-8/ja_JP.UTF-8 UTF-8/' /etc/locale.gen  && locale-gen
+03:37:38 Build #17: DONE 8.3s
+03:37:38 Build #18: [dev_container_auto_added_stage_label 10/15] RUN case "amd64" in       amd64) arch=x86_64 ;;       arm64) arch=arm64 ;;       *) echo "Unsupported architecture: amd64" >&2; exit 1 ;;     esac  && curl -fL -o /tmp/mount-s3.deb "https://s3.amazonaws.com/mountpoint-s3-release/latest/${arch}/mount-s3.deb"  && apt-get install -y /tmp/mount-s3.deb  && mount-s3 --version  && rm -f /tmp/mount-s3.deb
+03:37:45 Build #18: DONE 6.7s
+03:37:45 Build #19: [dev_container_auto_added_stage_label 11/15] RUN apt-get update && export DEBIAN_FRONTEND=noninteractive  && apt-get install -y dnsutils iputils-ping nfs-common file time xdg-utils libsixel-bin libnss3  && apt-get install -y build-essential pkg-config
+03:38:24 Build #19: DONE 39.2s
+03:38:24 Build #20: [dev_container_auto_added_stage_label 12/15] RUN apt-get update && export DEBIAN_FRONTEND=noninteractive  && apt-get install -y flatpak  && flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo  && chmod u+s /usr/bin/bwrap
+03:38:42 Build #20: DONE 18.7s
+03:38:42 Build #21: [dev_container_auto_added_stage_label 13/15] RUN mkdir -p /usr/local/share/applications
+03:38:42 Build #21: DONE 0.2s
+03:38:43 Build #22: [dev_container_auto_added_stage_label 14/15] COPY browser-push.desktop /usr/local/share/applications/browser-push.desktop
+03:38:43 Build #22: DONE 0.0s
+03:38:43 Build #23: [dev_container_auto_added_stage_label 15/15] COPY browser-push /usr/local/bin/browser-push
+03:38:43 Build #23: DONE 0.0s
+03:38:43 Build #24: [dev_containers_target_stage 1/8] COPY ./.devsy-internal/ /tmp/build-features/
+03:38:43 Build #24: DONE 0.0s
+03:38:43 Build #25: [dev_containers_target_stage 2/8] RUN chmod -R 0755 /tmp/build-features && ls /tmp/build-features
+03:38:43 Build #25: DONE 0.2s
+03:38:43 Build #26: [dev_containers_target_stage 3/8] RUN echo "_CONTAINER_USER_HOME=$(getent passwd root | cut -d: -f6)" >> /tmp/build-features/devcontainer-features.builtin.env && echo "_REMOTE_USER_HOME=$(getent passwd me | cut -d: -f6)" >> /tmp/build-features/devcontainer-features.builtin.env
+03:38:43 Build #26: DONE 0.2s
+03:38:43 Build #27: [dev_containers_target_stage 4/8] RUN cd /tmp/build-features/0 && chmod +x ./devcontainer-features-install.sh && ./devcontainer-features-install.sh
+03:39:23 Build #27: DONE 39.6s
+03:39:23 Build #28: [dev_containers_target_stage 5/8] RUN cd /tmp/build-features/1 && chmod +x ./devcontainer-features-install.sh && ./devcontainer-features-install.sh
+03:39:32 Build #28: DONE 9.7s
+03:39:32 Build #29: [dev_containers_target_stage 6/8] RUN cd /tmp/build-features/2 && chmod +x ./devcontainer-features-install.sh && ./devcontainer-features-install.sh
+
+CACHEDにならないのはなんで？
