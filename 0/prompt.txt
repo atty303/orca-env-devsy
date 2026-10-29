@@ -1,0 +1,3 @@
+> `src/storage.mbt` の volume 初期化は root 権限で所有確認・chown を行うため、通常ユーザーの SSH master を共有できません。この経路はどう扱いますか？ A は既存の権限取得方法を維持し、常駐 process は増やしません。B は guest の sudo 設定に新たに依存します。
+
+A. この root 初期化だけ短命の独立接続を許容する（推奨）
