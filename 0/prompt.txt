@@ -1,0 +1,5 @@
+[Image #1]  test2をsleepした。どうなってる？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/a9ce84a1-8ace-411f-bac0-00307676387c/orca-paste-1792998689082-f3ed80bb-37db-4ffc-ac79-e818e0b59947.png">
+
+</image>
