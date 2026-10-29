@@ -1,0 +1,3 @@
+> Server が保持する instance と現在の relay を比較する
+
+B. 具体的にどうやるの？
