@@ -1,0 +1,1 @@
+orca walleye vmでsleep 2000してからgit signingして成功した。adapter workerを確認して。既定devsyはrelayが30minでgrpc idleにより使えなくなる問題があった。adapterによるrelay再起動は入っているか？
