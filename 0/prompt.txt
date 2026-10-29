@@ -1,0 +1,1 @@
+moonbit, zigのそれぞれのmise install時間を計測して
