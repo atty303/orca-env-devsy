@@ -1,0 +1,1 @@
+B. あらためてOrcaは知っているがCloud VM機能は詳しくない、devsyは知らない層がターゲットね。とっかかりを提供したら本当の詳細はadapter --helpやdevsyのrefrenceにいけるはず。詳細を全部伝えなくていい。ただorca/devsy両方を知っている層てもadapterは知らないからadapterがなにをするかの説明は必要
