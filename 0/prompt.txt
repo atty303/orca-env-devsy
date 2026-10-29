@@ -1,0 +1,6 @@
+❯ r //:devsy resume
+resume: context=glaze provider=cycloud-devbox targets=1
+orca-a21cc14f-6372-484a-8141-3f331b67f3a8: success (resume)
+success=1 failed=0 skipped=0
+Diagnostic log: /Users/a13400/Library/Logs/glaze/devsy/diagnostics/run-957560f0-be3a-4320-bb55-0625f764beaf.succeeded.jsonl
+resume成功した。状態は？
