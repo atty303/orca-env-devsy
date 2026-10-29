@@ -53,7 +53,12 @@ description = "Run unit and local boundary tests"
 depends = ["check"]
 run = [
   "moon build --target native --release --deny-warn",
-  "moon test --target native --deny-warn",
+  '''
+  set -eu
+  test_state_dir="$(mktemp -d "${TMPDIR:-/tmp}/orca-env-devsy-test-state.XXXXXXXX")"
+  trap 'rm -rf "$test_state_dir"' EXIT
+  XDG_STATE_HOME="$test_state_dir" moon test --target native --deny-warn
+  ''',
   "bun test tests/release-build.test.ts tests/process.test.ts tests/activity-probe.test.ts tests/server-relay.test.ts tests/e2e/diagnostics.test.ts",
 ]
 

@@ -73,9 +73,10 @@ async fn desktop_orca_version() -> String {
   env.set("ELECTRON_RUN_AS_NODE", "1")
   env.remove("NODE_OPTIONS")
   env.remove("NODE_REPL_EXTERNAL_MODULE")
-  let version = settings_process(
+  let version = command(
       executable,
       [resources + "/app.asar/out/cli/index.js", "--version"],
+      "desktop-orca-version",
       environment=env,
     )
     .trim()

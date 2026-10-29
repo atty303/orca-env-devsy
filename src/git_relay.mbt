@@ -64,15 +64,28 @@ async fn relay_readiness(
     #|set -eu
     #|curl --disable --noproxy '*' --silent --max-time 1 --max-filesize 4096 --write-out '\n%{http_code}' http://localhost:12049/ready
   let started = @env.now()
+  let environment = workspace_environment(state)
+  let mut phase = "readiness"
+  let mut exit_code = None
+  let mut detail = None
   let result = @async.with_timeout(3000, async fn() {
-    let (code, output, _) = @process.collect_output(
+    let (code, output, stderr) = @process.collect_output(
       workspace_program(state, "ssh"),
-      extra_env=workspace_environment(state),
+      extra_env=environment,
       cwd?=workspace_directory(state).map(path => path[:]),
       inherit_env=false,
       ssh_mux_options(state, directory) + [script],
     )
+    exit_code = Some(code)
     if code != 0 {
+      if stderr.binary().length() > 0 {
+        detail = Some(
+          diagnostic_error(
+            AdapterError(@utf8.decode_lossy(stderr.binary())),
+            environment~,
+          ),
+        )
+      }
       return RelayReadiness::Retry(
         if code == 28 {
           "http_timeout"
@@ -84,10 +97,17 @@ async fn relay_readiness(
     let text = output.text().trim().to_owned()
     let lines = text.split("\n").to_array()
     let status = lines.last().unwrap_or("").to_owned()
+    let body = text[:text.length() - status.length()]
+      .to_owned()
+      .trim()
+      .to_owned()
     if status == "404" {
       return RelayReadiness::Unsupported
     }
     if status != "200" {
+      if body != "" {
+        detail = Some(diagnostic_error(AdapterError(body), environment~))
+      }
       return RelayReadiness::Retry(
         if status == "503" {
           "http_503"
@@ -96,12 +116,11 @@ async fn relay_readiness(
         },
       )
     }
-    let body = text[:text.length() - status.length()]
-      .to_owned()
-      .trim()
-      .to_owned()
     let value = @json.parse(body) catch {
-      _ => return RelayReadiness::Retry("schema_invalid")
+      error => {
+        detail = Some(diagnostic_error(error, environment~))
+        return RelayReadiness::Retry("schema_invalid")
+      }
     }
     if field(value, "version") != Some(Json::number(1)) {
       return RelayReadiness::Unsupported
@@ -116,14 +135,25 @@ async fn relay_readiness(
       return RelayReadiness::Retry("schema_invalid")
     }
     if git_enabled {
+      phase = "git-helper"
+      exit_code = None
       let helper = "git config --global --get credential.helper | grep -F 'internal agent git-credentials' >/dev/null"
-      let (code, _, _) = @process.collect_output(
+      let (code, _, stderr) = @process.collect_output(
         workspace_program(state, "ssh"),
-        extra_env=workspace_environment(state),
+        extra_env=environment,
         cwd?=workspace_directory(state).map(path => path[:]),
         inherit_env=false,
         ssh_mux_options(state, directory) + [helper],
       )
+      exit_code = Some(code)
+      if code != 0 && stderr.binary().length() > 0 {
+        detail = Some(
+          diagnostic_error(
+            AdapterError(@utf8.decode_lossy(stderr.binary())),
+            environment~,
+          ),
+        )
+      }
       if code == 1 {
         return RelayReadiness::WaitingForGitHelper
       }
@@ -134,7 +164,10 @@ async fn relay_readiness(
     RelayReadiness::Ready
   }) catch {
     @async.TimeoutError => RelayReadiness::Retry("ssh_timeout")
-    _ => RelayReadiness::Retry("transport_error")
+    error => {
+      detail = Some(diagnostic_error(error, environment~))
+      RelayReadiness::Retry("transport_error")
+    }
   }
   match result {
     Ready => ()
@@ -143,6 +176,9 @@ async fn relay_readiness(
         "relay-probe",
         "pending",
         error_type="git_helper_unavailable",
+        phase~,
+        exit_code?,
+        error_message?=detail,
         duration_ms=(@env.now() - started).to_double(),
         tunnel_directory=directory,
         recording=workspace_recording(state),
@@ -152,6 +188,9 @@ async fn relay_readiness(
         "relay-probe",
         "failed",
         error_type=reason,
+        phase~,
+        exit_code?,
+        error_message?=detail,
         duration_ms=(@env.now() - started).to_double(),
         tunnel_directory=directory,
         recording=workspace_recording(state),
@@ -161,6 +200,9 @@ async fn relay_readiness(
         "relay-probe",
         "unsupported",
         error_type="readiness_unsupported",
+        phase~,
+        exit_code?,
+        error_message?=detail,
         tunnel_directory=directory,
         recording=workspace_recording(state),
       )

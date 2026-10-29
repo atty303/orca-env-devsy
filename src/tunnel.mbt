@@ -431,16 +431,23 @@ async fn spawn_tunnel_worker(directory : String) -> Unit {
 pub async fn recover_all(restart~ : Bool = false) -> Unit {
   recover_all_inner(restart~) catch {
     AdapterError(message) => {
-      @stdio.stderr.write("orca-env-devsy: " + message + "\n")
-      save_diagnostic("recover", "failed")
+      let detail = diagnostic_error(AdapterError(message))
+      @stdio.stderr.write("orca-env-devsy: " + detail + "\n")
+      save_diagnostic("recover", "failed", error_message=detail)
       raise AdapterError(message)
     }
-    _ => {
+    error => {
+      let detail = diagnostic_error(error)
       @stdio.stderr.write(
-        "orca-env-devsy: bulk recover failed; inspect local diagnostics\n",
+        "orca-env-devsy: bulk recover failed: " + detail + "\n",
       )
-      save_diagnostic("recover", "failed")
-      raise AdapterError("Bulk recover failed")
+      save_diagnostic(
+        "recover",
+        "failed",
+        error_type="unexpected",
+        error_message=detail,
+      )
+      raise AdapterError("Bulk recover failed: " + detail)
     }
   }
 }
@@ -894,6 +901,7 @@ async fn wait_tunnel(
       if connection_failure(directory, ["worker-error.json"]) is Some(detail) {
         raise AdapterError("Connection recovery failed: " + detail)
       }
+      let probe_pending = @fs.exists(directory + "/probe-request")
       if @fs.exists(directory + "/status.json") {
         let status = @json.parse(
           @fs.read_file(directory + "/status.json").text(),
@@ -915,9 +923,7 @@ async fn wait_tunnel(
               "Devsy /ready is unsupported; upgrade Devsy to a version supporting relay readiness",
             )
           }
-          Some(Json::String("connected")) if !@fs.exists(
-              directory + "/probe-request",
-            ) &&
+          Some(Json::String("connected")) if !probe_pending &&
             worker_alive(directory) => {
             let saved = @json.parse(
               @fs.read_file(directory + "/state.json").text(),
@@ -1098,10 +1104,13 @@ async fn tunnel_worker(
       }
       continue
     }
-    if @fs.exists(directory + "/probe-request") {
-      @fs.remove(directory + "/probe-request")
-    }
     tunnel_status(directory, "connecting", recording=workspace_recording(state))
+    if @fs.exists(directory + "/probe-request") {
+      @fs.remove(directory + "/probe-request") catch {
+        @os_error.OSError(2, ..) => ()
+        error => raise error
+      }
+    }
     git_relay_status(directory, "pending", recording=workspace_recording(state))
     let mut terminal = false
     @async.with_task_group(async fn(group) {
@@ -1287,8 +1296,20 @@ async fn tunnel_worker(
           }
           next_check = @env.now() + 1000
         }
-        if @env.now() >= next_probe ||
-          (connected && @fs.exists(directory + "/probe-request")) {
+        let requested = connected && @fs.exists(directory + "/probe-request")
+        if @env.now() >= next_probe || requested {
+          if requested {
+            tunnel_status(
+              directory,
+              "checking",
+              recording=workspace_recording(state),
+            )
+            connected = false
+            @fs.remove(directory + "/probe-request") catch {
+              @os_error.OSError(2, ..) => ()
+              error => raise error
+            }
+          }
           match relay_readiness(state, directory, git_enabled) {
             Ready => {
               failures = 0
@@ -1375,9 +1396,6 @@ async fn tunnel_worker(
                   "connected",
                   recording=workspace_recording(state),
                 )
-              }
-              if @fs.exists(directory + "/probe-request") {
-                @fs.remove(directory + "/probe-request")
               }
               next_probe = @env.now() + 10000
               if !idle_started &&

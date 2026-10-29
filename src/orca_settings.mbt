@@ -4,6 +4,11 @@ priv suberror SettingsProcessError {
 }
 
 ///|
+impl Show for SettingsProcessError with fn output(self, logger) {
+  logger.write_string(diagnostic_error(self))
+}
+
+///|
 #borrow(buffer)
 extern "C" fn process_executable(
   pid : Int32,

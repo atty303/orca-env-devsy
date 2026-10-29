@@ -229,17 +229,15 @@ fn Progress::failure_detail(self : Progress) -> String {
 ///|
 async fn Progress::status(self : Progress, event : Json) -> Unit {
   guard field(event, "phase") is Some(Json::String(phase)) &&
-    phase_label(phase) is Some(label) &&
-    field(event, "state") is Some(Json::String(state)) &&
-    ["started", "succeeded", "failed", "skipped"].contains(state) else {
+    field(event, "state") is Some(Json::String(state)) else {
     return
   }
   if self.phase_count < 128 {
     self.phase_count += 1
     save_diagnostic(
       self.stage,
-      state,
-      phase~,
+      redact_credentials(state),
+      phase=redact_credentials(phase),
       error_type?=if state == "failed" { Some("backend_phase") } else { None },
       recording=self.recording,
     )
@@ -251,6 +249,10 @@ async fn Progress::status(self : Progress, event : Json) -> Unit {
       error_type="phase_limit",
       recording=self.recording,
     )
+  }
+  guard phase_label(phase) is Some(label) &&
+    ["started", "succeeded", "failed", "skipped"].contains(state) else {
+    return
   }
   let key = ["pipeline", "operationId", "phase", "step"]
     .map(name => field(event, name).unwrap_or(Json::null()).stringify())

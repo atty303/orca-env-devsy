@@ -114,7 +114,9 @@ async fn save_diagnostic(
 }
 
 ///|
-let recording_run_id : String = @env.now().to_string()
+let recording_run_id : String = @env.now().to_string() +
+  "_" +
+  proxy_pid().to_string()
 
 ///|
 fn diagnostic_error(
@@ -124,6 +126,9 @@ fn diagnostic_error(
   let message = match error {
     AdapterError(detail) => detail
     InvalidConfig(detail) => detail
+    @async.TimeoutError => "operation timed out"
+    SettingsProcessError(phase, code, status) =>
+      "Orca settings process failed (exit \{status}, \{phase}: \{code})"
     _ => error.to_string()
   }
   let progress = Progress::new("diagnostic-error", environment?)

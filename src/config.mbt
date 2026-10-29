@@ -4,6 +4,14 @@ pub suberror ConfigError {
 } derive(Debug)
 
 ///|
+pub impl Show for ConfigError with fn output(self, logger) {
+  logger.write_string(diagnostic_error(self))
+}
+
+///|
+pub extend ConfigError with Show::{to_string, output}
+
+///|
 pub enum Connection {
   Server
   Ssh

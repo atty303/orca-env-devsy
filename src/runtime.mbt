@@ -4,6 +4,14 @@ suberror AdapterError {
 } derive(@debug.Debug)
 
 ///|
+impl Show for AdapterError with fn output(self, logger) {
+  logger.write_string(diagnostic_error(self))
+}
+
+///|
+pub extend AdapterError with Show::{to_string, output}
+
+///|
 fn required(value : Json, name : String) -> String raise {
   match field(value, name) {
     Some(Json::String(text)) if text != "" => text
@@ -676,6 +684,30 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
       raise AdapterError("Repository URL must not contain credentials")
     }
   }
+  let mut recorded_repository = repository
+  if repository.split_once("://") is Some((scheme, remainder)) {
+    let authority = remainder.split("/").to_array()[0]
+    let url_scheme = scheme
+      .split("::")
+      .to_array()
+      .last()
+      .unwrap()
+      .to_owned()
+      .to_lower()
+    if authority.split_once("@") is Some((userinfo, _)) &&
+      (userinfo.contains(":") || ["http", "https"].contains(url_scheme)) {
+      recorded_repository = redact_credentials(repository)
+    }
+  }
+  save_diagnostic("repository-source", "selected", evidence={
+    "url": recorded_repository,
+    "source": if @env.get_env_var("ORCA_REPO_URL") is Some(url) && url != "" {
+      "environment"
+    } else {
+      "git-origin"
+    },
+    "path": environment("ORCA_REPO_PATH"),
+  })
   let default_output = command(
     "git",
     ["ls-remote", "--symref", "--", repository, "HEAD"],
@@ -1273,24 +1305,35 @@ pub extend AdapterError with @debug.Debug::{to_repr}
 pub async fn execute(mode : String) -> Unit {
   execute_inner(mode) catch {
     InvalidConfig(message) => {
-      progress_message(message + " (" + progress_timing(progress_started) + ")")
-      save_diagnostic(mode, "failed")
+      let detail = diagnostic_error(InvalidConfig(message))
+      progress_message(detail + " (" + progress_timing(progress_started) + ")")
+      save_diagnostic(mode, "failed", error_message=detail)
       raise InvalidConfig(message)
     }
     AdapterError(message) => {
-      progress_message(message + " (" + progress_timing(progress_started) + ")")
-      save_diagnostic(mode, "failed")
+      let detail = diagnostic_error(AdapterError(message))
+      progress_message(detail + " (" + progress_timing(progress_started) + ")")
+      save_diagnostic(mode, "failed", error_message=detail)
       raise AdapterError(message)
     }
-    _ => {
+    error => {
+      let detail = diagnostic_error(error)
       progress_message(
-        mode + ": failed (" + progress_timing(progress_started) + ")",
-      )
-      save_diagnostic(mode, "failed")
-      raise AdapterError(
         mode +
-        " failed: unexpected runtime error; diagnostic run " +
-        recording_run_id,
+        ": failed: " +
+        detail +
+        " (" +
+        progress_timing(progress_started) +
+        ")",
+      )
+      save_diagnostic(
+        mode,
+        "failed",
+        error_type="unexpected",
+        error_message=detail,
+      )
+      raise AdapterError(
+        mode + " failed: " + detail + "; diagnostic run " + recording_run_id,
       )
     }
   }

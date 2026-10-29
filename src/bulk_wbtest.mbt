@@ -249,6 +249,28 @@ async test "server update reports failures, suppresses recovery, and retries" {
     settings_fixture(directory, env)
     let resources = directory + "/orca-host/resources/app.asar/out/cli"
     @fs.mkdir(resources, recursive=true)
+    @fs.write_file(
+      resources + "/index.js",
+      "console.error('desktop version lookup failed'); process.exit(7);\n",
+    )
+    let (version_status, _, version_errors) = @process.collect_output(
+      integration_binary(),
+      ["update"],
+      extra_env=env,
+    )
+    assert_true(version_status != 0)
+    assert_true(version_errors.text().contains("desktop version lookup failed"))
+    assert_true(
+      fixture_events(directory)
+      .iter()
+      .any(event => {
+        field(event, "stage") == Some(Json::string("desktop-orca-version")) &&
+        field(event, "exitCode") == Some(Json::number(7)) &&
+        required(event, "errorMessage").contains(
+          "desktop version lookup failed",
+        )
+      }),
+    )
     @fs.write_file(resources + "/index.js", "console.log('1.4.242');\n")
     let (created_code, created, created_error) = invoke(
       "create", env, directory,

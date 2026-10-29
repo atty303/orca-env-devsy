@@ -112,6 +112,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    else printf '{"version":1,"owner":"%s","host_owner":"fixture-host","instance":"fixture-instance"}\n200' "$owner"; fi ;;
     #|  *'git config --global --get credential.helper'*)
     #|    touch "$HOME/git-probed"
+    #|    if test -f "$HOME/git-invalid-stderr"; then printf '\377helper pending\n' >&2; fi
     #|    test ! -f "$HOME/git-unavailable" ;;
     #|  *'then printf present; else printf missing; fi'*) if test -f "$HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
@@ -291,7 +292,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   assert_true(required(state, "workspaceId").has_prefix("repo-"))
   assert_true(valid_workspace_id(required(state, "workspaceId")))
   assert_true(required(state, "workspaceId") != "test-id")
-  let events = saved_create_events(directory)
+  let events = fixture_events(directory)
   let selection = create_event(events, "workspace-name")
   assert_eq(field(selection, "status"), Some(Json::string("selected")))
   assert_eq(
@@ -556,7 +557,12 @@ async test "recover synchronizes a changed server relay instance and skips an un
     @fs.write_file(worker + "/probe-request", "")
     wait_relay_fixture("initial probe", directory, worker, 10000, async fn() {
       !@fs.exists(directory + "/server-instance-stale") &&
-      !@fs.exists(worker + "/probe-request")
+      !@fs.exists(worker + "/probe-request") &&
+      field(
+        @json.parse(@fs.read_file(worker + "/status.json").text()),
+        "status",
+      ) ==
+      Some(Json::string("connected"))
     })
     let before = @fs.read_file(directory + "/update-steps")
       .text()
@@ -1375,7 +1381,7 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       failure != "other" && failure != "missing-full",
       msg="clone scenario \{failure}: \{errors}",
     )
-    let records = saved_create_events(directory)
+    let records = fixture_events(directory)
     if failure == "missing" || failure == "missing-full" {
       let fallback = field(create_event(records, "clone-fallback"), "source").unwrap()
       assert_eq(
@@ -1474,7 +1480,7 @@ async fn fake_codex(directory : String) -> Unit {
     #|IFS= read -r request
     #|case "$request" in *'"account/read"'*'"refreshToken":true'*) : ;; *) exit 2 ;; esac
     #|printf 'refresh\n' >> "$CODEX_HOME/refresh-count"
-    #|test ! -f "$CODEX_HOME/fail-refresh"
+    #|if test -f "$CODEX_HOME/fail-refresh"; then printf '{"id":2,"error":{"message":"refresh service unavailable"}}\n'; exit 1; fi
     #|sleep 0.1
     #|cp "$CODEX_HOME/next-auth.json" "$CODEX_HOME/auth.json"
     #|printf '{"method":"account/updated","params":{}}\n{"id":2,"result":{}}\n'
@@ -1555,6 +1561,12 @@ async test "failed refresh forwards an unexpired short token but never an expire
     let (status, _, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
     assert_true(errors.contains("refresh failed"))
+    assert_true(errors.contains("refresh service unavailable"), msg=errors)
+    assert_true(
+      @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
+      .text()
+      .contains("refresh service unavailable"),
+    )
     assert_eq(@fs.exists(directory + "/delivered-auth"), !expired)
   }
 }
@@ -1603,6 +1615,7 @@ async test "delayed primary Git readiness does not start a competing services ow
   defer cleanup_fixture(directory)
   with_fake_tunnel(directory, async fn() {
     @fs.write_file(directory + "/git-unavailable", "")
+    @fs.write_file(directory + "/git-invalid-stderr", "")
     @fs.write_file(
       directory + "/orca.yaml",
       "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
@@ -1624,6 +1637,14 @@ async test "delayed primary Git readiness does not start a competing services ow
     let payload : Json = { "schemaVersion": 1, "recipeResult": result }
     defer ignore(invoke("destroy", env, directory, payload~))
     assert_eq(@fs.read_file(directory + "/primary-services").text(), "enabled")
+    let events = fixture_events(directory)
+    let pending = events.filter(event => {
+      field(event, "stage") == Some(Json::string("relay-probe")) &&
+      field(event, "errorType") == Some(Json::string("git_helper_unavailable"))
+    })
+    assert_true(pending.length() > 0)
+    assert_eq(field(pending[0], "exitCode"), Some(Json::number(1)))
+    assert_true(required(pending[0], "errorMessage").contains("helper pending"))
     let state = field(result, "userData").unwrap()
     assert_eq(
       @fs.read_file(required(state, "tunnelDirectory") + "/git-status").text(),
@@ -2072,7 +2093,7 @@ async test "failed create still deletes workspace when tunnel state cleanup fail
 }
 
 ///|
-async test "diagnostics retain only known backend phases and fixed failure classes" {
+async test "diagnostics retain backend phases and fixed failure classes" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   @fs.write_file(
@@ -2082,7 +2103,7 @@ async test "diagnostics retain only known backend phases and fixed failure class
   let result =
     #|{"kind":"status","phase":"cloning_repository","state":"started","step":"private-step-secret"}
     #|{"kind":"status","phase":"building_image","state":"failed","error":{"message":"private-error-secret","context":{"token":"private-context-secret"}}}
-    #|{"kind":"status","phase":"private-phase-secret","state":"failed"}
+    #|{"kind":"status","phase":"new_backend_phase","state":"waiting"}
     #|{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}
   @fs.write_file(directory + "/up-result", result + "\n")
   let (status, output, errors) = invoke("create", env, directory)
@@ -2094,13 +2115,45 @@ async test "diagnostics retain only known backend phases and fixed failure class
   let records = @fs.read_file(path).text()
   assert_true(records.contains("cloning_repository"))
   assert_true(records.contains("building_image"))
+  assert_true(records.contains("new_backend_phase"))
+  assert_true(records.contains("waiting"))
   assert_true(records.contains("backend_phase"))
   assert_true(records.contains("durationMs"))
   assert_false(records.contains("private-"))
   env.set("ORCA_ENV_DEVSY_RECORDING", "0")
-  let (status, _, errors) = invoke("resume", env, directory, payload~)
-  assert_eq(status, 0, msg=errors)
-  assert_eq(@fs.read_file(path).text(), records)
+  @fs.write_file(directory + "/resume-input.json", payload.stringify())
+  @async.with_task_group(async fn(group) {
+    let sink = @process.redirect_to_file("/dev/null", shared=true)
+    defer sink.close()
+    let errors = @process.redirect_to_file(
+      directory + "/resume-errors",
+      shared=true,
+    )
+    defer errors.close()
+    let child = @process.spawn(
+      group,
+      integration_binary(),
+      ["recipe", "resume"],
+      extra_env=env,
+      stdin=@process.redirect_from_file(directory + "/resume-input.json"),
+      stdout=sink,
+      stderr=errors,
+    )
+    let run_suffix = "_" + child.pid.to_string()
+    assert_eq(
+      child.wait(),
+      0,
+      msg=@fs.read_file(directory + "/resume-errors").text(),
+    )
+    assert_false(
+      fixture_events(directory)
+      .iter()
+      .any(event => {
+        field(event, "runId") is Some(Json::String(id)) &&
+        id.has_suffix(run_suffix)
+      }),
+    )
+  })
   env.remove("ORCA_ENV_DEVSY_RECORDING")
   @fs.remove(path)
   @fs.mkdir(path)
@@ -2250,18 +2303,9 @@ async test "restart refuses an SSH master that does not stop and preserves saved
   assert_true(@fs.exists(worker + "/enabled"))
   assert_eq(@fs.read_file(worker + "/state.json").text(), saved)
   assert_false(@fs.read_file(directory + "/ssh-args").text().contains("-N\n"))
-  let records = @fs.read_file(
-    directory + "/.local/state/orca-env-devsy/events.jsonl",
-  ).text()
-  let events : Array[Json] = []
-  for line in records.split("\n") {
-    if line != "" {
-      let event = @json.parse(line.to_owned())
-      if field(event, "stage") == Some(Json::string("ssh-tunnel-restart")) {
-        events.push(event)
-      }
-    }
-  }
+  let events = fixture_events(directory).filter(event => {
+    field(event, "stage") == Some(Json::string("ssh-tunnel-restart"))
+  })
   let failure = events.last().unwrap()
   assert_eq(field(failure, "status"), Some(Json::string("timeout")))
   assert_eq(field(failure, "errorType"), Some(Json::string("shutdown_timeout")))
@@ -2674,15 +2718,26 @@ async test "unavailable progress stderr preserves lifecycle result with recordin
 }
 
 ///|
-async test "filesystem failure reports safe timestamped elapsed time before any subprocess" {
+async test "filesystem failure reports its cause and elapsed time before any subprocess" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
   let (status, output, errors) = invoke("create", env, directory)
   assert_true(status != 0)
   assert_eq(output, "")
-  assert_true(errors.contains(" create: failed ("), msg=errors)
+  assert_true(errors.contains(" create: failed:"), msg=errors)
   assert_true(errors.contains(", elapsed "))
-  assert_false(errors.contains(directory))
+  assert_true(errors.contains(directory + "/orca.yaml"), msg=errors)
+  assert_true(errors.contains("No such file or directory"), msg=errors)
+  let events = fixture_events(directory)
+  assert_true(
+    events
+    .iter()
+    .any(event => {
+      field(event, "stage") == Some(Json::string("create")) &&
+      field(event, "errorType") == Some(Json::string("unexpected")) &&
+      required(event, "errorMessage").contains("orca.yaml")
+    }),
+  )
   assert_false(@fs.exists(directory + "/args"))
 }
 
@@ -3068,6 +3123,7 @@ async test "adopted primary is stopped before recovering after a failed health c
   @fs.write_file(socket + "/socket", "")
   @fs.write_file(worker + "/enabled", "")
   @fs.write_file(worker + "/status.json", "{}")
+  @fs.write_file(directory + "/block-initial-probe", "")
   @fs.rename(directory + "/bin/ssh", directory + "/bin/ssh-original")
   let wrapper =
     #|#!/bin/sh
@@ -3080,7 +3136,8 @@ async test "adopted primary is stopped before recovering after a failed health c
     #|done
     #|case "$*" in
     #|  *'orca-relay-readiness'*)
-    #|    if test -f "$HOME/fail-next-check"; then exit 1; fi ;;
+    #|    if test -f "$HOME/block-initial-probe"; then rm "$HOME/block-initial-probe"; touch "$HOME/initial-probe-started"; while test ! -f "$HOME/release-initial-probe"; do sleep 0.01; done; exec "$HOME/bin/ssh-original" "$@"; fi
+    #|    if test -f "$HOME/fail-next-check"; then printf 'readiness connection refused\n' >&2; exit 79; fi ;;
     #|  *'-N'*)
     #|    rm -f "$HOME/fail-next-check"
     #|    if test -f "$control"; then touch "$HOME/master-conflict"; exit 1; fi
@@ -3091,6 +3148,11 @@ async test "adopted primary is stopped before recovering after a failed health c
   @async.with_task_group(async fn(group) {
     let sink = @process.redirect_to_file("/dev/null", shared=true)
     defer sink.close()
+    let stderr = @process.redirect_to_file(
+      directory + "/supervisor-stderr",
+      shared=true,
+    )
+    defer stderr.close()
     let child = @process.spawn(
       group,
       integration_binary(),
@@ -3101,24 +3163,21 @@ async test "adopted primary is stopped before recovering after a failed health c
       ],
       extra_env=env,
       stdout=sink,
-      stderr=sink,
+      stderr~,
     )
     defer (@fs.remove(worker + "/enabled") catch { _ => () })
     @async.with_timeout(
       5000,
       async fn() {
-        while field(
-                @json.parse(@fs.read_file(worker + "/status.json").text()),
-                "status",
-              ) !=
-              Some(Json::string("connected")) {
+        while !@fs.exists(directory + "/initial-probe-started") {
           @async.sleep(10)
         }
       },
-      error=AdapterError("Timed out waiting for adopted primary readiness"),
+      error=AdapterError("Timed out waiting for initial readiness probe"),
     )
     @fs.write_file(directory + "/fail-next-check", "")
     @fs.write_file(worker + "/probe-request", "")
+    @fs.write_file(directory + "/release-initial-probe", "")
     @async.with_timeout(
       5000,
       async fn() {
@@ -3128,9 +3187,29 @@ async test "adopted primary is stopped before recovering after a failed health c
         }
       },
       error=AdapterError("Timed out waiting for primary replacement"),
-    )
+    ) catch {
+      error =>
+        fail(
+          diagnostic_error(error) +
+          "\nstatus: " +
+          @fs.read_file(worker + "/status.json").text() +
+          "\n" +
+          @fs.read_file(directory + "/supervisor-stderr").text(),
+        )
+    }
     assert_false(@fs.exists(directory + "/master-conflict"))
     assert_true(@fs.exists(directory + "/master-recreated"))
+    let failures = fixture_events(directory).filter(event => {
+      field(event, "stage") == Some(Json::string("relay-probe")) &&
+      field(event, "exitCode") == Some(Json::number(79))
+    })
+    assert_true(failures.length() > 0)
+    assert_eq(field(failures[0], "phase"), Some(Json::string("readiness")))
+    assert_true(
+      required(failures[0], "errorMessage").contains(
+        "readiness connection refused",
+      ),
+    )
     @fs.remove(worker + "/enabled")
     assert_eq(
       @async.with_timeout(
@@ -3518,22 +3597,6 @@ async test "FUSE Git object creation uses rename without replacing user settings
 }
 
 ///|
-async fn saved_create_events(directory : String) -> Array[Json] {
-  let events = []
-  for
-    line in @fs.read_file(
-      directory + "/.local/state/orca-env-devsy/events.jsonl",
-    )
-    .text()
-    .split("\n") {
-    if line != "" {
-      events.push(@json.parse(line.to_owned()))
-    }
-  }
-  events
-}
-
-///|
 fn create_event(
   events : Array[Json],
   stage : String,
@@ -3554,6 +3617,21 @@ async test "saved create sources separate Orca inputs configuration resolution a
   for input_state in ["unset", "empty", "valid", "invalid", "token"] {
     let (directory, env) = fixture()
     defer cleanup_fixture(directory)
+    if input_state == "valid" {
+      env.set("ORCA_REPO_URL", "ssh://git@example.com/repo.git")
+    } else if input_state == "empty" {
+      env.set(
+        "ORCA_REPO_URL", "https::https://ghp_fixturetoken123@example.com/repo.git",
+      )
+    } else if input_state == "invalid" {
+      env.set(
+        "ORCA_REPO_URL", "HTTPS://ghp_fixturetoken123@example.com/repo.git",
+      )
+    } else if input_state == "token" {
+      env.set(
+        "ORCA_REPO_URL", "ftp://user:fixture-password@example.com/repo.git",
+      )
+    }
     let head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     for name in ["ORCA_REPO_REF", "ORCA_REPO_REF_HEAD", "ORCA_REPO_BRANCH"] {
       match input_state {
@@ -3582,7 +3660,31 @@ async test "saved create sources separate Orca inputs configuration resolution a
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
-    let events = saved_create_events(directory)
+    let events = fixture_events(directory)
+    let repository = field(
+      create_event(events, "repository-source"),
+      "evidence",
+    ).unwrap()
+    assert_eq(field(repository, "source"), Some(Json::string("environment")))
+    assert_eq(
+      field(repository, "url"),
+      Some(
+        Json::string(
+          if input_state == "valid" {
+            "ssh://git@example.com/repo.git"
+          } else if input_state == "empty" {
+            "https::https://[redacted]@example.com/repo.git"
+          } else if input_state == "invalid" {
+            "HTTPS://[redacted]@example.com/repo.git"
+          } else if input_state == "token" {
+            "ftp://[redacted]@example.com/repo.git"
+          } else {
+            "https://example.com/repo.git"
+          },
+        ),
+      ),
+    )
+    assert_eq(field(repository, "path"), Some(Json::string(directory)))
     let received = events.filter(event => {
         field(event, "stage") == Some(Json::string("create-input")) &&
         field(event, "status") == Some(Json::string("received"))
@@ -3660,7 +3762,7 @@ async test "saved create sources separate Orca inputs configuration resolution a
     ).text()
     assert_false(raw.contains("privacy-secret"))
     assert_false(raw.contains("ghp_privacy_secret_fixture"))
-    assert_false(raw.contains("example.com"))
+    assert_false(raw.contains("fixture-user"))
     let payload : Json = {
       "schemaVersion": 1,
       "recipeResult": @json.parse(output),
@@ -3709,7 +3811,7 @@ async test "saved create failure retains inputs and the failed decision boundary
     let (status, output, _) = invoke("create", env, directory)
     assert_true(status != 0)
     assert_eq(output, "")
-    let events = saved_create_events(directory)
+    let events = fixture_events(directory)
     let failed = create_event(events, "create-attempt")
     assert_eq(field(failed, "status"), Some(Json::string("failed")))
     assert_eq(
@@ -3786,7 +3888,7 @@ async test "task head fallback keeps attempts linked without claiming an Orca wo
   let (status, output, _) = invoke("create", env, directory)
   assert_true(status != 0)
   assert_eq(output, "")
-  let events = saved_create_events(directory)
+  let events = fixture_events(directory)
   let first = create_event(events, "create-attempt")
   let second = create_event(events, "create-attempt", attempt=2)
   assert_eq(field(first, "status"), Some(Json::string("retry")))
@@ -3890,7 +3992,7 @@ async test "clone override records the allowlisted strategy from the actual invo
     @fs.write_file(directory + "/orca.yaml", document.stringify())
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
-    let events = saved_create_events(directory)
+    let events = fixture_events(directory)
     let clone = field(create_event(events, "clone-override"), "source").unwrap()
     assert_eq(field(clone, "cloneStrategy"), Some(Json::string(expected)))
     assert_eq(field(clone, "strategySource"), Some(Json::string("upArgs")))
@@ -3957,7 +4059,7 @@ async test "failed workspace creation preserves credential error causes and mask
       assert_true(errors.contains(cause), msg=errors)
     }
     if recording == "enabled" {
-      let events = saved_create_events(directory)
+      let events = fixture_events(directory)
       let failure = events.filter(event => {
           field(event, "stage") == Some(Json::string("workspace-create")) &&
           field(event, "status") == Some(Json::string("exit-error"))
@@ -4577,6 +4679,15 @@ test "diagnostic errors retain context and mask environment credentials" {
     environment={ "ACCESS_TOKEN": "fixture-sensitive-value" },
   )
   assert_eq(detail, "operation failed: [redacted]")
+  assert_eq(
+    AdapterError("connection refused").to_string(),
+    "connection refused",
+  )
+  assert_eq(InvalidConfig("invalid recipe").to_string(), "invalid recipe")
+  assert_eq(
+    Show::to_string(SettingsProcessError("write", "ENOSPC", 1)),
+    "Orca settings process failed (exit 1, write: ENOSPC)",
+  )
 }
 
 ///|

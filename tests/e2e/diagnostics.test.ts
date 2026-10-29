@@ -187,10 +187,14 @@ test("adapter process API causes retain bounded errno and fixed phases without c
   try {
     await mkdir(root + "/orca-env-devsy");
     const events = [26, 0, 4096, 1.5, privateValue].map(osErrno => ({ stage: "resolve-context", status: "process-error", errorType: "process_os", phase: privateValue, osErrno, context: privateValue }));
-    await writeFile(root + "/orca-env-devsy/events.jsonl", events.map(event => JSON.stringify(event)).join("\n"));
+    const relay = { stage: "relay-probe", status: "failed", errorType: "transport_error", phase: "readiness", exitCode: 79, errorMessage: "readiness connection refused" };
+    const codex = ["refresh", "deliver", "pipe", "spawn", "write", "wait"].map(phase => ({ stage: "codex-auth", status: "warning", phase, errorMessage: "operation timed out" }));
+    await writeFile(root + "/orca-env-devsy/events.jsonl", [...events, relay, ...codex].map(event => JSON.stringify(event)).join("\n"));
     const report = await adapterDiagnostics(root);
     expect(report.events[0]).toEqual({ stage: "resolve-context", status: "process-error", errorType: "process_os", osErrno: 26 });
     expect(report.events.slice(1).every(event => event.osErrno === undefined)).toBe(true);
+    expect(report.events.at(-codex.length - 1)).toEqual(relay);
+    expect(report.events.slice(-codex.length)).toEqual(codex);
     expect(JSON.stringify(report)).not.toContain(privateValue);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

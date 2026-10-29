@@ -79,23 +79,32 @@ async fn codex_addon(state : Json) -> Unit {
         writer.write(payload.stringify() + "\n")
         writer.close()
         stage = "wait"
-        guard process.wait() == 0 else {
-          raise AdapterError("Codex auth delivery failed")
+        let status = process.wait()
+        guard status == 0 else {
+          raise AdapterError("Codex auth delivery failed (exit \{status})")
         }
       })
     })
     save_diagnostic("codex-auth", "success")
     progress_message("codex-auth: done (" + progress_timing(started) + ")")
   } catch {
-    _ => {
+    error => {
+      let detail = diagnostic_error(error)
       progress_message(
         "warning: Codex authentication addon failed at " +
         stage +
+        ": " +
+        detail +
         "; continuing (" +
         progress_timing(started) +
         ")",
       )
-      save_diagnostic("codex-auth", "warning")
+      save_diagnostic(
+        "codex-auth",
+        "warning",
+        phase=stage,
+        error_message=detail,
+      )
     }
   }
 }
@@ -164,8 +173,19 @@ async fn codex_rpc_response(
       let response = @json.parse(@utf8.decode(Bytes::from_array(bytes)))
       bytes.clear()
       if field(response, "id") == Some(Json::number(id.to_double())) {
-        guard field(response, "error") == None &&
-          field(response, "result") != None else {
+        if field(response, "error") is Some(error) {
+          let message = field(error, "message")
+            .map(value => {
+              if value is Json::String(text) {
+                ": " + text
+              } else {
+                ""
+              }
+            })
+            .unwrap_or("")
+          raise AdapterError("Codex refresh RPC failed" + message)
+        }
+        guard field(response, "result") != None else {
           raise AdapterError("Codex refresh RPC failed")
         }
         return
@@ -242,11 +262,14 @@ async fn codex_credentials(home : String) -> CodexAuth {
     }
     save_diagnostic("codex-refresh", "success")
   } catch {
-    _ => {
+    error => {
+      let detail = diagnostic_error(error)
       @stdio.stderr.write(
-        "orca-env-devsy: warning: Codex refresh failed; checking remaining token lifetime\n",
+        "orca-env-devsy: warning: Codex refresh failed: " +
+        detail +
+        "; checking remaining token lifetime\n",
       )
-      save_diagnostic("codex-refresh", "warning")
+      save_diagnostic("codex-refresh", "warning", error_message=detail)
     }
   }
   let current = read_codex_auth(home)
