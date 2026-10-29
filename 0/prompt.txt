@@ -1,0 +1,1 @@
+Command failed: git worktree add --no-track -b work/next-task-20261029 /worktrees/glaze/feat-ci-ci-workload-arm64 1df8f2036aec4c1e0ef9a3f02b50c789bcef105f fatal: invalid reference: 1df8f2036aec4c1e0ef9a3f02b50c789bcef105f
