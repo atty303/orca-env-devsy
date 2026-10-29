@@ -1,0 +1,5 @@
+[Image #1] この通り残っている
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/b761318c-d429-4eef-88af-bb21e2465de9/orca-paste-1792988281323-0240f002-0cfe-40bc-8f75-6dd0582a8219.png">
+
+</image>
