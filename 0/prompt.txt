@@ -1,0 +1,5 @@
+この設定で作ったのにworkspaceはmaster baseからブランチが作られているようだ。このadapterの問題か？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/native-chat-pastes/orca-paste-1792281549354-503ce295-d199-4688-bb30-19a46c31d7f5.png">
+
+</image>
