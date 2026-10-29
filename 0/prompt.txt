@@ -1,0 +1,48 @@
+devsyの中でgit signingが失敗する。なぜ？どこに問題がある？
+2回とも、pre-commit の検査成功後、Git の SSH 署名で失敗しました。commit は作成されていません。
+
+Git の設定は次のとおりです。
+
+| 設定 | 値 | 設定元 |
+|---|---|---|
+| `commit.gpgsign` | `true` | `~/.config/git/config` |
+| `gpg.format` | `ssh` | `~/.gitconfig` |
+| `gpg.ssh.program` | `devsy-ssh-signature` | `~/.gitconfig` |
+| `user.signingkey` | `~/.ssh/git_signing_ed25519` | `~/.gitconfig` |
+
+実行される `/usr/local/bin/devsy-ssh-signature` の内容は以下です。
+
+```bash
+#!/bin/bash
+
+devsy internal agent git-ssh-signature "$@"
+```
+
+再試行時のエラーを展開すると、こうなります。
+
+```text
+signature server returned 500:
+  rpc error: code = Unknown desc = get git ssh signature:
+    failed to sign commit: exit status 255
+    stderr:
+      Couldn't load public key /var/folders/q1/_sp2_p5n5_s5s8q2w2m_h8v0w5b6r9/T/.git_signing_key_3322426802:
+      No such file or directory
+
+fatal: failed to write commit object
+```
+
+初回も同じエラーで、末尾のファイル名だけが違いました。
+
+```text
+初回:   .git_signing_key_2650908385
+再試行: .git_signing_key_3322426802
+```
+
+確認できている切り分けは以下です。
+
+- Linux 側の `~/.ssh/git_signing_ed25519` は存在します。
+- 失敗箇所は `/var/folders/...` に作成される一時公開鍵です。パスから、転送先の macOS 側と推測できます。
+- ファイルが作成されなかったのか、早く削除されたのか、別の実行環境から参照しているのかは未確認です。
+- 署名サーバーへは要求が届き、サーバー内部の署名処理で失敗した形の応答です。
+
+現在の branch は `refactor/datadog-mise-env`、HEAD は `6da838c`。検証済みの10ファイルは staged のままです。
