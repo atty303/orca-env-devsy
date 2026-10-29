@@ -1,0 +1,1 @@
+`buildRef` 省略時に remote HEAD を使う意味は維持する。 ← これが意図と違う。 $dig
