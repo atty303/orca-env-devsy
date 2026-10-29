@@ -1,0 +1,1 @@
+旧Agent転送といっているのはSSH_AGENT_SOCKを探索したIdentityAgentで上書きしての転送のことか？
