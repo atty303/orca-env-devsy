@@ -117,6 +117,23 @@ async fn save_diagnostic(
 let recording_run_id : String = @env.now().to_string()
 
 ///|
+fn diagnostic_error(
+  error : Error,
+  environment? : Map[String, String],
+) -> String {
+  let message = match error {
+    AdapterError(detail) => detail
+    InvalidConfig(detail) => detail
+    _ => error.to_string()
+  }
+  let progress = Progress::new("diagnostic-error", environment?)
+  message
+  .split("\n")
+  .map(line => progress.safe_message(line.to_owned()).unwrap_or("[unavailable]"))
+  .join("\n")
+}
+
+///|
 fn process_error_type(output : String) -> String {
   let text = output.to_lower()
   if text.contains("out of memory") || text.contains("cannot allocate memory") {

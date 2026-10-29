@@ -246,7 +246,9 @@ async fn idle_status(state : Json) -> Json {
       set_field(
         result,
         "error",
-        Json::string(redact_credentials(error.to_string())),
+        Json::string(
+          diagnostic_error(error, environment=workspace_environment(state)),
+        ),
       )
     }
   }
@@ -350,7 +352,13 @@ async fn idle_supervisor(
               stop_workspace(state)
               None
             } catch {
-              error => Some(redact_credentials(error.to_string()))
+              error =>
+                Some(
+                  diagnostic_error(
+                    error,
+                    environment=workspace_environment(state),
+                  ),
+                )
             }
             if failure is Some(message) {
               retry_reason = "stop_failed"
@@ -391,7 +399,10 @@ async fn idle_supervisor(
           "idle-connection",
           "failed",
           error_type="observer_unavailable",
-          error_message=redact_credentials(error.to_string()),
+          error_message=diagnostic_error(
+            error,
+            environment=workspace_environment(state),
+          ),
           tunnel_directory=required(state, "tunnelDirectory"),
           recording=workspace_recording(state),
         )
@@ -456,7 +467,10 @@ async fn idle_retry_wait(
               "idle-monitor",
               "failed",
               error_type="timer_unavailable",
-              error_message=redact_credentials(error.to_string()),
+              error_message=diagnostic_error(
+                error,
+                environment=workspace_environment(state),
+              ),
               tunnel_directory=directory,
               recording=workspace_recording(state),
             )

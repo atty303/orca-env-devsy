@@ -1391,7 +1391,10 @@ async fn tunnel_worker(
                         "idle-monitor",
                         "failed",
                         error_type="monitor_failed",
-                        error_message=redact_credentials(error.to_string()),
+                        error_message=diagnostic_error(
+                          error,
+                          environment=workspace_environment(state),
+                        ),
                         tunnel_directory=directory,
                         recording=workspace_recording(state),
                       )
@@ -1460,8 +1463,12 @@ async fn tunnel_worker(
           "orca-tunnel",
           environment=workspace_environment(state),
         )
+        let error_detail = match error {
+          AdapterError(detail) => detail
+          _ => error.to_string()
+        }
         let message = Some(
-          redact_credentials(error.to_string())
+          redact_credentials(error_detail)
           .split("\n")
           .map(line => {
             progress

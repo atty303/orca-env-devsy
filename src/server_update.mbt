@@ -470,7 +470,9 @@ async fn update_one_server(
         set_field(
           result,
           "cleanupWarning",
-          Json::string(redact_credentials(error.to_string())),
+          Json::string(
+            diagnostic_error(error, environment=workspace_environment(state)),
+          ),
         )
     }
     set_field(result, "outcome", Json::string("success"))
@@ -487,7 +489,9 @@ async fn update_one_server(
       set_field(
         result,
         "error",
-        Json::string(redact_credentials(error.to_string())),
+        Json::string(
+          diagnostic_error(error, environment=workspace_environment(state)),
+        ),
       )
       set_field(
         result,
@@ -552,14 +556,14 @@ pub async fn update_server(args : Array[String]) -> Unit {
         error => {
           let kind = discovery_phase +
             ":" +
-            process_error_type(error.to_string())
+            process_error_type(diagnostic_error(error))
           discovery_counts.set(
             kind,
             discovery_counts.get(kind).unwrap_or(0) + 1,
           )
           errors.push({
             "savedState": directory,
-            "error": redact_credentials(error.to_string()),
+            "error": diagnostic_error(error),
           })
         }
       }
@@ -621,7 +625,10 @@ pub async fn update_server(args : Array[String]) -> Unit {
       error =>
         errors.push({
           "workspace": required(state, "workspaceId"),
-          "error": redact_credentials(error.to_string()),
+          "error": diagnostic_error(
+            error,
+            environment=workspace_environment(state),
+          ),
         })
     }
   }

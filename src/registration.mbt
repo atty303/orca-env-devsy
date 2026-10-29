@@ -40,7 +40,7 @@ async fn register_workspace(directory : String, environment? : Json) -> Unit {
         register_workspace_inner(directory, environment?)
         return
       } catch {
-        error => detail = redact_credentials(error.to_string())
+        error => detail = diagnostic_error(error)
       }
       @async.sleep(100)
     }

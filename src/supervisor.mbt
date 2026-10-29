@@ -119,7 +119,7 @@ async fn restart_supervisor() -> Int32 {
                     "supervisor-transport",
                     "failed",
                     error_type="transport_cleanup_failed",
-                    error_message=redact_credentials(error.to_string()),
+                    error_message=diagnostic_error(error),
                     evidence={ "transport": transport },
                   )
                   progress_message("SSH transport cleanup failed: " + transport)
@@ -222,7 +222,7 @@ pub async fn supervisor(
                 "supervisor-registration",
                 "failed",
                 error_type="registration_failed",
-                error_message=redact_credentials(error.to_string()),
+                error_message=diagnostic_error(error),
               )
           }
         })
@@ -298,7 +298,7 @@ pub async fn supervisor(
                     "failed",
                     tunnel_directory=workspace,
                     error_type="workspace_task_failed",
-                    error_message=redact_credentials(error.to_string()),
+                    error_message=diagnostic_error(error, environment~),
                     recording=environment.get("ORCA_ENV_DEVSY_RECORDING") !=
                       Some("0"),
                   )
@@ -313,7 +313,7 @@ pub async fn supervisor(
                 "failed",
                 tunnel_directory=workspace,
                 error_type="workspace_registration_failed",
-                error_message=redact_credentials(error.to_string()),
+                error_message=diagnostic_error(error),
               )
           }
         }
@@ -336,7 +336,7 @@ pub async fn supervisor(
                   "supervisor-transport",
                   "failed",
                   error_type="transport_cleanup_failed",
-                  error_message=redact_credentials(error.to_string()),
+                  error_message=diagnostic_error(error),
                 )
             }
           })

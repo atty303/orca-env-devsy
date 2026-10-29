@@ -451,6 +451,8 @@ async test "server CLI emits pairing separately and recover reuses a responding 
 ///|
 async fn wait_relay_fixture(
   phase : String,
+  directory : String,
+  worker : String,
   timeout : Int32,
   done : async () -> Bool,
 ) -> Unit {
@@ -459,8 +461,38 @@ async fn wait_relay_fixture(
       @async.sleep(25)
     }
   }) catch {
-    error =>
-      raise AdapterError("relay fixture " + phase + ": " + error.to_string())
+    error => {
+      let markers = []
+      for
+        name in [
+          "server-instance-stale", "server-instance-unset", "daemon-instance-stale",
+          "relay-changes-on-start", "relay-instance-next", "fail-server-check",
+        ] {
+        markers.push(
+          name + "=" + @fs.exists(directory + "/" + name).to_string(),
+        )
+      }
+      let worker_markers = []
+      for name in ["probe-request", "server-relay-pending", "worker-error.json"] {
+        worker_markers.push(
+          name + "=" + @fs.exists(worker + "/" + name).to_string(),
+        )
+      }
+      let events = fixture_failure_events(directory)
+      assert_true(
+        false,
+        msg="relay fixture " +
+          phase +
+          ": " +
+          diagnostic_error(error) +
+          "\n" +
+          markers.join(" ") +
+          "\n" +
+          worker_markers.join(" ") +
+          "\n" +
+          events,
+      )
+    }
   }
 }
 
@@ -522,7 +554,7 @@ async test "recover synchronizes a changed server relay instance and skips an un
     @fs.remove(directory + "/relay-instance-next")
     @fs.write_file(directory + "/server-instance-stale", "")
     @fs.write_file(worker + "/probe-request", "")
-    wait_relay_fixture("initial probe", 10000, async fn() {
+    wait_relay_fixture("initial probe", directory, worker, 10000, async fn() {
       !@fs.exists(directory + "/server-instance-stale") &&
       !@fs.exists(worker + "/probe-request")
     })
@@ -533,7 +565,7 @@ async test "recover synchronizes a changed server relay instance and skips an un
     @fs.write_file(directory + "/server-instance-stale", "")
     @fs.write_file(directory + "/relay-changes-on-start", "")
     @fs.write_file(worker + "/probe-request", "")
-    wait_relay_fixture("repeated restart", 15000, async fn() {
+    wait_relay_fixture("repeated restart", directory, worker, 15000, async fn() {
       @fs.read_file(directory + "/update-steps")
       .text()
       .split("relay-stop")
@@ -543,14 +575,14 @@ async test "recover synchronizes a changed server relay instance and skips an un
     })
     @fs.write_file(directory + "/fail-server-check", "")
     @fs.write_file(worker + "/probe-request", "")
-    wait_relay_fixture("error recorded", 10000, async fn() {
+    wait_relay_fixture("error recorded", directory, worker, 10000, async fn() {
       @fs.exists(worker + "/worker-error.json")
     })
     let worker_error = @fs.read_file(worker + "/worker-error.json").text()
     assert_true(worker_error.contains("cannot inspect server environment"))
     assert_false(worker_error.contains("ghp_fixtureprivatetoken123"))
     @fs.remove(directory + "/fail-server-check")
-    wait_relay_fixture("error cleared", 15000, async fn() {
+    wait_relay_fixture("error cleared", directory, worker, 15000, async fn() {
       !@fs.exists(worker + "/worker-error.json")
     })
     let events = @fs.read_file(
@@ -877,7 +909,16 @@ async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
       }
     })
     run()
-  })
+  }) catch {
+    AdapterError(message) =>
+      assert_true(
+        false,
+        msg=redact_credentials(message) +
+          "\n" +
+          fixture_failure_events(directory),
+      )
+    error => raise error
+  }
 }
 
 ///|
@@ -4407,6 +4448,16 @@ async test "monitor retains Busy and query failures but terminates on UID replac
       @async.sleep(25)
     }
   })
+  let monitor_failures = fixture_events(directory).filter(event => {
+    field(event, "stage") == Some(Json::string("orca-tunnel")) &&
+    field(event, "errorType") == Some(Json::string("workspace_query_failed"))
+  })
+  assert_true(monitor_failures.length() > 0)
+  assert_true(
+    required(monitor_failures[monitor_failures.length() - 1], "errorMessage").contains(
+      "workspace-status failed (exit 1)",
+    ),
+  )
   assert_true(worker_alive(worker))
   assert_true(@fs.exists(worker + "/enabled"))
   assert_eq(
@@ -4504,6 +4555,28 @@ async fn fixture_events(directory : String) -> Array[Json] {
     events.push(@json.parse(lines[index].to_owned()))
   }
   events
+}
+
+///|
+async fn fixture_failure_events(directory : String) -> String {
+  let events = fixture_events(directory)
+    .map(event => event.stringify())
+    .join("\n") catch {
+      error => "diagnostic read failed: " + error.to_string()
+    }
+  redact_credentials(events).replace_all(
+    old="ghp_fixtureprivatetoken123",
+    new="[redacted]",
+  )
+}
+
+///|
+test "diagnostic errors retain context and mask environment credentials" {
+  let detail = diagnostic_error(
+    AdapterError("operation failed: fixture-sensitive-value"),
+    environment={ "ACCESS_TOKEN": "fixture-sensitive-value" },
+  )
+  assert_eq(detail, "operation failed: [redacted]")
 }
 
 ///|

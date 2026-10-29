@@ -271,7 +271,10 @@ async fn bulk_one(mode : String, state : Json, options : BulkOptions) -> Json? {
       )
     } else {
       observe_activity(state) catch {
-        error => unknown_activity(error.to_string())
+        error =>
+          unknown_activity(
+            diagnostic_error(error, environment=workspace_environment(state)),
+          )
       }
     }
     set_field(result, "activity", field(evidence, "activity").unwrap())
@@ -338,12 +341,12 @@ async fn bulk_one(mode : String, state : Json, options : BulkOptions) -> Json? {
         "outcome",
         Json::string(if mutating { "failed" } else { "skipped" }),
       )
-      set_field(result, "evidence", unknown_activity(error.to_string()))
-      set_field(
-        result,
-        "error",
-        Json::string(redact_credentials(error.to_string())),
+      let detail = diagnostic_error(
+        error,
+        environment=workspace_environment(state),
       )
+      set_field(result, "evidence", unknown_activity(detail))
+      set_field(result, "error", Json::string(detail))
     }
   }
   if mode == "resume" &&
@@ -354,7 +357,9 @@ async fn bulk_one(mode : String, state : Json, options : BulkOptions) -> Json? {
         set_field(
           result,
           "error",
-          Json::string(redact_credentials(error.to_string())),
+          Json::string(
+            diagnostic_error(error, environment=workspace_environment(state)),
+          ),
         )
       }
     }
@@ -397,7 +402,7 @@ pub async fn bulk(mode : String, args : Array[String]) -> Unit {
         error =>
           discovery_errors.push({
             "savedState": directory,
-            "reason": redact_credentials(error.to_string()),
+            "reason": diagnostic_error(error),
           })
       }
     }

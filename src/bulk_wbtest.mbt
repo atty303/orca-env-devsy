@@ -166,6 +166,11 @@ async test "bulk operation failure preserves JSON while failing the process" {
   assert_true(code != 0)
   assert_eq(field(result, "failed"), Some(Json::number(1)))
   assert_eq(field(bulk_first(result), "outcome"), Some(Json::string("failed")))
+  assert_true(
+    required(bulk_first(result), "error").contains(
+      "workspace-stop failed (exit 1)",
+    ),
+  )
 }
 
 ///|
@@ -267,6 +272,11 @@ async test "server update reports failures, suppresses recovery, and retries" {
     )
     assert_true(failed_code != 0)
     assert_eq(field(bulk_first(failed), "phase"), Some(Json::string("start")))
+    assert_true(
+      required(bulk_first(failed), "error").contains(
+        "orca-serve failed (exit 1)",
+      ),
+    )
     assert_true(@fs.exists(tunnel + "/server-update-pending"))
     let before = @fs.read_file(directory + "/serve-count").text()
     let (recovery_code, _, _) = invoke("recover", env, directory, payload~)
