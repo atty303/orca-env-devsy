@@ -1,0 +1,1 @@
+devsy context set -o SSH_INJECT_GIT_CREDENTIALS=false この例もいらない
