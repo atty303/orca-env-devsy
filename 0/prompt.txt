@@ -1,0 +1,4 @@
+じゃあglaze-hare-3k はrestart成功しているのrelayがおかしいまま
+❯ gh auth status
+2026-10-27T19:02:24.825+0900    WARN    gh relay: forwarding unavailable        {"operation": "relay.readiness", "error_type": "connection_refused"}
+You are not logged into any GitHub hosts. To log in, run: gh auth login
