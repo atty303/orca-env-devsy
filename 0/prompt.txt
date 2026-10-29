@@ -1,0 +1,1 @@
+ならssh masterはdevsy agentを起動して維持するのが目的なのか？
