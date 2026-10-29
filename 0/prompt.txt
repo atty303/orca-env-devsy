@@ -1,0 +1,1 @@
+かといってadapterにprovider固有実装は入れたくないがなんとかdevsy経由でできないか？
