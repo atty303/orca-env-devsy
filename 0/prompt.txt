@@ -1,0 +1,1 @@
+master 自身の stdin/stdout を観測に使う方向 ←どういうこと？
