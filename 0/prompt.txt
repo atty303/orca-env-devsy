@@ -1,0 +1,5 @@
+[Image #1] ふむ、glaze0を消した
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/dae4b274-dc59-4273-abef-c59947494caa/orca-paste-1792995286696-6bd3ef78-dca6-418d-ac7d-42350e20e063.png">
+
+</image>
