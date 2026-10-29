@@ -1,0 +1,1 @@
+checkout rootのbasenameはdevcontainer.json指定でいい。それしかないよね
