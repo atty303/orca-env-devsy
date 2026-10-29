@@ -1,0 +1,1 @@
+その前にsupervisor再起動でssh masterが生存するのはなぜ？ process groupにしていないのか？ orphan processが回収されないリスクはないのか？
