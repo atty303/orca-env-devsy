@@ -1,0 +1,2 @@
+The examples below use mise exec so they do not depend on shell activation.
+ユーザーは普通activateしてるからこの前提で書かないで。ただしorca.yaml内は別
