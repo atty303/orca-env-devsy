@@ -1,0 +1,9 @@
+[Image #1] [Image #2] これで作ったら今この状態だ
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/a83d0388-1d96-477f-a6ca-fec1c4c42cc2/orca-paste-1792994378915-c003d7bb-7b93-494f-8dfd-97e733d4d578.png">
+
+</image>
+
+<image name=[Image #2] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/f18b1fe7-b7b4-4205-acb3-b1974b1518b1/orca-paste-1792994386554-125fd6ed-93f1-4c7b-8d76-82cd39de43dc.png">
+
+</image>
