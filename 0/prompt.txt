@@ -1,0 +1,1 @@
+Separate the build source from task code ← そもそもこれは目的ではなくorca-worktreeでref特定できないから仕方なく設定があるだけ
