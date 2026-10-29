@@ -1,0 +1,1 @@
+B. ただしidle検知後のunknownはidleと扱う
