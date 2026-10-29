@@ -1,0 +1,5 @@
+orca側に残ってる [Image #1]
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/b0fa3ded-c2e6-4610-a960-0d0d4356cc08/orca-paste-1793018742388-1376472f-4b92-4321-a700-1c4ee8895bb3.png">
+
+</image>
