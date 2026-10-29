@@ -1,0 +1,1 @@
+あー、ssh configをregenerateしたからだ。対応するentryが消えてないか？
