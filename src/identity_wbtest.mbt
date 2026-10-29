@@ -9,11 +9,15 @@ test "workspace names normalize repository URLs and satisfy Devsy limits" {
     ] {
     assert_eq(repository_slug(url), slug)
     for length = 1; length < 120; length = length + 17 {
-      let name = workspace_name(slug.repeat(length))
+      let name = workspace_name(
+        slug.repeat(length),
+        "orca-97494818-ab8d-4df6-9ac4-fe150a9e2d2f",
+        "ferret",
+      )
       assert_true(valid_workspace_id(name))
       let parts = name.split("-").to_array()
       let suffix = parts[parts.length() - 1]
-      assert_eq(suffix.length(), 2)
+      assert_eq(suffix, "0a9e2d2f")
       assert_true(
         workspace_animals.contains(parts[parts.length() - 2].to_owned()),
       )
@@ -30,19 +34,18 @@ test "workspace names normalize repository URLs and satisfy Devsy limits" {
 ///|
 async test "workspace naming skips occupied identities without mutating Devsy" {
   let state : Json = {
+    "orcaInstanceId": "orca-97494818-ab8d-4df6-9ac4-fe150a9e2d2f",
     "command": [
-      "sh", "-c", "case \"$*\" in *'workspace list'*) printf '[{\"id\":\"repo-otter-aa\",\"uid\":\"existing\"}]' ;; *) exit 99 ;; esac",
+      "sh", "-c", "case \"$*\" in *'workspace list'*) printf '[{\"id\":\"repo-alpaca-0a9e2d2f\",\"uid\":\"existing\"}]' ;; *) exit 99 ;; esac",
       "fixture",
     ],
     "devsyEnv": {},
   }
-  let mut attempt = 0
-  select_workspace_name(state, "https://example.com/repo.git", generate=fn(
-    slug,
-  ) {
-    attempt += 1
-    slug + "-otter-" + (if attempt == 1 { "aa" } else { "ab" })
-  })
-  assert_eq(attempt, 2)
-  assert_eq(required(state, "workspaceId"), "repo-otter-ab")
+  select_workspace_name(state, "https://example.com/repo.git", start=0)
+  assert_eq(required(state, "workspaceId"), "repo-badger-0a9e2d2f")
+  let long_slug = "repository".repeat(10)
+  let instance = "orca-97494818-ab8d-4df6-9ac4-fe150a9e2d2f"
+  let alpaca = workspace_name(long_slug, instance, "alpaca")
+  let bat = workspace_name(long_slug, instance, "bat")
+  assert_eq(alpaca.replace(old="-alpaca-", new="-bat-"), bat)
 }

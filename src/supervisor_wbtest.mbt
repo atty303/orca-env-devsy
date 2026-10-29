@@ -40,13 +40,6 @@ async test "one supervisor isolates workspace environments, failures, recovery a
     let original_master = @fs.read_file(first + "/master-pid").text()
     let socket_directory = required(first_state, "socketDirectory")
     @fs.rmdir(socket_directory, recursive=true)
-    assert_eq(
-      @process.collect_output("kill", [
-        "-TERM",
-        original_master.trim().to_owned(),
-      ]).0,
-      0,
-    )
     idle_wait_for(async fn() {
       @fs.exists(socket_directory + "/socket") &&
       @fs.read_file(first + "/master-pid").text() != original_master
@@ -370,14 +363,14 @@ async test "supervisor reconnects when the socket runtime directory disappears" 
   assert_true(
     required(old, "socketDirectory").has_prefix(runtime + "/orca-env-devsy."),
   )
-  let master = @fs.read_file(directory + "/master-pid").text().trim().to_owned()
+  let master = @fs.read_file(directory + "/master-pid").text()
   @fs.rmdir(runtime, recursive=true)
-  assert_eq(@process.collect_output("kill", ["-TERM", master]).0, 0)
   idle_wait_for(async fn() {
     let current = @json.parse(@fs.read_file(worker + "/state.json").text())
     let replacement = required(current, "socketDirectory")
     replacement != required(old, "socketDirectory") &&
-    @fs.exists(replacement + "/socket")
+    @fs.exists(replacement + "/socket") &&
+    @fs.read_file(directory + "/master-pid").text() != master
   })
 }
 

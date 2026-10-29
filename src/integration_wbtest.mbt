@@ -287,9 +287,17 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   let state = field(result, "userData").unwrap()
   assert_eq(field(state, "context"), Some(Json::string("fixture-context")))
   assert_eq(field(state, "orcaInstanceId"), Some(Json::string("test-id")))
+  assert_true(required(state, "workspaceId").has_suffix("-test-id"))
   assert_true(required(state, "workspaceId").has_prefix("repo-"))
   assert_true(valid_workspace_id(required(state, "workspaceId")))
   assert_true(required(state, "workspaceId") != "test-id")
+  let events = saved_create_events(directory)
+  let selection = create_event(events, "workspace-name")
+  assert_eq(field(selection, "status"), Some(Json::string("selected")))
+  assert_eq(
+    field(field(selection, "source").unwrap(), "workspaceId"),
+    field(state, "workspaceId"),
+  )
   assert_eq(
     field(state, "buildCommit"),
     Some(Json::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
@@ -441,6 +449,22 @@ async test "server CLI emits pairing separately and recover reuses a responding 
 }
 
 ///|
+async fn wait_relay_fixture(
+  phase : String,
+  timeout : Int32,
+  done : async () -> Bool,
+) -> Unit {
+  @async.with_timeout(timeout, async fn() {
+    while !done() {
+      @async.sleep(25)
+    }
+  }) catch {
+    error =>
+      raise AdapterError("relay fixture " + phase + ": " + error.to_string())
+  }
+}
+
+///|
 async test "recover synchronizes a changed server relay instance and skips an unset instance" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)
@@ -498,11 +522,9 @@ async test "recover synchronizes a changed server relay instance and skips an un
     @fs.remove(directory + "/relay-instance-next")
     @fs.write_file(directory + "/server-instance-stale", "")
     @fs.write_file(worker + "/probe-request", "")
-    @async.with_timeout(10000, async fn() {
-      while @fs.exists(directory + "/server-instance-stale") ||
-            @fs.exists(worker + "/probe-request") {
-        @async.sleep(25)
-      }
+    wait_relay_fixture("initial probe", 10000, async fn() {
+      !@fs.exists(directory + "/server-instance-stale") &&
+      !@fs.exists(worker + "/probe-request")
     })
     let before = @fs.read_file(directory + "/update-steps")
       .text()
@@ -511,31 +533,25 @@ async test "recover synchronizes a changed server relay instance and skips an un
     @fs.write_file(directory + "/server-instance-stale", "")
     @fs.write_file(directory + "/relay-changes-on-start", "")
     @fs.write_file(worker + "/probe-request", "")
-    @async.with_timeout(15000, async fn() {
-      while @fs.read_file(directory + "/update-steps")
-            .text()
-            .split("relay-stop")
-            .count() <
-            before + 2 ||
-            @fs.exists(worker + "/server-relay-pending") {
-        @async.sleep(25)
-      }
+    wait_relay_fixture("repeated restart", 15000, async fn() {
+      @fs.read_file(directory + "/update-steps")
+      .text()
+      .split("relay-stop")
+      .count() >=
+      before + 2 &&
+      !@fs.exists(worker + "/server-relay-pending")
     })
     @fs.write_file(directory + "/fail-server-check", "")
     @fs.write_file(worker + "/probe-request", "")
-    @async.with_timeout(10000, async fn() {
-      while !@fs.exists(worker + "/worker-error.json") {
-        @async.sleep(25)
-      }
+    wait_relay_fixture("error recorded", 10000, async fn() {
+      @fs.exists(worker + "/worker-error.json")
     })
     let worker_error = @fs.read_file(worker + "/worker-error.json").text()
     assert_true(worker_error.contains("cannot inspect server environment"))
     assert_false(worker_error.contains("ghp_fixtureprivatetoken123"))
     @fs.remove(directory + "/fail-server-check")
-    @async.with_timeout(15000, async fn() {
-      while @fs.exists(worker + "/worker-error.json") {
-        @async.sleep(25)
-      }
+    wait_relay_fixture("error cleared", 15000, async fn() {
+      !@fs.exists(worker + "/worker-error.json")
     })
     let events = @fs.read_file(
       directory + "/.local/state/orca-env-devsy/events.jsonl",

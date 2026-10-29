@@ -51,31 +51,30 @@ fn repository_slug(repository : String) -> String {
 }
 
 ///|
-fn workspace_name(slug : String) -> String raise {
-  let alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-  for attempt = 0; attempt < 32; attempt = attempt + 1 {
-    guard @env.rand(3) is Some(bytes) else {
-      raise AdapterError("Workspace naming requires platform randomness")
-    }
-    if bytes[1].to_int() >= 252 || bytes[2].to_int() >= 252 {
-      continue
-    }
-    let animal = workspace_animals[bytes[0].to_int() %
-      workspace_animals.length()]
-    let limit = 48 - animal.length() - 4
-    let prefix = if slug.length() > limit {
-      slug[0:limit].to_owned().trim_end(chars="-").to_owned()
+fn workspace_name(
+  slug : String,
+  instance_id : String,
+  animal : String,
+) -> String {
+  let suffix = instance_id[if instance_id.length() > 8 {
+    instance_id.length() - 8
+  } else {
+    0
+  }:].to_owned()
+  let longest_animal = workspace_animals.fold(init=0, fn(max, name) {
+    if name.length() > max {
+      name.length()
     } else {
-      slug
+      max
     }
-    return prefix +
-      "-" +
-      animal +
-      "-" +
-      alphabet.get_char(bytes[1].to_int() % 36).unwrap().to_string() +
-      alphabet.get_char(bytes[2].to_int() % 36).unwrap().to_string()
+  })
+  let limit = 48 - longest_animal - suffix.length() - 2
+  let prefix = if slug.length() > limit {
+    slug[0:limit].to_owned().trim_end(chars="-").to_owned()
+  } else {
+    slug
   }
-  raise AdapterError("Unable to generate workspace name")
+  return prefix + "-" + animal + "-" + suffix
 }
 
 ///|
@@ -101,11 +100,22 @@ async fn workspace_creation_lock() -> @fs.File {
 async fn select_workspace_name(
   state : Json,
   repository : String,
-  generate~ : (String) -> String raise = workspace_name,
+  start? : Int32,
 ) -> Unit {
   let slug = repository_slug(repository)
-  for attempt = 0; attempt < 64; attempt = attempt + 1 {
-    let id = generate(slug)
+  let offset = match start {
+    Some(value) => value
+    None => {
+      guard @env.rand(1) is Some(bytes) else {
+        raise AdapterError("Workspace naming requires platform randomness")
+      }
+      bytes[0].to_int() % workspace_animals.length()
+    }
+  }
+  for attempt = 0; attempt < workspace_animals.length(); attempt = attempt + 1 {
+    let animal = workspace_animals[(offset + attempt) %
+      workspace_animals.length()]
+    let id = workspace_name(slug, required(state, "orcaInstanceId"), animal)
     set_field(state, "workspaceId", Json::string(id))
     let occupied = workspace(state) is Some(_)
     save_diagnostic(

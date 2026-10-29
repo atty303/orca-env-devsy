@@ -239,7 +239,7 @@ try {
   const state = persistent.runtime.recipeResult.userData;
   const volume = state.orcaVolume;
   assert.equal(typeof volume, "string");
-  assert.match(state.workspaceId as string, /^[a-z0-9-]+-[a-z]+-[a-z0-9]{2}$/);
+  assert.equal((state.workspaceId as string).slice(-8), (state.orcaInstanceId as string).slice(-8));
   const worktreePath = `/workspaces/.orca/${persistent.path.split("/").at(-1)}/feature-e2e`;
   await persistent.exec(0, `set -eu; test -f ${quote(worktreePath + "/worktree-usable.txt")}; test -f /workspaces/.orca/.profile/orca-profile-index.json; printf preserved > /workspaces/.orca/.profile/e2e-marker; printf volatile > "$HOME/e2e-volatile"`);
   await persistent.close();
