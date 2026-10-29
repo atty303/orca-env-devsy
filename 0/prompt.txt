@@ -1,0 +1,85 @@
+# 実装依頼1：orca-env-devsyのDevsyコマンド設定
+
+## 依頼
+
+`/Users/a13400/src/atty303/orca-env-devsy` に、Devsyの実行コマンドを設定できる `devsy.command` を追加してください。
+
+この作業を先に完了し、新releaseの公開後に「実装依頼2」を実行します。公開済みの基準releaseは `v0.1.0` です。
+
+## 目的
+
+- 通常のuser-wide Devsy installationでは、従来どおり `devsy` を呼ぶ。
+- 利用者が必要に応じて、Devsyを実行する環境をcommandとして明示できるようにする。
+- Orcaが後から実行するProxyCommandにも、同じcommandを適用する。
+- adapterはmiseやGlaze固有の設定を持たない。
+
+## 成功条件
+
+- `devsy.command` に実行ファイルと引数の文字列配列を指定でき、未指定時は `["devsy"]` になる。
+- 共通・選択profile・recipeの設定優先順位が動作する。
+- commandの各文字列で既存の環境変数置換を利用できる。
+- adapter内部の全Devsy呼び出しと返却するProxyCommandが設定commandを利用する。Server経路でadapterが起動するSSHも対象にする。
+- 作成時に展開したcommandを保存し、resume・suspend・destroy・reconnectで使用する。後続操作で現在のYAMLへ切り替えない。
+- commandを自動で絶対path化せず、設定値をそのまま使用する。
+- 不正なcommand設定を、Devsy実行前に設定箇所を示して拒否する。
+- 引数境界と引用を維持し、空白・引用符・shellメタ文字を含む引数で意図しない評価や分割が起きない。
+- native build・既存test・追加した設定／実行境界のtestが成功する。
+- 変更内容、releaseへの影響、検証結果、未確認範囲を後続作業へ引き渡せる。
+
+## 決定事項
+
+- `devsy.command` は文字列配列とし、先頭が実行ファイル、残りが固定引数となる。adapterがその末尾へDevsy操作の引数を追加する。
+  - 理由: 直接process実行とProxyCommand生成で同じ表現を使用できる。
+  - 主な棄却案: shell文字列。引用とshell評価の責務が増えるため採用しない。
+- 未指定時は `["devsy"]` とする。
+  - 理由: 通常のDevsy installationを使用する一般利用者の呼び出し方を維持する。
+  - 主な棄却案: mise利用の必須化。
+- 共通 → 選択profile一つ → recipeの順で、最後に指定されたcommand配列へ丸ごと置換する。
+  - 理由: 既存設定の優先順位と揃える。
+  - 主な棄却案: 配列の連結、共通設定だけでの指定。
+- 全Devsy呼び出しとProxyCommandに適用する。
+  - 理由: workspace操作と後続接続が同じDevsy実行環境を使用する。
+  - 主な棄却案: ProxyCommandだけへの適用。
+- commandの実行ファイルを自動探索・絶対path化しない。
+  - 理由: 設定に書いたcommandと実際に使用するcommandを一致させる。
+  - 主な棄却案: 作成時のPATHで先頭要素を解決し、絶対pathへ書き換える方式。
+- 環境変数置換と作成時設定の保存は、既存の設定契約に従う。
+  - 理由: `${VAR}`・`${VAR?}`と後続操作の設定解釈を一貫させる。
+  - 主な棄却案: shellによる設定評価、操作ごとの現在YAML再適用。
+
+## 制約
+
+- mise・Glaze・provider固有の分岐を追加しない。
+- `command` は空でない配列、先頭は空でない文字列とする。固定引数の空文字は維持する。
+- 配列要素を分割せず、shell evaluationを追加しない。
+- 設定snapshotをcredential保存の根拠にしない。commandへcredentialを直接含める利用を案内しない。
+- credential・pairing secretをログや公開成果物へ出さない。
+- 既存のMoonBit、単体バイナリ、mise・hk・release workflowを使用する。
+- push・release実行・cloud resource変更はこの依頼では許可しない。
+
+## 対象外
+
+- Glaze側の変更。
+- 旧Glaze `devsy.ts` のworkspace移行。
+- 任意shell構文を実行する設定。
+- commandの自動探索、PATH snapshot、mise専用機能。
+- 新たなprovider・認証addon・Server管理機能。
+
+## 未検証の前提
+
+- 変更時点のHEAD・公開releaseと、現在のローカルsourceの一致。
+- MoonBitのprocess APIで、設定commandの実行ファイルと固定引数を既存呼び出しへ適用できる具体的な方法。
+- OrcaのProxyCommandに必要な引用・置換契約と、新しいcommand配列との接続。
+- `v0.1.0` の保存済み状態を、新しい既定commandの解釈で扱える範囲。
+
+## 実装時の指示
+
+- 現在のadapter checkoutは、この設計開始時にはcleanだった。作業開始時に再確認する。
+- `config.mbt` の設定解決、`runtime.mbt` のDevsy呼び出し・ProxyCommand生成・状態保存、および関連testを確認する。
+- 利用例はmise以外にも適用できる汎用commandとして説明する。
+- 通常command、固定引数、profile／recipe上書き、環境変数置換、保存済みcommandの後続利用を検証する。
+- ProxyCommandはrecipeの環境・cwdを引き継がない条件で検証する。最初のDevsy操作の成功だけで接続成功としない。
+- 配布物のbuildと検証は既存mise taskを利用する。local検証とcloud／GitHub上の実動作を区別する。
+- releaseへのSemVer影響を変更の実態から判断する。次のversionを先に固定しない。
+- 完了報告にはlocal commit、設定仕様、検証結果、未確認範囲を含める。
+- 新releaseの公開は別操作とする。公開後、実際のrelease tag・配布物と上記結果を「実装依頼2」へ渡す。
