@@ -1,0 +1,9 @@
+<environment_context>
+  <current_date>2026-10-18</current_date>
+  <timezone>Asia/Tokyo</timezone>
+  <filesystem><workspace_roots><root>/Users/a13400/src/atty303/orca-env-devsy</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+  <subagents>
+    <agent name="/root/review_gh_auth" />
+    <agent name="/root/review_gh_auth_v2" />
+  </subagents>
+</environment_context>
