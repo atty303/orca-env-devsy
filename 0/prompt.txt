@@ -1,0 +1,1 @@
+adapter -> ssh master -> adapter proxy -> devsyという構成か？ ssh commandを挟むから別プロセスにせざるを得ない？
