@@ -1,0 +1,1 @@
+Devsy の標準 checkout 先をカスタムできるか？ repo nameにしたい
