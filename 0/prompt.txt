@@ -1,0 +1,76 @@
+# 実装依頼
+
+## 依頼
+
+`/Users/a13400/src/atty303/orca-env-devsy` の診断を修正してください。Orca が adapter に渡した作成元の指定と、adapter が構築に採用した ref・commit を、保存済み diagnostics から区別・追跡できるようにしてください。
+
+## 背景
+
+Glaze では、Orca の作成画面で `fix/devsy-credential-relay` を指定したにもかかわらず、次の状態になりました。
+
+- 構築用 checkout：`c4d94158958b177129d57a428a13463e05fed3f8`
+- 構築用 repository のローカル・origin の `fix/devsy-credential-relay`：同じ `c4d9415895`
+- 追加 worktree `seabiscuit`：`a1fe6eee3b521ddab01307a94d7a1a5e7f4ad03d`
+- `origin/master`：同じ `a1fe6eee3b`
+
+0.1.11 の `src/diagnostics.mbt` は stage・status・終了コードなどしか記録せず、以下の入力が残りません。
+
+- `ORCA_REPO_REF`
+- `ORCA_REPO_REF_HEAD`
+- `ORCA_REPO_BRANCH`
+
+`userData` の `buildRef`・`buildCommit` は構築用であり、Orca が指定したタスク作成元の証拠にはなりません。そのため、指定がどの境界で変わったかを事後に切り分けられません。
+
+## 目的
+
+再現時の一時ログ追加や利用者への再質問をせず、通常実行の保存済み診断だけで、Orca 入力と adapter の構築元解決を確認できるようにする。
+
+## 成功条件
+
+同じ create 実行の診断から、以下が分かること。
+
+1. 対象 workspace・recipe、checkout mode、接続方式。
+2. Orca から受け取った上記3変数。未設定・空・有効・不正を区別する。
+3. 設定された `buildRef` と、実際に採用した構築元。
+4. 解決した branch・commit、clone strategy、fallback の有無と理由。
+5. 構築後に検証した checkout の commit。
+6. 入力検証・ref 解決・構築・checkout 検証のどこで失敗したか。
+
+成功時にも記録し、既存の runId でイベントを関連付ける。失敗・再試行時も、どの入力と判断に対応するか追跡できること。
+
+`orca-worktree` の追加 worktree は adapter 完了後に Orca が作成するため、その最終 commit を adapter が検証したようには記録しない。
+
+## 実装方針
+
+- 現在の source・差分・診断仕様・関連テストを先に監査する。
+- 既存の診断機構を拡張し、別のログ基盤は作らない。
+- 入力は加工・fallback 前の境界で記録し、その後の解決結果と区別する。
+- 記録する値は allowlist で限定する。
+- 不正な入力は raw 値を保存せず、不正であることを記録する。
+- 実際に選択・検証している処理箇所から結果を記録し、診断用に別計算しない。
+- 適用される observability guidance に従い、今回必要な観測項目に絞る。
+
+## 制約
+
+- 既存のユーザー変更を保持する。
+- 今回は観測不足を修正する。branch 選択や checkout の挙動は変更しない。
+- lifecycle の stdout JSON 契約を変えない。診断情報は既存の診断保存先に出す。
+- 環境変数全体、コマンド引数全体、外部応答全体、userData 全体を記録しない。
+- token、認証情報、秘密鍵、credential 入り URL を raw または復元可能な形で記録しない。
+- 記録無効化、保存失敗時の非干渉性、アクセス権、既存の保存上限を維持する。
+- cloud resource の作成・変更・削除、実 workspace の作成、release、push、PR 作成は行わない。
+
+## 検証
+
+既存の標準チェック・テストを使い、次を確認する。
+
+- Orca の指定と `buildRef` が異なる実行でも、両者を区別して追跡できる。
+- 未設定・空・不正な入力を安全に診断できる。
+- ref 解決失敗や clone fallback の途中でも、それまでの入力と判断が残る。
+- 記録無効時・保存失敗時も lifecycle の結果と stdout 契約が変わらない。
+- privacy fixture の秘密値が診断に混入しない。
+- 実際に保存された診断を読み返して、原因切り分けに必要な項目が揃っている。
+
+## 完了報告
+
+変更内容、検証結果、記録例、今回の事象に対して新たに判別できる境界と、依然として adapter 外に残る未観測範囲を簡潔に報告してください。
