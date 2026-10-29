@@ -1,0 +1,1 @@
+container内はmountしていないディスクだよね？ 他のgit serverも試してみたら？
