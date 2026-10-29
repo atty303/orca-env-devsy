@@ -1,0 +1,1 @@
+管理用 SSH masterとidle 状態を取得する SSH sessionが分かれているのはなんで？
