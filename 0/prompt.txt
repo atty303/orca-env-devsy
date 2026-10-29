@@ -1,0 +1,77 @@
+# 実装依頼
+
+## 依頼
+
+`orca-env-devsy` に、新規 Orca Server の起動環境変数を利用者が指定できる汎用設定を追加する。
+
+## 目的
+
+- Orca の GitHub 処理が Glaze の `gh` ラッパーと Devsy の認証転送を利用できるようにする。
+- mise が有効な repo 内シェルでは、現在の linked worktree の `.local/bin` と、repo が指定した tool version を引き続き利用できるようにする。
+
+## 成功条件
+
+- 新規 Orca Server に、利用者が指定した環境変数が適用される。
+- 設定値から、Devsy が返したリモートの `remoteWorkspaceFolder` と、Server 起動前のリモート環境変数を参照できる。
+- Glaze の設定で、Server の `PATH` に root checkout の `.local/bin` を追加できる。
+- 対象環境で、Orca の GitHub 処理が認証転送を利用し、PR の照会・表示ができる。
+- mise が有効な repo 内シェルで、現在の worktree の `.local/bin` が root checkout のものより優先される。
+- 未設定の場合、Server の従来の起動環境が変わらない。
+
+## 決定事項
+
+- adapter は Orca Server 起動時の環境変数を指定する汎用機構を提供し、具体的な `PATH` の値は repo 側で指定する。
+  - 理由: Server の環境は adapter が作る一方、root checkout の `.local/bin` を使う判断は Glaze 固有である。
+  - 主な棄却案: adapter に Glaze・`gh`・mise 固有の分岐を入れる。汎用 adapter に repo 固有の回避を持ち込むため。
+
+- リモートの root checkout は、Devsy の `remoteWorkspaceFolder` から得た値として参照可能にする。変数名は `DEVSY_REMOTE_WORKSPACE_FOLDER` を想定する。
+  - 理由: パスは環境ごとに異なり、値の取得元は Devsy である。
+  - 主な棄却案: `/workspaces/glaze` の固定、または Orca 固有の名前で Devsy の値を表すこと。
+
+- 設定値の `${PATH?}` は、Mac ホストではなく、Orca Server 起動前のリモート環境の値を参照する。
+  - 理由: ホストとコンテナでは `PATH` の内容と意味が異なる。
+  - 主な棄却案: 既存のホスト側環境変数の展開を、そのまま Server 環境へ適用すること。
+
+- repo 内シェルで worktree 固有の `.local/bin` を使う前提として、mise の activation を置く。
+  - 理由: Glaze は mise 設定で現在の checkout の `.local/bin` を `PATH` に追加している。
+  - 主な棄却案: Server が持つ root checkout の `PATH` が、activation 後も常に優先されると仮定すること。
+
+- 既存 Server は対象外とする。
+  - 理由: 新規 Server で設定が適用されれば今回の目的を満たす。
+  - 主な棄却案: 既存 Server の設定移行、強制再起動、既存環境への遡及反映。
+
+## 制約
+
+- devcontainer の `gh` 事前インストールを維持する。Devsy の relay 初期化には、対象ユーザーの `PATH` から `gh` 本体を発見できることが必要である。
+- コンテナ全体の `PATH` や既存の mise shim を変更しない。
+- 環境変数の参照は安全に解決し、設定値を任意の shell コードとして評価しない。
+- 既存のユーザー変更を保持する。外部への push、release、deploy、cloud resource の変更は別途明示的な依頼または承認がない限り行わない。
+
+## 対象外
+
+- 既存 Orca Server への設定反映、再起動、移行。
+- Devsy の relay の実装変更。
+- GitHub relay の並列トークン取得失敗の修正。
+- Orca 本体への変更。
+
+## 未検証の前提
+
+- `orca-env-devsy` の現在の設定マージ、保存状態、Server の作成・再開経路において、新規環境へ設定を適用する位置と寿命。
+- `${VAR}`・`${VAR?}` の既存仕様と、新しいリモート環境の参照を区別する具体的な実装方法。
+- Orca が起動する実際の対話シェルで、mise activation 後に linked worktree の `.local/bin` が優先されること。
+- 対象の新規 Server で、GitHub 認証と PR 照会・表示まで成功すること。
+
+## 実装時の指示
+
+- 設定の形は、例えば次を出発点とし、既存設定との整合性を確認して決める。`orca-server` および `env` の名前は確定済みの公開 API ではない。
+
+  ```yaml
+  devsy:
+    orca-server:
+      env:
+        PATH: "${DEVSY_REMOTE_WORKSPACE_FOLDER?}/.local/bin:${PATH?}"
+  ```
+
+- Glaze の設定では root checkout のパスを固定しない。
+- 環境変数の展開元、未定義値、設定の継承・上書き、および新規環境を後から再開する際の扱いを、既存の設定契約と照合する。
+- 新規 Server での認証と PR 表示、mise が有効なシェルでの worktree の優先順位を、それぞれ直接確認する。実環境で実施できない確認は、未確認の境界を報告する。
