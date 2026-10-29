@@ -1,0 +1,1 @@
+mise exec github:...で十分
