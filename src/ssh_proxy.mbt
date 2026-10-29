@@ -39,6 +39,12 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
     raise AdapterError(
       "Cannot inspect transport process group (errno " +
       (-present).to_string() +
+      ", expected start " +
+      start.to_string() +
+      ", current start " +
+      current.to_string() +
+      ", current group " +
+      process_group(pid).to_string() +
       ")",
     )
   }

@@ -70,6 +70,7 @@ async fn host_orca_location() -> (String, String, String) {
       }
     }
   }
+  let resource_checks = []
   for executable in executables {
     let parent = settings_parent(executable)
     for
@@ -77,15 +78,22 @@ async fn host_orca_location() -> (String, String, String) {
         parent + "/resources",
         settings_parent(parent) + "/Resources",
       ] {
-      if @fs.exists(
-          resources +
-          "/app.asar.unpacked/out/main/persistence/profile-state/profile-state-domain-reader.js",
-        ) {
+      let reader = resources +
+        "/app.asar.unpacked/out/main/persistence/profile-state/profile-state-domain-reader.js"
+      let found = @fs.exists(reader)
+      resource_checks.push(resources + ":" + found.to_string())
+      if found {
         return (executable, resources, user_data)
       }
     }
   }
-  raise AdapterError("Cannot locate the running host Orca resources")
+  raise AdapterError(
+    "Cannot locate the running host Orca resources (executable=" +
+    executables.join(",") +
+    ", resources=" +
+    resource_checks.join(",") +
+    ")",
+  )
 }
 
 ///|

@@ -36,6 +36,7 @@ let failure: unknown;
 let podmanStoreOwned = false;
 const cleanupErrors: string[] = [];
 let gitStats: GitServerStats | undefined;
+let gitServerDiagnostics: Awaited<ReturnType<NonNullable<typeof shared>["diagnostics"]>> | undefined;
 let cloneAudit: { recipe: string; pinned: boolean; strategies: string[] }[] = [];
 const report = resolve(`.e2e/${Date.now()}-${provider}/result.json`);
 const versions: Record<string, string> = {};
@@ -149,7 +150,10 @@ try {
     await firstUse(result.runtime, index, env, shared!, phase.signal);
     return { runtime: result.runtime, index };
   }));
-  for (const result of provisioned) if (result.status === "rejected") throw result.reason;
+  for (const result of provisioned) if (result.status === "rejected") {
+    gitServerDiagnostics = await shared!.diagnostics();
+    throw result.reason;
+  }
   beginPhase("initial-workloads");
   const connectedWorkspaces = await Promise.allSettled(provisioned.map(async result => {
     assert.equal(result.status, "fulfilled");
@@ -288,6 +292,7 @@ try {
   const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
   for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }, cleanup.signal).catch(() => cleanupErrors.push("cancel-provision"));
   if (shared) {
+    gitServerDiagnostics ??= await shared.diagnostics().catch(() => undefined);
     gitStats = await shared.stats(cleanup.signal).catch(() => { cleanupErrors.push("git-server-metrics"); return undefined; });
     console.log("Authenticated Git requests:", JSON.stringify(gitStats && { accepted: gitStats.accepted, rejected: gitStats.rejected }));
   }
@@ -338,7 +343,7 @@ try {
   if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
   finishPhase(cleanupErrors.length === 0);
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: gitStats, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: gitStats, gitServerDiagnostics, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();

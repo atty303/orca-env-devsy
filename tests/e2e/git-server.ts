@@ -8,6 +8,17 @@ import { budgets } from "./timing.ts";
 export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]> };
 export type GitServerOptions = { devsy: string; home: string; provider: string; source: string };
 
+function sshErrorCategories(text: string) {
+  const categories = new Set<string>();
+  if (/address already in use/i.test(text)) categories.add("local_port_busy");
+  if (/connect failed: connection refused/i.test(text)) categories.add("remote_target_refused");
+  if (/could not request local forwarding|cannot listen to port/i.test(text)) categories.add("local_forward_failed");
+  if (/connection closed|broken pipe/i.test(text)) categories.add("connection_closed");
+  if (/permission denied/i.test(text)) categories.add("authentication_failed");
+  if (text && categories.size === 0) categories.add("other");
+  return [...categories];
+}
+
 export async function gitServer(root: string, env: Environment, options: GitServerOptions, signal?: AbortSignal) {
   const { run, until } = processScope(signal);
   const source = root + "/git-server";
@@ -16,6 +27,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
   const id = "orca-" + crypto.randomUUID();
   const args = [options.devsy, "--home", options.home];
   const connections: ChildProcess[] = [];
+  const connectionErrors: string[] = [];
   let closed = false;
   const close = async (cleanupSignal?: AbortSignal) => {
     if (closed) return;
@@ -31,13 +43,15 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     // Keep the fixture alive through phase cancellation so cleanup can read its
     // final counters before deleting this owned workspace.
     const ssh = [...args, "workspace", "ssh", id, "--start-services=false", "--agent-forwarding=false", "--user", "root"];
-    for (const command of [
+    for (const [index, command] of [
       [...ssh, "--command", "python3 /usr/local/bin/git-fixture.py"],
       [...ssh, "-L", `${port}:127.0.0.1:18081`],
-    ]) {
+    ].entries()) {
       const connection = processScope().start(command, { env });
       connection.stdout?.resume();
-      connection.stderr?.resume();
+      connection.stderr?.on("data", data => {
+        connectionErrors[index] = ((connectionErrors[index] ?? "") + data.toString()).slice(-4096);
+      });
       connections.push(connection);
     }
     const stats = async (readSignal = signal): Promise<GitServerStats> => {
@@ -50,6 +64,17 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       try { return (await stats()).filesystem === "tmpfs"; }
       catch { signal?.throwIfAborted(); return false; }
     }, budgets.lifecycle);
-    return { port, sourceUrl: `http://127.0.0.1:${port}/source.git`, stats, close };
+    const diagnostics = async () => {
+      const metricsReachable = await stats().then(() => true, () => false);
+      return {
+        metricsReachable,
+        connections: connections.map((connection, index) => ({
+          exitCode: connection.exitCode,
+          signal: connection.signalCode,
+          stderrCategories: sshErrorCategories(connectionErrors[index] ?? ""),
+        })),
+      };
+    };
+    return { port, sourceUrl: `http://127.0.0.1:${port}/source.git`, stats, diagnostics, close };
   } catch (error) { await close().catch(() => {}); throw error; }
 }
