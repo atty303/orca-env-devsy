@@ -1,0 +1,1 @@
+Linux HostとVMでも同じ方式か？
