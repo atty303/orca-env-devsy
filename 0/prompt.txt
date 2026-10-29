@@ -1,0 +1,18 @@
+orca-env-devsyの公開v0.1.3で、Server接続のcreateが完了しない問題を修正してください。
+
+実測：
+- 実devcontainerへlibnss3を追加すると、公式Orcaのinstallとserveは成功する。
+- その後orca-tunnelで停止し、recipe JSONが返らない。
+- SSH master本体のstdioは/dev/nullだが、ProxyCommandのDevsy processがstderr pipeを保持している。
+- 検証用SSH masterを閉じると待ちが解除された。collect_outputによるEOF待ちと判断している。
+- 検証用workspace・tunnelはcleanup済み。
+
+要件：
+- tunnelとその子processがrecipe processのstdioを保持しないようにする。
+- createが接続可能なrecipe JSONを返し、reconnect・suspend・resume・destroyが動作することを確認する。
+- 保存済みdevsy.command、環境変数、credentialを安全に扱う契約を維持する。
+- 既存の未commit変更を確認・保持し、進行中のtunnel実装と重複させない。
+- fixture検証と実SSH／Server検証を区別する。
+- 独立レビュー後、fix／SemVer patchとしてlocal commitする。push・releaseは実行しない。
+
+Glaze側は修正を含む公開releaseを待って再検証する。Glazeは変更しない。
