@@ -1,0 +1,18 @@
+`buildRef: fix/devsy-credential-relay` と shallow clone の組み合わせが原因と考えられます。
+
+- Devsy の環境作成・Orca Server 起動は成功しています。
+- shallow clone には指定ブランチだけが入り、`origin/master` がありません。
+- Orca が既定のベースブランチを解決できず、その後に失敗しています。同じ条件の一時リポジトリで再現しました。
+
+回避するには、既存の `devsy.profiles.apple.upArgs` に次の一行を追加します。
+
+```yaml
+- "--git-clone-strategy="
+```
+
+Devsy では **空の値が full clone** を意味します。これで `buildRef` を維持しながら `origin/master` も取得できます。
+
+まだ設定は変更していません。失敗した環境は Orca が自動削除しており、その内部の refs は直接確認できていません。
+
+---
+$dig まずこのE2Eはないのか？
