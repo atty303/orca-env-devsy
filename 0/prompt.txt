@@ -1,0 +1,1 @@
+glazeとglaze0を識別するためにsetupが付いているのか？
