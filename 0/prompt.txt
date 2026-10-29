@@ -1,0 +1,1 @@
+B. adapterでのworkaroundとは別にdevsy側の理想の修正も別途検討しPR候補とする
