@@ -1,0 +1,80 @@
+# 実装依頼
+
+## 依頼
+/Users/a13400/src/atty303/orca-env-devsy のREADME.mdを、以下の合意に沿って英語で再構成してください。
+
+## 目的
+- Orcaは使っているがCloud VM機能には詳しくなく、Devsyは知らない読者に、利用イメージと導入の入口を提供する。
+- Orca・Devsyを両方知っている読者にも、adapterが何を担当するかを伝える。
+- 最初の導入負担を抑え、導入後は各機能を発見して必要な詳細へ進めるようにする。
+
+## 成功条件
+- READMEが次の順序で構成されている。
+  1. 利用イメージと価値
+  2. adapterの役割
+  3. Docker Quick start
+  4. Quick startから独立した全機能の紹介
+  5. 詳細への案内
+- 冒頭でOrcaのCloud VM機能・環境レシピを理解するための入口を示し、ローカルDockerでも利用できることが分かる。
+- コンテナ管理にDevsyを採用することで、様々なDevsy provider上の開発環境をOrcaから共通の操作で扱える価値が伝わる。
+- Orca、adapter、Devsyの役割分担が分かる。
+- Quick startを上から進めると、最小構成の環境でOrcaのタスクを起動し、repo内のファイルを読み書きできる。
+- 各機能に用途と最小限の具体例がある。機能紹介の例は設定の抜粋やコマンド断片でよく、単体で完全動作する必要はない。
+- adapterの`--help`とDevsyのreferenceへ進める。
+- `docs/contracts.md`への誘導はREADME全体で一度だけである。
+
+## 決定事項
+- 本文は英語を維持する。
+  - 理由: 既存READMEの言語を維持する。
+  - 主な棄却案: なし。
+- Quick startはmiseと稼働中のDockerを前提とする。
+  - 理由: 一般的な環境を入口にし、OS別のランタイム導入まで扱う負担を避ける。
+  - 主な棄却案: Apple ContainerやCycloudを最初の環境にする案、Dockerの導入まで含める案。
+- Dev Container設定がないrepoもQuick startの対象にする。
+  - 理由: Devsyを知らないOrca利用者にも導入の入口を提供する。
+  - 主な棄却案: 既存のDev Container設定を必須にする案。
+- Quick startでは、miseによるDevsy・adapterの導入、最小のDev Container設定、Orcaレシピ一つを案内する。
+  - 理由: 最初にrepoへ追加するものと、読者が判断する項目を最低限にする。
+  - 主な棄却案: profiles、複数provider、認証addon、独自の設定用タスクを初回から追加する案。
+- Quick startの接続はOrca Server、checkoutはOrca管理のworktreeとする。
+  - 理由: Glazeの実例を参考に、一つの導入経路へ固定する。
+  - 主な棄却案: 最初から接続方式・checkout方式を選ばせる案。
+- Quick startには、必要なprovider準備、設定のcommit・push、Orca側の設定とレシピ選択も含める。
+  - 理由: ファイル追加だけで手順を終えず、最初のタスク起動までつなげる。
+  - 主な棄却案: Devsyの準備済みを前提にする案。
+- Quick start後には全機能を用途中心に紹介し、それぞれ最小限の具体例を載せる。
+  - 理由: 機能を発見し、利用や詳細調査へ進むとっかかりを提供する。
+  - 主な棄却案: Quick startだけで終える案、全機能に独立して完全動作する例を用意する案、詳細仕様をすべてREADMEへ集約する案。
+- 詳細への案内は末尾にまとめ、contractsへの誘導は一度だけにする。
+  - 理由: 説明中に繰り返し誘導せず、README自体の流れを保つ。
+  - 主な棄却案: 各機能からcontractsへ繰り返しリンクする案。
+
+## 制約
+- 今回はREADME改善を対象とし、adapterの実装やGlazeの設定は変更しない。
+- 実際のprovider固有の準備や制約まで不要になると誤解させない。「共通の操作で扱える」範囲を正確に説明する。
+- Quick startと、全providerを対象とするadapter全体の説明を混同しない。
+- Quick startの到達点はタスク起動とrepoのファイルの読み書きまでとする。
+- 手順にcommit・pushを記載することは、この作業でcommit・pushを実行する許可ではない。
+
+## 対象外
+- Docker自体のインストール手順。
+- プロジェクト固有の言語・開発ツールの導入や、ビルド・テスト環境の完成。
+- Quick startへのクラウド設定、profiles、認証addon、独自の設定用タスクの追加。
+- 詳細な内部契約や全オプション仕様のREADMEへの集約。
+- Glaze固有の認証、secret配布、キャッシュ設定の移植。
+
+## 未検証の前提
+- 最小のDev Containerに利用できるイメージと、Orca Serverの実行に必要な依存関係。Dockerfileなしで成立するかを確認する。
+- 現行の公開版Devsy・adapterで使用できるmiseの導入指定と、Docker providerの準備手順。
+- 現行OrcaにおけるCloud VM機能の名称、必要な設定、レシピ選択・タスク起動の操作。
+- Quick startで設定をremoteへ反映すべきタイミングと、`buildRef`など読者が変更すべき値。
+- 現行実装の利用者向け機能一覧と、`--help`や公式referenceが実際に説明している範囲。
+
+## 実装時の指示
+- Glazeの実例は /Users/a13400/src/CyberAgentAI/glaze/glaze を参照する。glaze0には古い構成があるため、現行adapterの導入例として混同しない。
+- 主な参照先はGlazeの `orca.yaml`、`.config/mise/config.toml`、`tasks/actor-all/devsy.ts`。構成を参考にし、固有設定をそのままコピーしない。
+- READMEの機能紹介は実装から確認する。既存の`docs/contracts.md`だけを機能一覧の根拠にしない。
+- 環境設定、接続・checkout方式、ビルド元、profiles、ライフサイクルと復旧、一括操作、自動停止、認証連携、診断などを確認し、利用者向けの全機能を用途別に整理する。
+- Quick startは連続して実行できる手順として検証する。機能紹介の断片例については、対象箇所や前提を読み取れるようにする。
+- 必要な事実を確認したうえで本文を具体化し、詳細な説明を参照先へ任せても、adapter固有の役割と各機能の用途はREADME内で理解できるようにする。
+他タスクも実行中だからREADME編集だけに絞って実行
