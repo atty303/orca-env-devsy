@@ -1,0 +1,1 @@
+このadapterで起動したworkspaceのvscodeやjetbrains toolboxで接続したい。ssh hostがわかればいい。コンテナ内から自身の接続情報を表示するコマンドがあるといい $dig
