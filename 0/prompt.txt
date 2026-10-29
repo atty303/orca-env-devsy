@@ -1,0 +1,1 @@
+adapter自体の前提とquick startの前提を分けて
