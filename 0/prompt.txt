@@ -1,0 +1,66 @@
+# 実装依頼
+
+## 依頼
+/Users/a13400/src/atty303/orca-env-devsy の workspace ごとの常駐 worker を、状態保存ディレクトリごとに一つの supervisor へ集約してください。SSH の監視・後始末専用 process も集約対象とし、実装・検証後に残る subprocess 起動コードを報告してください。
+
+## 目的
+- 多数の agent／workspace を管理する host の資源消費を抑える。
+- workspace ごとの接続管理を維持しつつ、常駐 runtime と監視専用 process の重複をなくす。
+
+## 成功条件
+- 同じ状態保存ディレクトリを使う workspace は、一つの常駐 supervisor が内部の非同期 task で管理する。
+- 同時呼出しでも supervisor が二重起動しない。
+- 異なる状態保存ディレクトリは独立して管理される。
+- SSH の監視・後始末だけを目的とする別 process を起動しない。
+- workspace ごとの設定、接続状態、再試行、停止を独立して扱い、一つの接続エラーが他 workspace の管理を終了させない。
+- `recover` は生存する SSH master を引き継ぎ、切れている接続を復旧する。
+- `restart` は所有する既存接続を終了確認後に再作成する。
+- 回復・再起動時に残存 process を放置したまま接続を重複起動しない。
+- 既存の利用者向け動作と必要な後始末を維持し、関連する動作テストと repository の必須チェックを通す。
+- 最終報告で subprocess の全起動箇所について、コードへの参照、用途、起動頻度・条件、常駐の有無を示す。その内容に無駄がないことを合格条件とする。
+
+## 決定事項
+- supervisor の一意性は状態保存ディレクトリ単位とする。
+  - 保存先: `$XDG_STATE_HOME/orca-env-devsy`。XDG_STATE_HOME が未指定または空なら `$HOME/.local/state/orca-env-devsy`。
+  - repository、Devsy context、Orca instance ごとには supervisor を分けない。
+  - 理由: 通常の共通保存先では全 workspace を集約でき、既存の recover／restart の対象範囲と一致する。保存先を分けた環境も独立する。
+  - 主な棄却案: OS ユーザーごとに一つ。複数保存先の登録・管理と操作対象の追加設計が必要になるため。
+- workspace ごとは内部の非同期 task で管理する。OS thread は必須としない。
+  - 理由: workspace ごとの独立した接続管理に、常駐 process の分離は必要ないため。
+  - 主な棄却案: workspace ごとの独立 process。今回の用途で分離を必要とする根拠がなく、常駐 runtime が増えるため。
+- SSH の監視・後始末専用 process は supervisor に集約する。
+  - 理由: worker だけを集約しても接続ごとの監視 process が残れば、資源節約の目的を十分に満たさないため。
+  - 主な棄却案: tunnel worker だけを統合し、proxy guardian などをそのまま残す案。
+- recover／restart の既存の意味を維持する。
+  - 理由: 既存の回復手段で、生存接続の再利用と明示的な接続再作成を扱うため。
+  - 主な棄却案: orphan を放置したまま新規接続する案。残存資源と重複接続を生むため。
+- 旧 worker はユーザー側で kill する。互換・移行処理は作らない。
+  - 理由: ユーザーが旧 worker の終了を担当し、移行コードの保守負担が不要なため。
+  - 主な棄却案: 旧 worker の自動検出・調停・移行。
+- 資源計測ではなく、subprocess 起動コードの監査を受け入れ基準とする。
+  - 理由: ユーザーが、残る起動コードに無駄がなければ合格と指定したため。
+  - 主な棄却案: process 数、メモリ、CPU、起動頻度の実測比較を完了条件にする案。
+
+## 制約
+- SSH 自体が別 process で動作することは許容する。
+- process group の作成だけで親の終了時に子が自動終了すると仮定しない。正常終了・強制終了・次回 recover の各経路で、所有する SSH／transport の生存と回収を整理する。
+- 資源計測を追加の完了条件にしない。
+- 旧 worker の kill はユーザーが担当するため、既存 process を無断で終了させない。
+
+## 対象外
+- 旧 worker との互換実装・自動移行。
+- OS サービス登録や新たな自動再起動機構。
+- 性能ベンチマーク、資源消費の実測比較。
+- cloud resource や remote workspace の構成変更。
+
+## 未検証の前提
+- Unix runtime の子 process 管理と実際の SSH／Devsy transport の構成を、集約後の所有・取消し・回収設計に必要な範囲で確認する。
+- 現行コードには既存 SSH master を引き継ぐ経路があるが、実 SSH に対する worker 強制終了後の引継ぎは設計会話では実行確認していない。
+- 単一 supervisor が、保存された workspace ごとの command・環境変数・Devsy context を独立して扱うための既存実装を確認する。
+
+## 実装時の指示
+- 主な調査対象は `src/tunnel.mbt`、`src/ssh_proxy.mbt`、`src/runtime.mbt`、`src/cmd/main/main.mbt` と関連テスト。
+- 現行の tunnel worker、ssh proxy、proxy worker、transport の役割を確認し、監視専用 process を除去する。実通信に必要な process は用途を明示して評価する。
+- subprocess の起動箇所は常駐経路だけでなく、定期的な状態確認・readiness 確認・再試行からの起動も監査する。
+- 同じ保存先での複数 workspace 管理、異なる保存先の独立性、同時呼出しによる二重起動防止、workspace 単位の停止、接続失敗、正常終了、supervisor 強制終了後の recover、restart を関連する動作検証に含める。
+- 最終報告では削除・統合した監視 process と残る subprocess 起動コードを示し、必要性を説明する。資源削減量は計測していないため数値で主張しない。
