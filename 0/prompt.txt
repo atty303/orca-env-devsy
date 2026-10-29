@@ -1,0 +1,1 @@
+provisioned rootだとworktree使えないよね。しかもremote server接続もできないよね
