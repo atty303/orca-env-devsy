@@ -1,0 +1,1 @@
+devsyの標準で提供されていればそれを選択する。無理ならnative diskは諦める。無理にworkaroundしない
