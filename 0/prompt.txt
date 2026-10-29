@@ -1,0 +1,1 @@
+違う。buildRefはdevcontainerのビルドのための解決で、それをshallow cloneしているのが意図ではない。実際にorcaが指定するrefをshallow cloneするのが基本。そのうえでbuildRefをどうするか
