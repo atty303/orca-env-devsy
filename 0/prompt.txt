@@ -1,0 +1,7 @@
+> Devsy の現行実装では、通常の Docker workspace を削除しても追加の named volume は削除されません（--remove-volumes は Compose 専用）。今回の専用 volume は destroy 後も保持して名前を診断記録へ残す方針でよいですか？ 自動削除には provider ごとのホスト操作を追加する必要があります。
+
+自動削除の設計も含める
+
+> 同名確認〜作成の競合は、同じローカル state を使う adapter 同士なら排他で防げます。ただし Devsy には「既存なら変更せず失敗する」原子的な作成 API がなく、別の Devsy CLI が同じ名前を同時作成する競合までは防げません。今回の保証を adapter 同士の並行作成に限定してよいですか？
+
+adapter 同士の競合を防ぐ範囲にする
