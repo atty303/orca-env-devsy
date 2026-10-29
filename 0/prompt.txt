@@ -1,0 +1,1 @@
+本当に？ 1 supervisor processで内部worker threadでもそのメリットは維持できないか？
