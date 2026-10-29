@@ -1,0 +1,1 @@
+orcaにVMのidle時stop機能はある？
