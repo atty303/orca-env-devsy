@@ -1,0 +1,1 @@
+`/workspace/.orca`だとIDEから開くとき不可視になって使いづらかった。 $dig
