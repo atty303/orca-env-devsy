@@ -1,0 +1,3 @@
+> develop-repositoryスキルのrelease影響確認です。今回の自動stop追加もminor相当として扱ってよいですか？ 実際のrelease・pushは行いません。
+
+minor相当でよい
