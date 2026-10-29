@@ -1,0 +1,11 @@
+bsh 󰕈i-agqveoqh7v2dvloajgqkdwm3xe  Docker  me  chore-orca-adapter-0.2.4-2 󰉋    chore/orca-adapter-0.2.4-2 󱎫 1s442ms  0     (ap-northeast-1)
+❯ gh auth status
+2026-10-19T13:58:59.180+0900    WARN    gh relay: forwarding unavailable        {"operation": "relay.http", "error_type": "timeout"}
+github.com
+  X Failed to log in to github.com account atty303 (default)
+  - Active account: true
+  - The token in default is invalid.
+  - To re-authenticate, run: gh auth login -h github.com
+  - To forget about this account, run: gh auth logout -h github.com -u atty303
+
+起動時は動いていたが今はエラー。なぜ？
