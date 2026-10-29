@@ -1,0 +1,1 @@
+短命ならmasterのssh channelをmuxingに使っているのであれば別途sshを起動していい。もし新規connectionがあれば見直し
