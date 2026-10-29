@@ -1,0 +1,1 @@
+version=$(printf '%s' "$MISE_TOOL_VERSION" | sed 's/+/%2B/g') これは？ curlが勝手にハンドリングしないの？
