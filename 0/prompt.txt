@@ -1,0 +1,1 @@
+devsy workspace listはローカルのdevsyで作ったworkspaceだけ一覧するのか？ cycloudにある他人のdevboxも一覧するか？
