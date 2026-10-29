@@ -1,0 +1,1 @@
+adapter管理外のdevsy sshは保証対象外でいい。それなら？
