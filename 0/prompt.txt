@@ -1,0 +1,1 @@
+Lifecycle operations は短命だから図にするほどじゃない。特にsupervisorのmodelが欲しかったんだよね。supervisor 1 processで複数workspaceを管理してる図のほうがいい。そのworkspaceがsshとorca-serverで分かれてれば例示にもなる
