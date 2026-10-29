@@ -1,0 +1,1 @@
+set -euのmiseのdefault unix_shellと重複していないか
