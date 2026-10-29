@@ -1,0 +1,1 @@
+$dig up済みremoteのorca serverを更新する手段がないとIPCが変更されたとき接続不可になるか
