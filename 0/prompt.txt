@@ -1,0 +1,5 @@
+[Image #1] toolboxから接続すると me@orca-cc0d121c-ad53-4be4-81b9-a3335d0076ad.devsy エラーになった。僕のdotfilesの問題も十分にあるが、どうなってる？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/native-chat-pastes/orca-paste-1792401373049-75ce8aff-5e3e-43a4-99ba-0e0456edcca6.png">
+
+</image>
