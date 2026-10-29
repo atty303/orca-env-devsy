@@ -1,0 +1,8 @@
+> 稼働中の VM を確認すると、Git helper の設定はありますが、認証中継サーバーが動いていません。
+
+VM の helper は localhost:12049 を参照しています。
+そのポートに接続できず、credentials-server プロセスも存在しません。
+/tmp/git-credentials-error.log に同じポートへの connection refused が記録されています。
+Orca 用の SSH トンネルは接続中です。
+
+実際に使ったらこうなった。 $dig この再現テストを作ってから修正したい
