@@ -1,0 +1,3 @@
+> develop-repositoryスキルのrelease影響確認です。今回の変更をminor release相当として扱ってよいですか？ 実際のrelease・pushは行いません。
+
+minor相当でよい
