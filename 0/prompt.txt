@@ -1,0 +1,1 @@
+そのOrcaのorwardAgentが有効な場合に転送はこのadapterでも有効になるのか？
