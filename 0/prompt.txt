@@ -1,0 +1,3 @@
+> Devsy が GitHub forwarding を利用可能と報告していることを確認す
+
+これ、relay有効かどうかは利用者の選択だけど
