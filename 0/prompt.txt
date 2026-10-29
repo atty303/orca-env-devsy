@@ -1,0 +1,3 @@
+> 今回のREADMEのみの変更は、リリースなし（docs、version bumpなし）を推奨します。コミットする場合もこの扱いでよいですか？ develop-repository skillが、このリリース方針の確認を求めています。
+
+リリースなし（推奨）
