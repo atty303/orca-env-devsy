@@ -1,0 +1,1 @@
+macosとlinux両方に同じdotfilesを適用している。しかしlinuxにdotfilesがなくてもrelayは成立しないといけない。その条件で壊れているか？
