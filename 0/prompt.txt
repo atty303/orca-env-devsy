@@ -1,0 +1,7 @@
+$dig 原因は、ホストMacのOrca設定がRemote VMのOrca Serverへ引き継がれていないことです。
+
+MacではデフォルトAgentとブランチ自動命名AgentにCodexが設定され、Claudeも無効化されています。一方、VM側はAgent未指定・無効Agentなしの初期状態でした。自動命名はVM側の設定でAgentを選び、未指定時の内部フォールバックでClaudeを起動します。そのClaudeがworkspace未信頼のエラーで終了し、命名に失敗しています。作業用AgentにCodexを選んでも、自動命名のAgent選択には反映されません。
+
+対応方針は、adapterがOrca Serverをinstallした後、workspaceを利用可能にする前に、ホスト側のAgent・Source Control AI設定をVMへ適用することです。対象はデフォルトAgent、無効Agent一覧、操作別のAgent・モデル・指示・テンプレート、自動命名設定とし、認証情報やホスト固有のパス・探索キャッシュは含めません。
+
+引き継ぎは初回初期化時に行い、resume時はVM側の設定を保持します。
