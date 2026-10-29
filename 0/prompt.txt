@@ -1,0 +1,3 @@
+Command failed: git branch --set-upstream-to origin/work/next-task-20261029 work/next-task-20261029 fatal: the requested upstream branch 'origin/work/next-task-20261029' does not exist hint: hint: If you are planning on basing your work on an upstream hint: branch that already exists at the remote, you may need to hint: run "git fetch" to retrieve it. hint: hint: If you are planning to push out a new local branch that hint: will track its remote counterpart, you may want to use hint: "git push -u" to set the upstream config as you push. hint: Disable this message with "git config set advice.setUpstreamFailure false"
+
+これは？
