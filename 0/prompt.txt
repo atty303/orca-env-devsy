@@ -1,0 +1,66 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy`のadapterを変更し、VMの停止中も監視を継続して、外部resume後に接続を自動復旧してください。
+
+## 目的
+- 外部stop・OrcaのSleepのどちらから停止しても、外部resume後に追加操作なくOrcaを利用できるようにする。
+- 長時間停止中の状態照会を抑える。
+
+## 成功条件
+- 外部stopを検知しても監視workerが終了せず、同じworkspaceが外部で起動されたら接続を復旧する。
+- OrcaのSleep後も同様に外部resumeから復旧でき、Orcaのworkspaceクリックによるresumeも引き続き動作する。
+- SSHトンネルとcredential relayを復旧し、Orca Serverが停止していればインストール済みの実行ファイルから起動する。既存の正常なServerは再利用する。
+- 停止・起動途中の確認間隔は15秒→30秒→1分→2分→5分と延ばし、以後は5分間隔とする。接続復旧後に間隔をリセットする。
+- 削除・UID不一致で監視を終了する。一時的な状態照会・接続失敗は、間隔を空けて再試行する。
+- 自動復旧と明示的なresume・recover・restart・suspend・destroyが競合しても、workerやServerの重複起動、削除後の復旧、ロック待ちの行き詰まりを起こさない。
+- 状態遷移、再試行、待機間隔、復旧結果を既存の診断記録から確認できる。
+- 再現可能なテストと必要なrepository checksが通る。模擬テストと実環境で確認した結果は区別して報告する。
+
+## 決定事項
+- adapterが停止中も監視し、外部起動後に自動復旧する。
+  - 理由: 起動方法によらずOrca接続を復旧するため。
+  - 主な棄却案: 外部resumeスクリプトから明示的にrecoverを呼ぶ方式だけに依存する。
+- OrcaのSleep後も監視を継続し、削除時には終了する。
+  - 理由: 外部stopとSleepで復帰動作を揃えるため。
+  - 主な棄却案: 外部stopだけ監視を継続する。
+- 停止中の確認間隔を最大5分まで段階的に延ばす。
+  - 理由: 短時間の停止には早く追従し、長時間停止の照会回数を抑えるため。
+  - 主な棄却案: 固定15秒間隔、最初から固定5分間隔。
+- 状態確認はDevsy経由で行い、コンテナ確認を無効にする。
+  - 理由: provider非依存を維持し、監視のためのSSH接続を避けるため。
+  - 主な棄却案: adapterからCycloud APIを直接呼ぶ。
+- Runningと同一workspace UIDを確認してから接続する。
+  - 理由: 停止中や置換されたworkspaceへの接続を抑止するため。
+  - 主な棄却案: Devsyに起動禁止のSSH接続経路を追加する。今回は変更対象を広げず、状態確認直後にstopが重なる短い競合は許容する。
+- ホスト再起動・worker喪失後は既存のrecoverで復帰する。
+  - 理由: 新しい常駐サービスを導入せず、今回の対象を生存中workerによる監視に限定するため。
+  - 主な棄却案: OS起動時に監視を自動開始するサービスの新設。
+
+## 制約
+- 変更対象はadapterのみ。OrcaおよびDevsyの変更は行わない。
+- 自動監視・復旧からVMのup・start・stop・削除・再作成を明示的に実行しない。ユーザー操作による既存のresume・suspend・destroyの責務は維持する。
+- リモートOrca Serverの強制終了、ソフトウェア再インストール、認証情報リセットは行わない。
+- 既存のworkspace UID照合と接続先情報を維持する。
+- 既存VMの停止・起動・削除など、実環境への変更操作は今回の実装依頼に含めない。
+- commit・push・releaseは依頼に含めない。
+
+## 対象外
+- VM内チェックアウトのディレクトリ名・displayNameの調整。
+- Orca側のruntime状態・サイドバー表示の修正。
+- ホスト起動時の自動復旧サービス。
+- provider単位の一括stop・resumeスクリプトの変更。
+
+## 未検証の前提
+- CycloudのGetWorkspaceリクエスト自体の課金有無は未確認。無料とは仮定しない。
+- 現行Sleepの監視解除・worker終了処理と、自動監視を維持する変更の整合を確認する。
+- 生存中workerによるServer復旧を既存recover処理と共有する際、ロックやworker待機が循環しないことを確認する。
+
+## 実装時の指示
+- 調査時、`src/tunnel.mbt`のworkerはrunning=falseでworkspace-stoppedを記録して終了していた。`src/runtime.mbt`のsuspendはVM停止後にclose_tunnelを呼んでいた。現在のcheckoutで再確認して変更する。
+- 監視ではローカルworkspace情報からUIDを照合し、`devsy workspace status <ID> --container-status=false --result-format json`相当で状態を取得する。
+- 今回のCycloud providerの状態照会は、provider.shからcycloud devbox workspace getを経てDevbox v2 WorkspaceService.GetWorkspaceを呼ぶ。provider固有の処理はadapterに持ち込まない。
+- 既存のrecover／restartと復旧処理を共有し、停止中の待機と接続準備完了を区別する。待機中のworker生存だけでresume成功と判定しない。
+- 明示的なrecoverは、最大5分の監視待機に妨げられず復旧を試行できるようにする。
+- 停止・起動途中・一時エラー・削除・UID不一致を区別し、照会失敗を削除扱いしない。
+- 待機間隔、復旧、キャンセル、明示操作との競合を再現可能に検証する。
