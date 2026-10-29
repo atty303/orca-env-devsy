@@ -1,0 +1,1 @@
+なら `/workspaces/.orca` をvolume、`/workspaces/.orca/.profile`をORCA_USER_DATA_PATH、`/workspaces/.orca`をworktreeBasePathにするのがよさそう
