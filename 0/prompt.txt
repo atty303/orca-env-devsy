@@ -1,0 +1,3 @@
+> develop-repository skill の release 影響確認です。今回の変更を fix／patch 相当として扱ってよいですか？（実装・検証は回答待ちでも進め、release は行いません。）
+
+fix／patch 相当でよい
