@@ -1,0 +1,1 @@
+git credential relayの所有権再取得を削除
