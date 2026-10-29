@@ -1,0 +1,4 @@
+orca-env-devsy: create
+orca-env-devsy: workspace-create
+
+時間のかかる処理の進捗がまったくわからない。 移植元のdevsy.tsはtimestampや経過時間付き詳細出力をしていた $dig
