@@ -1,0 +1,1 @@
+connection: orca-server を使うメリットとしてnative chatはこの接続できないと機能しないことを明記
