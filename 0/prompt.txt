@@ -1,0 +1,1 @@
+DEVSY_GH_INSTANCEが変化する条件は？ adapter側での対応イベントは？
