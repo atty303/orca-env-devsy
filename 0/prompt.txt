@@ -1,0 +1,70 @@
+# 実装依頼
+
+## 依頼
+`/Users/a13400/src/atty303/orca-env-devsy` で、新規 Devsy workspace の命名と、remote Orca の profile・worktree の永続化を実装してください。既存環境の移行実装は不要です。
+
+## 目的
+- Devsy の一覧や CLI で環境を識別しやすくする。
+- devcontainer 再作成後も、作業ファイルと remote Orca の登録・設定を引き継ぐ。
+- adapter の利用条件として、各 repo に Orca 専用 mount 設定を要求しない。
+
+## 成功条件
+- 新規 Devsy workspace ID は `<repo名>-<動物名>-<2文字suffix>` になる。例：`glaze-otter-k7`。
+- 動物名はソースに埋め込んだ固定辞書約64語からランダムに選ぶ。短く読みやすい小文字ASCIIの語を使う。
+- suffix は英小文字・数字からランダムに2文字選ぶ。
+- Devsy の文字・長さ制約に適合し、同名衝突時は再生成する。既存 workspace を誤って再利用・変更しない。
+- 生成した workspace ID を state に保存し、resume・suspend・destroy・recover などで同じ ID を使う。Devsy workspace UID による同一性確認も維持する。
+- adapter が Devsy の `--mount` で専用の永続 volume を `/workspaces/.orca` に追加する。
+- remote Orca Server を `ORCA_USER_DATA_PATH=/workspaces/.orca/.profile` で起動する。
+- 対象 project の `worktreeBasePath=/workspaces/.orca` を、worktree 作成前に公開 CLI 経由で設定する。
+- checkout・worktree・profile が再作成後に保持され、同じ profile で Orca Server を利用できることを検証する。
+- `mise run check` と `mise run test` が通る。実環境で確認できなかった境界は明示する。
+
+## 決定事項
+- workspace ID の各部分には別の役割を持たせる。
+  - repo名：プロジェクトをおおざっぱに識別する。
+  - 動物名：目視や会話で環境を識別しやすくする。
+  - suffix：同じ動物名が選ばれた場合の衝突を避ける。
+  - 理由：`orca-UUID` より短く読みやすくするため。
+  - 主な棄却案：長いUUIDの維持、repo名だけ、動物名だけ。
+- 辞書は命名処理のソース内に固定配列として持つ。
+  - 理由：実行時ファイル・ネットワーク取得・依存packageを増やさないため。
+  - 主な棄却案：外部辞書サービスや命名ライブラリ。
+- profile と worktree は一つの専用 volume にまとめる。
+  - 理由：repo の devcontainer 設定に依存せず、adapter が永続化を準備できるため。
+  - 主な棄却案：揮発する `/home`、checkout 内への配置、共有 devcontainer 設定への Orca 用 mount 追加。
+- `nestWorkspaces=true` の配置を使う。
+  - 例：`/workspaces/.orca/glaze/test2`
+  - 理由：profile と worktree を分け、checkout basename ごとに配置できるため。
+  - 主な棄却案：なし。
+- checkout basename は repo 側の任意の devcontainer 設定に任せる。
+  - 未指定なら新しい Devsy workspace ID が標準 checkout basename になる。
+  - `/workspaces/glaze` を指定していれば Orca の既定 project 名と worktree の親名も `glaze` になる。
+  - 理由：命名のために Devsy 本体や checkout の実体を変更しないため。
+  - 主な棄却案：Devsy 本体の変更、checkout の移動・別名化。
+
+## 制約
+- Devsy 本体と各利用 repo の共有 `devcontainer.json` は変更しない。
+- Orca client の設定変更を前提にしない。
+- 既存の staged・unstaged 差分を確認し、今回と無関係な変更を保持する。
+- 実環境での状態変更を伴う検証は、承認された使い捨て環境で行う。
+- deploy・release・push は含めない。
+
+## 対象外
+- 既存 workspace・profile・worktree の移行、改名、移動。
+- checkout basename の adapter による強制変更。
+- 各 repo への devcontainer 設定追加。
+
+## 未検証の前提
+- Devsy `1.25.0-beta.3` の `workspace up --mount` は CLI help と現行ソースで確認済みだが、専用 volume の作成・権限・再作成時の再利用は未検証。
+- remote Orca の公開 CLI による project 登録・setup 設定と、その適用順序を実装前に再確認する。
+- profile を保持した再作成後に、既存 client 接続をどこまで継続できるかは未検証。
+- 専用 volume の削除・残留について、Devsy の cleanup 動作を確認する。
+
+## 実装時の指示
+- 元の `ORCA_VM_INSTANCE_ID` と、新たに生成する Devsy workspace ID を混同しない。
+- repo名は `ORCA_REPO_URL`、未指定なら既存の origin URL 取得経路から導出する。ローカル worktree の basename を使わない。
+- 同名確認と作成の競合でも、他の workspace を誤って採用・削除しない。
+- volume 名は workspace の同一性に結び付け、再作成で安定して再利用できるようにする。
+- volume の所有権と cleanup 対象を明確にし、作成失敗・destroy 時の扱いを確認する。
+- 既存環境向けの移行処理は追加しない。
