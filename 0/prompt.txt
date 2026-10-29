@@ -1,0 +1,84 @@
+# 実装依頼
+
+## 依頼
+/Users/a13400/src/atty303/orca-env-devsy の supervisor・SSH 管理を見直し、idle 観測専用の常駐 SSH session と、SSH の監視・後始末専用 process を除去してください。短命の SSH 操作は管理用 master に多重化し、実装・検証後に残る subprocess 起動コードを報告してください。
+
+既存の状態保存ディレクトリ単位の supervisor 集約を維持し、その上で今回の変更を行ってください。
+
+## 目的
+- 多数の agent／workspace を管理する host の常駐 runtime と監視専用 process の重複をなくす。
+- SSH が持つ接続・channel の多重化を利用し、独自の通信・引継ぎ機構の保守を増やさない。
+- workspace ごとの接続管理、idle 停止、recover／restart の動作を維持する。
+
+## 成功条件
+- 同じ状態保存ディレクトリの workspace を、一つの supervisor が独立した非同期 task で管理する。
+- 同時呼出しでも supervisor が二重起動せず、異なる保存先は独立する。
+- idle 観測は supervisor 内の task が現行の30秒間隔で行う。各回、管理用 master に多重化する短命の SSH session で既存の観測用 JavaScript を一回実行し、結果取得後に終了する。
+- idle 観測専用の常駐 SSH session、常駐の観測 server、master の stdin/stdout を再接続する専用機構を追加しない。
+- 各観測で terminal と native chat の新鮮な状態を取得する。不完全な結果や接続・観測失敗は unknown とし、idle の根拠にしない。停止直前の再確認を維持する。
+- remote command、bulk activity、Codex 認証など、adapter の短命 SSH 操作は管理用 master を使う。master が利用不能な場合、新規の独立接続へ fallback せず、操作の期限内で既存の接続回復を待ち、回復しなければ操作に応じて失敗または unknown とする。
+- SSH の監視・後始末だけを目的とする常駐 process を起動しない。
+- workspace ごとの設定、command、環境変数、Devsy context、接続状態、再試行、停止を独立して扱い、一つの接続エラーで他 workspace の管理を終了させない。
+- recover は生存する SSH master と transport を引き継ぎ、切れている接続を復旧する。
+- restart は所有する既存接続と transport の終了確認後に再作成する。残存 process を放置したまま接続を重複起動しない。
+- 関連する動作テストと `mise run check`、`mise run test` を通す。
+- 最終報告で subprocess の全起動箇所について、コードへの参照、用途、起動頻度・条件、常駐の有無を示す。
+
+## 決定事項
+- supervisor の一意性は状態保存ディレクトリ単位とする。
+  - 保存先: `$XDG_STATE_HOME/orca-env-devsy`。XDG_STATE_HOME が未指定または空なら `$HOME/.local/state/orca-env-devsy`。
+  - 理由: 通常の共通保存先で全 workspace を集約でき、recover／restart の対象範囲とも一致する。
+  - 主な棄却案: repository、Devsy context、Orca instance ごとの分離。常駐 runtime が重複するため。
+- workspace と idle 監視は supervisor 内の非同期 task で管理する。
+  - 理由: 独立した接続管理に workspace ごとの常駐 process は必要ないため。
+  - 主な棄却案: workspace ごとの worker process。
+- idle 観測は30秒ごとの短命 SSH session とし、管理用 master の channel を使う。
+  - 理由: 既存の一回実行の観測処理と SSH 多重化を利用でき、常駐 session や専用通信機構が不要になるため。
+  - 主な棄却案: 観測専用の常駐 SSH session、master の stdio による観測と入出力の再引継ぎ、port forwarding 先の常駐観測 server。
+- SSH の多重化を維持する。
+  - 理由: コマンド実行や転送のために必要な仕組みが既にあり、独自 dispatcher の保守を避けられるため。
+  - 主な棄却案: stdio 上に全操作を扱う独自 RPC・多重化 protocol を実装する案。
+- 管理用 master を使う短命の ssh process は許容する。
+  - 理由: 新しい独立接続を作らず、必要な操作の間だけ SSH channel を利用するため。
+  - 主な棄却案: master 不在時の独立接続への fallback。
+- SSH proxy は必要な所有情報の登録後、実 transport に exec する構成を基本とし、常駐の中継・監視 wrapper を残さない。
+  - 理由: 通信に必要な transport と監視だけの runtime を分離し、後者を supervisor に集約するため。
+  - 主な棄却案: stdin の中継、EOF 検出、後始末待機のために proxy runtime を常駐させる案。
+- recover／restart の既存の意味を維持する。
+  - 理由: 生存接続の再利用と、明示的な接続再作成を既存の操作で扱うため。
+  - 主な棄却案: orphan を残して新規接続する案。
+- 資源計測ではなく subprocess 起動コードの監査を受け入れ基準とする。
+  - 理由: 残る起動コードに無駄がないことを確認するため。
+  - 主な棄却案: process 数、メモリ、CPU の実測を完了条件にする案。
+- commit する場合の release 影響は perf による patch 相当とする。
+  - 理由: 既存の利用者向け動作を維持する資源消費の改善であるため。
+  - 主な棄却案: なし。
+
+## 制約
+- SSH 自体と実通信に必要な Devsy transport が別 process で動作することは許容する。
+- process group の作成だけで親の終了時に子が自動終了すると仮定しない。
+- 正常終了、強制終了、次回 recover の各経路で、所有する SSH／transport の生存判定と回収を扱う。PID の再利用を考慮する。
+- master の起動を必要とする初期設定と idle 観測の初期化を循環依存にしない。
+- 旧 worker の kill はユーザーが担当する。互換・移行処理を作らず、既存 process を無断で終了させない。
+- cloud resource や remote workspace の構成を変更しない。
+
+## 対象外
+- 旧 worker の自動検出・調停・移行。
+- OS サービス登録や新たな自動再起動機構。
+- 性能ベンチマーク、資源消費の実測比較。
+- Orca 自身が利用する接続を adapter の管理用 master へ統合する変更。
+
+## 未検証の前提
+- 観測用 JavaScript の一回実行経路が、各回の native chat の初期 snapshot と復元完了を確認し、常駐経路と同等の判定材料を取得できること。
+- 実際の Devsy transport とその子 process の終了挙動、および supervisor 強制終了後の所有情報による引継ぎ・回収。
+- exec 前後の process identity、process group、signal mask、stdio の扱いが対応 platform で成立すること。
+
+## 実装時の指示
+- 主な対象は `src/tunnel.mbt`、`src/idle.mbt`、`src/activity_probe.mbt`、`src/ssh_proxy.mbt`、`src/supervisor.mbt`、`src/runtime.mbt`、`src/bulk.mbt`、`src/codex.mbt` と関連テスト。
+- idle 観測の一回実行経路を利用し、常駐観測 session にだけ必要だった状態・protocol・後始末を除去する。単なる snapshot の取得で既存の freshness・完全性の確認を省略しない。
+- 短命 SSH の呼出しを全件確認し、管理用 control socket の指定と、master 不在時に独立接続を作らない指定を揃える。
+- 定期的な状態確認、readiness、再試行、失敗時の後始末も含め、subprocess の起動を監査する。
+- 同じ保存先での複数 workspace、異なる保存先、同時起動、workspace 単位の停止・接続失敗、正常終了、supervisor 強制終了後の recover、restart を検証する。
+- idle 観測ごとの session 終了、観測失敗時の unknown、停止直前の再確認、master 不在時に独立接続しないことを検証する。
+- 一時 fixture による実 OpenSSH の検証と、実 Devsy workspace に対する検証を区別して報告する。
+- 最終報告では削除・統合した監視 process と残る subprocess 起動コードを示し、必要性を説明する。未計測の資源削減量を数値で主張しない。
