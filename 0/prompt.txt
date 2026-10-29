@@ -1,0 +1,1 @@
+devsy beta依存機能は後にstableになるからそこはlatest依存でいい
