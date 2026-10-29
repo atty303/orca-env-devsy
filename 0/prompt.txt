@@ -1,0 +1,1 @@
+A. これはlocal masterか？ remote masterか？
