@@ -1,0 +1,1 @@
+管理用 SSH masterのchannelを使うのはadapterだけでorca/devsyは接続しないよね？
