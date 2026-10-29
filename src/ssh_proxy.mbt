@@ -36,7 +36,11 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
   }
   let present = group_exists(pid)
   guard present >= 0 else {
-    raise AdapterError("Cannot inspect transport process group")
+    raise AdapterError(
+      "Cannot inspect transport process group (errno " +
+      (-present).to_string() +
+      ")",
+    )
   }
   present == 1
 }

@@ -81,12 +81,15 @@ int64_t orca_process_start(int pid) {
 }
 
 int orca_group_exists(int pid) {
-  if (kill(-pid, 0) != 0) return errno == ESRCH ? 0 : -1;
+  if (kill(-pid, 0) != 0) {
+    int error = errno;
+    return error == ESRCH ? 0 : -error;
+  }
 #ifdef __APPLE__
   return 1;
 #else
   DIR *proc = opendir("/proc");
-  if (!proc) return -1;
+  if (!proc) return -errno;
   int unknown = 0;
   struct dirent *entry;
   while ((entry = readdir(proc))) {
@@ -97,17 +100,21 @@ int orca_group_exists(int pid) {
     snprintf(path, sizeof(path), "/proc/%ld/stat", member);
     FILE *file = fopen(path, "r");
     if (!file) {
-      if (errno != ENOENT && errno != ESRCH) unknown = 1;
+      if (errno != ENOENT && errno != ESRCH) unknown = errno;
       continue;
     }
     char *read = fgets(buffer, sizeof(buffer), file);
+    int read_error = errno;
     fclose(file);
-    if (!read) { unknown = 1; continue; }
+    if (!read) {
+      unknown = read_error != 0 ? read_error : EIO;
+      continue;
+    }
     char *field = strrchr(buffer, ')');
     char state;
     long parent, group;
     if (!field || sscanf(field + 2, "%c %ld %ld", &state, &parent, &group) != 3) {
-      unknown = 1;
+      unknown = EIO;
       continue;
     }
     if (group == pid && state != 'Z' && state != 'X' && state != 'x') {
@@ -116,7 +123,7 @@ int orca_group_exists(int pid) {
     }
   }
   closedir(proc);
-  return unknown ? -1 : 0;
+  return unknown ? -unknown : 0;
 #endif
 }
 
