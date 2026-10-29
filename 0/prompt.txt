@@ -1,0 +1,7 @@
+これからレビューする。修正は編集だけしてcommitは完了まで保留
+
+Use it to give tasks separate environments, keep project dependencies off your
+host, or offer several compute options without writing lifecycle scripts for
+each provider.
+
+これはagentをYOLOモードでも安全な環境で動かす利益が主体
