@@ -1,0 +1,1 @@
+READMEのProviders and reusable profilesはレシピでprofile指定する例を追加して
