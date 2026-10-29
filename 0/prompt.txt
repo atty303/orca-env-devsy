@@ -1,0 +1,1 @@
+実際のadapterの利用でもできればcheckoutにmount使いたくない
