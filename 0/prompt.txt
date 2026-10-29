@@ -1,0 +1,1 @@
+じゃあorca-worktressはcheckout配下に衝突しないように配置するのがいいのでは。
