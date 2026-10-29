@@ -1,0 +1,3 @@
+> 将来この変更をcommitする際のrelease影響は、機能追加としてfeat／minorでよいですか？ develop-repositoryスキルのrelease判断規則による確認です。今回の実装・検証は続け、commitは行いません。
+
+fix
