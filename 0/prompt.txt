@@ -1,0 +1,1 @@
+devsy forkに還元すべきadapterのdevsy workaroundはあるか？
