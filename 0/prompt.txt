@@ -1,0 +1,5 @@
+[Image #1] これで作った
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/0cf6ffe1-3916-4581-98c0-144f3f55c04e/orca-paste-1793249454776-16389ff0-7670-4e6f-8f13-d74c4a700093.png">
+
+</image>
