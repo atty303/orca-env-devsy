@@ -1,0 +1,1 @@
+A. relayが使えないserverを再利用できてもそれはserverとして実用にならない
