@@ -742,6 +742,278 @@ async test "task checkout works offline for present commits and fetches only mis
 }
 
 ///|
+async test "orca-worktree initializes origin heads without changing user fetch defaults" {
+  let directory = @fs.tmpdir(prefix="orca-worktree-git-init")
+  defer @fs.rmdir(directory, recursive=true)
+  let env = {
+    "PATH": @env.get_env_var("PATH").unwrap_or("/usr/bin:/bin"),
+    "HOME": directory + "/home",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_TERMINAL_PROMPT": "0",
+  }
+  @fs.mkdir(directory + "/home", recursive=true)
+  @fs.mkdir(directory + "/bin")
+  let (status, git_path, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", "command -v git"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  env.set("REAL_GIT", git_path.text().trim().to_owned())
+  env.set("GIT_FETCH_LOG", directory + "/fetch-args")
+  @fs.write_file(
+    directory + "/bin/git",
+    (
+      #|#!/bin/sh
+      #|record=false
+      #|first=$1
+      #|previous=
+      #|for arg in "$@"; do
+      #|  if test "$first" = -C && test "$previous" = fetch && test "$arg" = origin; then record=true; fi
+      #|  if test "$first" = fetch && test "$arg" = '+refs/heads/*:refs/remotes/origin/*'; then record=true; fi
+      #|  previous=$arg
+      #|done
+      #|if test "$record" = true; then printf '%s\n' "$*" >> "$GIT_FETCH_LOG"; fi
+      #|exec "$REAL_GIT" "$@"
+    ),
+    permission=0o700,
+  )
+  env.set("PATH", directory + "/bin:" + env.get("PATH").unwrap())
+  let setup =
+    #|set -eu
+    #|git init -q "$1/source"
+    #|git -C "$1/source" checkout -qb main
+    #|git -C "$1/source" config uploadpack.allowFilter true
+    #|printf 'main first\n' > "$1/source/main.txt"
+    #|git -C "$1/source" add main.txt
+    #|git -C "$1/source" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm main-first
+    #|printf 'main second\n' >> "$1/source/main.txt"
+    #|git -C "$1/source" add main.txt
+    #|git -C "$1/source" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm main-second
+    #|git -C "$1/source" checkout -qb feature
+    #|printf 'feature\n' > "$1/source/feature.txt"
+    #|git -C "$1/source" add feature.txt
+    #|git -C "$1/source" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm feature
+    #|git -C "$1/source" checkout -q main
+    #|git clone --depth=1 --single-branch --branch main "file://$1/source" "$1/shallow"
+    #|git clone --single-branch --branch main "file://$1/source" "$1/full"
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", setup, "sh", directory],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+
+  let shallow = directory + "/shallow"
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(shallow)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, output, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_fetch_script(shallow)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_false(output.text().contains("ORCA_FILTER_FALLBACK:"))
+  let (status, output, errors) = @process.collect_output(
+    "git",
+    ["-C", shallow, "show-ref", "--verify", "refs/remotes/origin/feature"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_true(output.text().trim() != "")
+  let (status, output, errors) = @process.collect_output(
+    "git",
+    ["-C", shallow, "config", "--get", "remote.origin.partialclonefilter"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_eq(output.text(), "\n")
+  let (status, _, errors) = @process.collect_output(
+    "git",
+    ["-C", shallow, "branch", "work/feature", "refs/remotes/origin/feature"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "git",
+    [
+      "-C", shallow, "branch", "--set-upstream-to", "origin/feature", "work/feature",
+    ],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, output, errors) = @process.collect_output(
+    "git",
+    ["-C", shallow, "show", "origin/feature:feature.txt"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_eq(output.text(), "feature\n")
+  let initial_fetch = @fs.read_file(directory + "/fetch-args").text()
+  assert_true(initial_fetch.contains("--depth=1"))
+  assert_true(initial_fetch.contains("--filter=tree:0"))
+  assert_true(initial_fetch.contains("+refs/heads/*:refs/remotes/origin/*"))
+
+  let add_normal_branch =
+    #|git -C "$1/source" checkout -qb normal main
+    #|printf 'normal\n' > "$1/source/normal.txt"
+    #|git -C "$1/source" add normal.txt
+    #|git -C "$1/source" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm normal
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", add_normal_branch, "sh", directory],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", "git -C " + quote(shallow) + " fetch origin"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, output, errors) = @process.collect_output(
+    "git",
+    ["-C", shallow, "show", "origin/normal:normal.txt"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_eq(output.text(), "normal\n")
+  let fetch_log = @fs.read_file(directory + "/fetch-args")
+    .text()
+    .split("\n")
+    .to_array()
+  assert_false(fetch_log[1].contains("--filter="), msg=fetch_log.join("\n"))
+  assert_false(fetch_log[1].contains("--depth="), msg=fetch_log.join("\n"))
+
+  let full = directory + "/full"
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(full)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_fetch_script(full)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, output, errors) = @process.collect_output(
+    "git",
+    ["-C", full, "rev-parse", "--is-shallow-repository"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_eq(output.text().trim(), "false")
+  let full_fetches = @fs.read_file(directory + "/fetch-args")
+    .text()
+    .split("\n")
+    .to_array()
+  assert_true(
+    full_fetches[2].contains("--filter=tree:0"),
+    msg=full_fetches.join("\n"),
+  )
+  assert_false(
+    full_fetches[2].contains("--depth="),
+    msg=full_fetches.join("\n"),
+  )
+
+  env.set("GIT_CONFIG_COUNT", "1")
+  env.set("GIT_CONFIG_KEY_0", "remote.origin.partialclonefilter")
+  env.set("GIT_CONFIG_VALUE_0", "blob:none")
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(shallow)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, output, errors) = @process.collect_output(
+    "/bin/sh",
+    [
+      "-c",
+      "git -C " +
+      quote(shallow) +
+      " config --get remote.origin.partialclonefilter",
+    ],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_eq(output.text().trim(), "blob:none")
+  env.remove("GIT_CONFIG_COUNT")
+  env.remove("GIT_CONFIG_KEY_0")
+  env.remove("GIT_CONFIG_VALUE_0")
+
+  let conflict = directory + "/conflict"
+  let make_conflict =
+    #|git clone --depth=1 --single-branch --branch main "file://$1/source" "$1/conflict"
+    #|git -C "$1/conflict" config --add remote.origin.fetch '^refs/heads/release/*'
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", make_conflict, "sh", directory],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(conflict)],
+    extra_env=env,
+  )
+  assert_true(status != 0)
+  assert_true(
+    errors.text().contains("remote.origin.fetch excludes branch refs"),
+  )
+
+  let no_promisor = directory + "/no-promisor"
+  let make_no_promisor =
+    #|git clone --single-branch --branch main "file://$1/source" "$1/no-promisor"
+    #|git -C "$1/no-promisor" config remote.origin.promisor false
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", make_no_promisor, "sh", directory],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(no_promisor)],
+    extra_env=env,
+  )
+  assert_true(status != 0)
+  assert_true(
+    errors.text().contains("remote.origin.promisor is explicitly false"),
+  )
+
+  let no_filter = directory + "/no-filter"
+  let make_no_filter =
+    #|git -C "$1/source" config uploadpack.allowFilter false
+    #|git clone --depth=1 --single-branch --branch main "file://$1/source" "$1/no-filter"
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", make_no_filter, "sh", directory],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(no_filter)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, output, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_fetch_script(no_filter)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_true(output.text().contains("ORCA_FILTER_FALLBACK:"))
+}
+
+///|
 async test "Codex addon delivers synthetic access data only and excludes secrets from output and diagnostics" {
   let (directory, env) = fixture()
   defer cleanup_fixture(directory)

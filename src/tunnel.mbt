@@ -707,6 +707,27 @@ fn connection_timeout_message() -> String raise {
 }
 
 ///|
+fn create_connection_timeout_message() -> String raise {
+  let timeout = connection_timeout_ms()
+  let duration = if timeout % 1000 == 0 {
+    "\{timeout / 1000} seconds"
+  } else {
+    "\{timeout} ms"
+  }
+  match create_recording.phase {
+    "worktree-git-config" =>
+      "Git promisor and branch-ref configuration timed out within the " +
+      duration +
+      " environment-creation deadline"
+    "worktree-git-fetch" =>
+      "Initial origin branch fetch timed out within the " +
+      duration +
+      " environment-creation deadline"
+    _ => "SSH and relay readiness timed out after " + duration
+  }
+}
+
+///|
 fn monitor_delay(attempt : Int32) -> Int32 {
   match attempt {
     0 => 15000
@@ -861,21 +882,71 @@ priv suberror ConnectionDeadline {
 
 ///|
 async fn[T] connection_timeout(deadline : UInt64, run : async () -> T) -> T {
+  connection_timeout_for(deadline, run, creation=false)
+}
+
+///|
+async fn[T] creation_timeout(deadline : UInt64, run : async () -> T) -> T {
+  connection_timeout_for(deadline, run, creation=true)
+}
+
+///|
+async fn[T] connection_timeout_for(
+  deadline : UInt64,
+  run : async () -> T,
+  creation~ : Bool,
+) -> T {
   let now = @env.now()
   if deadline <= now {
-    raise AdapterError(connection_timeout_message())
+    if creation {
+      save_create_connection_timeout()
+      raise AdapterError(create_connection_timeout_message())
+    } else {
+      raise AdapterError(connection_timeout_message())
+    }
   }
   @async.with_timeout((deadline - now).to_int(), run, error=ConnectionDeadline) catch {
-    ConnectionDeadline => {
+    ConnectionDeadline =>
+      if creation {
+        save_create_connection_timeout()
+        raise AdapterError(create_connection_timeout_message())
+      } else {
+        save_diagnostic(
+          "connection-readiness",
+          "timeout",
+          error_type="readiness_timeout",
+          timeout_ms=connection_timeout_ms(),
+        )
+        raise AdapterError(connection_timeout_message())
+      }
+    error => raise error
+  }
+}
+
+///|
+async fn save_create_connection_timeout() -> Unit {
+  match create_recording.phase {
+    "worktree-git-config" =>
+      save_diagnostic(
+        "configure-worktree-git",
+        "timeout",
+        error_type="git_config_timeout",
+        timeout_ms=connection_timeout_ms(),
+      )
+    "worktree-git-fetch" =>
+      save_diagnostic(
+        "fetch-origin-branches",
+        "timeout",
+        error_type="git_fetch_timeout",
+        timeout_ms=connection_timeout_ms(),
+      )
+    _ =>
       save_diagnostic(
         "connection-readiness",
         "timeout",
         error_type="readiness_timeout",
         timeout_ms=connection_timeout_ms(),
       )
-      raise AdapterError(connection_timeout_message())
-    }
-    error => raise error
   }
 }
 

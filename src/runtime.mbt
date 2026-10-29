@@ -911,7 +911,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     initial_output
   }
   let deadline = connection_deadline()
-  let retry = connection_timeout(deadline, async fn() {
+  let retry = creation_timeout(deadline, async fn() {
     let created = workspace(state).unwrap()
     guard required(created, "uid") == uid else {
       raise AdapterError("Created workspace identity does not match request")
@@ -943,6 +943,35 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     }
     ensure_ssh_worker(state, port, deadline~)
     ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
+    if mode == "orca-worktree" {
+      create_recording.phase = "worktree-git-config"
+      ignore(
+        remote(
+          state,
+          worktree_git_config_script(root),
+          "configure-worktree-git",
+        ),
+      )
+      create_recording.phase = "worktree-git-fetch"
+      let fetch_output = remote(
+        state,
+        worktree_git_fetch_script(root),
+        "fetch-origin-branches",
+      )
+      if fetch_output.contains(
+          "ORCA_FILTER_FALLBACK:server_does_not_support_filter",
+        ) {
+        progress_message(
+          "origin branch initialization: Git server does not support filtering; Git fetched the full objects",
+        )
+        save_diagnostic(
+          "origin-branch-filter",
+          "fallback",
+          error_type="filter_unsupported",
+          evidence={ "fallback": "full-objects" },
+        )
+      }
+    }
     create_recording.phase = "checkout-verification"
     let actual_commit = remote(
         state,
@@ -1053,6 +1082,64 @@ fn git_object_storage_script(root : String) -> String {
     #|  test "$attempt" -lt 5 || exit "$status"
     #|  sleep 1
     #|done
+  )
+}
+
+///|
+fn worktree_git_config_script(root : String) -> String {
+  "cd " +
+  quote(root) +
+  " && " +
+  (
+    #|set -eu
+    #|promisor=$(git config --bool --get remote.origin.promisor 2>/dev/null) || status=$?
+    #|if test "${status:-0}" -eq 0; then
+    #|  test "$promisor" = true || { echo 'remote.origin.promisor is explicitly false; lazy Git object retrieval cannot work' >&2; exit 78; }
+    #|else
+    #|  test "$status" -eq 1 || exit "$status"
+    #|  git config --local remote.origin.promisor true
+    #|fi
+    #|unset status
+    #|if git config --get remote.origin.partialclonefilter >/dev/null 2>&1; then :; else
+    #|  status=$?
+    #|  test "$status" -eq 1 || exit "$status"
+    #|  # An empty default keeps later user fetches unfiltered; explicit filters remain untouched.
+    #|  git config --local remote.origin.partialclonefilter ''
+    #|fi
+    #|unset status
+    #|expected='+refs/heads/*:refs/remotes/origin/*'
+    #|fetches=$(git config --get-all remote.origin.fetch 2>/dev/null) || status=$?
+    #|if test "${status:-0}" -ne 0; then
+    #|  test "$status" -eq 1 || exit "$status"
+    #|  fetches=''
+    #|fi
+    #|found=false
+    #|while IFS= read -r refspec; do
+    #|  if test "$refspec" = "$expected"; then found=true; fi
+    #|  case "$refspec" in '^refs/heads/'*) echo 'remote.origin.fetch excludes branch refs; all origin branches cannot be tracked' >&2; exit 78 ;; esac
+    #|done <<EOF
+    #|$fetches
+    #|EOF
+    #|if test "$found" = false; then git config --local --add remote.origin.fetch "$expected"; fi
+  )
+}
+
+///|
+fn worktree_git_fetch_script(root : String) -> String {
+  "cd " +
+  quote(root) +
+  " && " +
+  (
+    #|set -eu
+    #|shallow=$(git rev-parse --is-shallow-repository)
+    #|set -- fetch --no-tags --no-recurse-submodules --filter=tree:0
+    #|if test "$shallow" = true; then set -- "$@" --depth=1; fi
+    #|set -- "$@" origin '+refs/heads/*:refs/remotes/origin/*'
+    #|if output=$(git "$@" 2>&1); then status=0; else status=$?; fi
+    #|if test "$status" -ne 0; then printf '%s\n' "$output"; exit "$status"; fi
+    #|case "$output" in
+    #|  *'filtering not recognized by server'*) printf '%s\n' 'ORCA_FILTER_FALLBACK:server_does_not_support_filter' ;;
+    #|esac
   )
 }
 
