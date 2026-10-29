@@ -1,0 +1,1 @@
+。Dev Containersのuniversalはx86-64限定なので ← サンプルだからそれでもいいやん
