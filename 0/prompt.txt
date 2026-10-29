@@ -1,0 +1,1 @@
+Dockerfile必須だっけ？microsoftが提供するimageに必要なlibraryが最初から入ってるものがあるのでは？
