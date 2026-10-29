@@ -1,0 +1,5 @@
+<environment_context>
+  <current_date>2026-10-26</current_date>
+  <timezone>Asia/Tokyo</timezone>
+  <filesystem><workspace_roots><root>/Users/a13400/src/atty303/orca-env-devsy</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+</environment_context>
