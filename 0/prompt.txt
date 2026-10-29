@@ -1,0 +1,1 @@
+B. repo fetchは最低限にしたい。それがshallowの目的だ。full cloneにfallbackして動いても期待ではない。満たす実装にまで詰められているか？
