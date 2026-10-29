@@ -1,0 +1,4 @@
+❯ ( sign_test_dir=$(mktemp -d) || exit; trap 'rm -rf -- "$sign_test_dir"' EXIT; git init -q "$sign_test_dir" && git -C "$sign_test_dir" -c user.name='Signing Test' -c user.email=signing-test@example.invalid commit-tree -S -m 'Signing test' "$(git -C "$sign_test_dir" mktree </dev/null)" >/dev/null && echo 'Signing OK' )
+Signing OK
+
+mac側を絶対パスにした
