@@ -1,0 +1,1 @@
+orcaから開いたterminalでも成功した
