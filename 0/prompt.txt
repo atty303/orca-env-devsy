@@ -1,0 +1,1 @@
+つまりorca serverはmulti processってこと？
