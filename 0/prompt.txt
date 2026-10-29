@@ -1,0 +1,1 @@
+ならこれと同じことをやる orca-env-devsy restart コマンドを作ったら解決するか？
