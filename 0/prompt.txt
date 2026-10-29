@@ -1,0 +1,1 @@
+Devsy transport の stdin/stdout ←ここがよくわからん。masterのchannelを共有してるってこと？
