@@ -1,0 +1,1 @@
+逆にworkspaceMountを設定してOnaや他CDEに不都合あるのか？
