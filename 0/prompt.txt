@@ -1,0 +1,5 @@
+[Image #1]  glaze projectのlocal worktreeはglaze配下に表示されるのに、remote VMはorca-XXXという別プロジェクトになるのは体験として一貫していないがそういうものなのか？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/11e1376f-3725-4bd3-8897-ca01a0cf9344/orca-paste-1792994899841-4f077d59-3fef-48f4-b84d-0a0e9f8a50c0.png">
+
+</image>
