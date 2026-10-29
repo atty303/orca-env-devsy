@@ -1,0 +1,1 @@
+同じ Git object を使って master から feature branch を作成します ← 違う。これを制御するのはorcaだ
