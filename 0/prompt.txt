@@ -1,0 +1,3 @@
+> Linux E2Eにlibarchive-tools（bsdtar）を追加し、Orcaのtar転送に使う暫定対処で進めますか？追加はCIのpackage導入とE2E内のtar選択です。4 IPCの同時作成を維持しますが、GNU tar利用時のOrca本体の競合は残ります。
+
+bsdtarで暫定対処する
