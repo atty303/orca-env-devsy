@@ -1,0 +1,3 @@
+> ローカルDockerから別のDevsy providerへ展開できること。
+
+ここはcontainer管理にdevsyを採用し、様々なdevsyのproviderを透過的に使えることを強調したほうがいい
