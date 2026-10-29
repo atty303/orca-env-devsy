@@ -1,0 +1,1 @@
+他taskが作業中だが、moonbitのinstallはmise taskでなくtoolsでできないか？ 最新miseの機能を活用しても独立taskが必要か検証して
