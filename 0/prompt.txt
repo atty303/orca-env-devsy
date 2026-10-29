@@ -1,0 +1,1 @@
+orca workspaceはdevsy管理とは別だからdevsyに追加できないということか？
