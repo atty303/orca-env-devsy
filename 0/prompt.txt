@@ -1,0 +1,20 @@
+󰘍 bsh 󰀵CA-20028369  a13400  glaze 󰉋    chore/update-devsy-v1.25.0-beta.3 +219 -786 [!⇡] 󱎫 322ms  0   v21.0.11   (ap-northeast-1)
+❯ node -e 'process.stdout.write(Buffer.from("REDACTED", '''base64''').toString('''utf8'''))' | mise exec -- orca-env-devsy recipe destroy
+[eval]:1
+process.stdout.write(Buffer.from("REDACTED", base64).toString(utf8))
+
+
+ReferenceError: base64 is not defined
+    at [eval]:1:2658
+    at runScriptInThisContext (node:internal/vm:219:10)
+    at node:internal/process/execution:485:12
+    at [eval]-wrapper:6:24
+    at runScriptInContext (node:internal/process/execution:483:60)
+    at evalFunction (node:internal/process/execution:317:30)
+    at evalTypeScript (node:internal/process/execution:329:3)
+    at node:internal/main/eval_string:71:3
+
+Node.js v26.12.0
+12:41:51 destroy: running…
+12:41:51 destroy: failed (0.0s, elapsed 0.0s)
+atty303/orca-env-devsy.AdapterError.AdapterError
