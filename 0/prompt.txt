@@ -1,0 +1,1 @@
+codex relayはadapter独自から独立節へ。devsy relayはadapterがrelayの監視をする記述にする
