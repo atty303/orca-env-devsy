@@ -1,0 +1,1 @@
+実際のファイルはgit_signing_ed25519が秘密鍵でgit_signing_ed25519.pubが既に公開鍵だよな？
