@@ -1,0 +1,3 @@
+> このtaskのcommitは不具合修正としてpatch release対象（fix）を提案します。release workflowはSemVerです。実装・検証は回答を待たず進め、pushやreleaseは行いません。develop-repositoryスキルのrelease影響確認に従う質問です。
+
+patch対象でよい
