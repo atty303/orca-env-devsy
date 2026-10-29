@@ -1,0 +1,1 @@
+registryのyaml parserを利用する例も計測して
