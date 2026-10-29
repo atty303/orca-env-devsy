@@ -1,0 +1,1 @@
+gh転送をhttps://github.com/atty303/devsy/releases/tag/v0.0.0-atty.5で実装した。adapterのgh転送機能を取り除いて。干渉していそう
