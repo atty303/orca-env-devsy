@@ -1,0 +1,5 @@
+[Image #1] 起動するとこうなるんだよね
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/c0d67b6c-5aff-409c-88d1-1314ccbec084/orca-paste-1792994589578-03e45095-1fb4-4912-8bd9-31cd003ad077.png">
+
+</image>
