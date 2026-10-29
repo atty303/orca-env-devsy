@@ -1,0 +1,1 @@
+$dig atty303/repository-templateにmise/moonbit.tomlとしてこれを追加する
