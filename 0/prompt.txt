@@ -1,0 +1,1 @@
+B. devsyとadapterどちらの対応がコストが低いかも評価する。adapter側が明らかにコストが高くdevsy側修正が妥当な根拠があればPRを検討する. forkは~/srcにcheckoutがある
