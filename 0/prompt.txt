@@ -1,0 +1,5 @@
+[Image #1] みづらいと思わない？
+
+<image name=[Image #1] path="/Users/a13400/Library/Application Support/orca/agent-session-attachments/3a7485a5-7105-45db-9dcc-47bf1cd4cbc0/orca-paste-1793028809447-00259587-54f8-4422-8dff-0cc80d4e6e50.png">
+
+</image>
