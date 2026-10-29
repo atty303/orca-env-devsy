@@ -1,0 +1,1 @@
+devcontainerにsshするためのコマンドをdevcotainer内部から表示する方法ある？
