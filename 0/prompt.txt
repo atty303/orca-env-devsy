@@ -1,0 +1,1 @@
+Orcaが実際に開くcheckoutのパスは異なる ← これはlinked-worktreeでは実際にそうなっている
