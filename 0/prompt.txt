@@ -1,0 +1,1 @@
+$dig glazeにあるmise //:devsy stopとresumeをadapterに移植する。stopはidleのvmだけ対象にする
