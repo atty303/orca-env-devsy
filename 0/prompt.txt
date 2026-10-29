@@ -1,0 +1,41 @@
+01:19:00 create: running…
+01:19:00 resolve-context: running…
+01:19:01 resolve-context: done (0.1s, elapsed 0.1s)
+01:19:01 repository-remote: running…
+01:19:01 repository-remote: done (0.0s, elapsed 0.1s)
+01:19:01 resolve-default-branch: running…
+01:19:03 resolve-default-branch: done (2.0s, elapsed 2.1s)
+01:19:03 resolve-build-ref: running…
+01:19:05 resolve-build-ref: done (1.9s, elapsed 4.1s)
+01:19:05 workspace-list: running…
+01:19:05 workspace-list: done (0.1s, elapsed 4.3s)
+01:19:05 validate-build-branch: running…
+01:19:05 validate-build-branch: done (0.0s, elapsed 4.3s)
+01:19:05 workspace-create: running…
+01:19:07 workspace-create: creating machine
+01:19:07 workspace-create: "project_id": "7wdfsy5w2fhlhpr742c3bmfgwq",
+01:19:07 workspace-create: "name": "devsy-orca-f77b8-45b7d",
+01:19:07 workspace-create: "description": "devsy:orca-f77b85b6-a357-44b5-bdf7-313531d351cc",
+01:19:07 workspace-create: "image": "ubuntu-24.04",
+01:19:07 workspace-create: "instance_type": "m8a.large",
+01:19:07 workspace-create: "disk_size": {
+01:19:07 workspace-create: "number": 100,
+01:19:07 workspace-create: "unit": "QUANTITY_UNIT_GIBI"
+01:19:07 workspace-create: },
+01:19:07 workspace-create: "creator": "agawa_koji@user.iam.cycloud.jp",
+01:19:07 workspace-create: "update_time": "2026-10-19T01:19:07Z",
+01:19:07 workspace-create: "create_time": "2026-10-19T01:19:07Z",
+01:19:07 workspace-create: "cyrn": "cyrn:devbox:apne1:7wdfsy5w2fhlhpr742c3bmfgwq:workspaces/devsy-orca-f77b8-45b7d"
+01:19:07 workspace-create: }
+01:19:07 workspace-create: created machine
+01:19:14 workspace-create: deleting machine
+01:19:15 workspace-create: Deleted Workspace "devsy-orca-f77b8-45b7d" successfully.
+01:19:15 workspace-create: deleted machine
+01:19:15 workspace-create: [credential output redacted]
+01:19:15 workspace-create: failed (exit 1) (10.0s, elapsed 14.4s)
+01:19:15 workspace-list: running…
+01:19:15 workspace-list: done (0.1s, elapsed 14.5s)
+01:19:15 workspace-create failed (exit 1); command output withheld (14.5s, elapsed 14.5s)
+atty303/orca-env-devsy.AdapterError.AdapterError
+
+なにが失敗したかわからん
