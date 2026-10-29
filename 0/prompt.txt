@@ -1,0 +1,1 @@
+check relay redinessの線はなくして、actorをconnectionとrelayにわけたら？ relay actorがssh clientに線を出してmonitor relay readinessで線が短くなるし実体はそうでしょ？
