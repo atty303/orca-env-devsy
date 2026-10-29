@@ -1,0 +1,1 @@
+Git, OpenSSH, a POSIX shell and env supporting -u on the host. ← envってREADMEに出てこないけど必須なんだっけ？
