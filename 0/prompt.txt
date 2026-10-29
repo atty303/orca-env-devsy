@@ -1,0 +1,1 @@
+orcaのremote vm管理とadapterの管理lifecycleがあっていないと思う。例えば同一VMで複数orca worktreeを追加したとき、1つ削除するとVMを削除していないか？
