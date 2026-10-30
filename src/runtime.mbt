@@ -207,6 +207,14 @@ fn devsy_args(state : Json) -> Array[String] {
 }
 
 ///|
+fn host_repository(repository : String) -> String {
+  match @env.get_env_var("ORCA_E2E_REPO_HOST_URL") {
+    Some(url) if url != "" => url
+    _ => repository
+  }
+}
+
+///|
 fn workspace_environment(state : Json) -> Map[String, String] {
   let environment = match field(state, "executionEnvironment") {
     Some(Json::Object(values)) => {
@@ -710,7 +718,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   })
   let default_output = command(
     "git",
-    ["ls-remote", "--symref", "--", repository, "HEAD"],
+    ["ls-remote", "--symref", "--", host_repository(repository), "HEAD"],
     "resolve-default-branch",
   )
   let mut default_ref = None
@@ -736,7 +744,13 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   } else {
     let resolved = command(
         "git",
-        ["ls-remote", "--", repository, lookup_ref, lookup_ref + "^{}"],
+        [
+          "ls-remote",
+          "--",
+          host_repository(repository),
+          lookup_ref,
+          lookup_ref + "^{}",
+        ],
         "resolve-build-ref",
       )
       .trim()
@@ -763,7 +777,7 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
   if task_build && resolved_branch is None && default_ref is Some(reference) {
     let tip = command(
         "git",
-        ["ls-remote", "--", repository, reference],
+        ["ls-remote", "--", host_repository(repository), reference],
         "resolve-build-ref",
       )
       .trim()

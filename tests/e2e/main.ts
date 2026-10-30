@@ -103,11 +103,7 @@ try {
   source = await fixture(root, env, release.version, phase.signal);
   shared = await services(root, env, { devsy, home: dhome, provider, source: source.bare }, phase.signal);
   await source.connect(shared.localSourceUrl);
-  await mkdir(env.HOME!, { recursive: true });
-  await run([
-    "git", "config", "--file", env.GIT_CONFIG_GLOBAL!, "--add",
-    `url.${shared.localSourceUrl}.insteadOf`, shared.sourceUrl,
-  ], { env, timeout: budgets.operation });
+  env.ORCA_E2E_REPO_HOST_URL = shared.localSourceUrl;
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
   const definitions = await recipes(source.source, devsy, dhome, provider, adapter);
   orca = await Orca.launch(release.executable, root + "/profile", env, phase.signal);
