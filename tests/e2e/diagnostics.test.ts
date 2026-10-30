@@ -106,6 +106,12 @@ test("provision failures retain bounded causes after masking credentials and wor
   expect(contextual.adapterSummary).toContain("GitHub API returned 403");
   expect(contextual.adapterSummary?.length).toBe(16_384);
   expect(contextual.adapterSummaryTruncated).toBe(true);
+  const recipeOutput = provisionFailure("Recipe exited with code 1", undefined, `GitHub API returned 403; token=${privateValue}; --workspace-info ${privateValue}`);
+  expect(recipeOutput.recipeOutputSummary).toContain("GitHub API returned 403");
+  expect(recipeOutput.recipeOutputSummary).toContain("token=[redacted]");
+  expect(recipeOutput.recipeOutputSummary).toContain("--workspace-info [redacted]");
+  expect(JSON.stringify(recipeOutput)).not.toContain(privateValue);
+  expect(recipeOutput.recipeOutputSummaryTruncated).toBe(false);
   const objectError = provisionFailure(new Error(`Command failed (exit 128): AWS_SECRET_ACCESS_KEY=${privateValue}`));
   expect(objectError.errorSummary).toContain("Command failed");
   expect(objectError.errorSummary).toContain("AWS_SECRET_ACCESS_KEY=[redacted]");

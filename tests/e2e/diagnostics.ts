@@ -98,6 +98,8 @@ export type FailureObservation = {
   errorSummaryTruncated?: boolean;
   adapterSummary?: string;
   adapterSummaryTruncated?: boolean;
+  recipeOutputSummary?: string;
+  recipeOutputSummaryTruncated?: boolean;
   recipe?: { valid: boolean; connection?: "ssh" | "orca-server" };
   boundary?: "recipe" | "ssh_setup" | "server_registration";
 };
@@ -192,11 +194,13 @@ export function provisionFailure(error: unknown, stderr?: string, stdout?: strin
   };
   const errorSummary = message === "" || !(error instanceof Error || typeof error === "string") ? undefined : failureSummary(message);
   const adapterSummary = stderr === undefined || stderr === "" || markers(stderr).length === 0 ? undefined : failureSummary(stderr, 16_384);
+  const recipeOutputSummary = stdout === undefined || stdout === "" || recipe?.valid !== false ? undefined : failureSummary(stdout);
   return {
     ...observation,
     ...(errorSummary === undefined ? {} : { errorSummary: errorSummary.text, errorSummaryTruncated: errorSummary.truncated }),
     ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }),
     ...(adapterSummary === undefined ? {} : { adapterSummary: adapterSummary.text, adapterSummaryTruncated: adapterSummary.truncated }),
+    ...(recipeOutputSummary === undefined ? {} : { recipeOutputSummary: recipeOutputSummary.text, recipeOutputSummaryTruncated: recipeOutputSummary.truncated }),
     ...(recipe === undefined ? {} : { recipe, boundary: recipe.connection === "ssh" ? "ssh_setup" : recipe.connection === "orca-server" ? "server_registration" : "recipe" }),
   };
 
