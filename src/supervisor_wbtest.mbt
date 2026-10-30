@@ -338,24 +338,32 @@ async test "bulk restart terminates active transport and replaces supervisor" {
               "Cannot inspect transport process group",
             ) {
             let (ps_status, ps_output, _) = @process.collect_output("ps", [
-              "-axo", "pid=,ppid=,pgid=,state=,uid=",
+              "-Ao", "pid=,ppid=,pgid=,state=,uid=",
             ])
             if ps_status == 0 {
               let group_ids = @fs.readdir(root + "/transports")
                 .filter(name => name.contains("."))
                 .map(name => name.split(".").to_array()[0])
-              ps_output
-              .text()
-              .split("\n")
-              .filter(line => {
-                let columns = line
-                  .trim()
-                  .split(" ")
-                  .filter(value => value != "")
-                  .to_array()
-                columns.length() >= 5 && group_ids.contains(columns[2])
+              let group_members = ps_output
+                .text()
+                .split("\n")
+                .filter(line => {
+                  let columns = line
+                    .trim()
+                    .split(" ")
+                    .filter(value => value != "")
+                    .to_array()
+                  columns.length() >= 5 && group_ids.contains(columns[2])
+                })
+                .join("\n")
+              "transport group IDs examined: " +
+              group_ids.join(",") +
+              (if group_members == "" {
+                "\nno process rows matched the transport group IDs"
+              } else {
+                "\ntransport group members (pid ppid pgid state uid):\n" +
+                group_members
               })
-              .join("\n")
             } else {
               "ps failed with status " + ps_status.to_string()
             }
@@ -371,12 +379,7 @@ async test "bulk restart terminates active transport and replaces supervisor" {
               } else {
                 "\n" + cleanup_diagnostics
               }) +
-              (if group_members == "" {
-                ""
-              } else {
-                "\ntransport group members (pid ppid pgid state uid):\n" +
-                group_members
-              }),
+              (if group_members == "" { "" } else { "\n" + group_members }),
           )
         }
         assert_false(supervisor_pid(root) == previous)

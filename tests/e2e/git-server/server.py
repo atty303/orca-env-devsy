@@ -7,8 +7,6 @@ import pathlib
 import re
 import shutil
 import signal
-import socket
-import struct
 import subprocess
 import threading
 import urllib.parse
@@ -23,15 +21,6 @@ for index in range(4):
 accepted, rejected = {}, {}
 backend_failures = 0
 lock = threading.Lock()
-
-
-def host_gateway():
-    with open('/proc/net/route', encoding='ascii') as routes:
-        for line in routes.readlines()[1:]:
-            fields = line.split()
-            if fields[1] == '00000000':
-                return socket.inet_ntoa(struct.pack('<I', int(fields[2], 16)))
-    raise RuntimeError('default network gateway unavailable')
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -73,7 +62,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         if url.path == '/__metrics':
             with lock:
-                result = {'accepted': dict(accepted), 'rejected': dict(rejected), 'backendFailures': backend_failures, 'hostGateway': host_gateway()}
+                result = {'accepted': dict(accepted), 'rejected': dict(rejected), 'backendFailures': backend_failures}
             result['filesystem'] = subprocess.check_output(['stat', '-f', '-c', '%T', str(ROOT)], text=True).strip()
             result['refs'] = {
                 f'w-{i}': subprocess.check_output(['git', '-C', str(ROOT / f'w-{i}.git'), 'for-each-ref', '--format=%(refname)', 'refs/heads'], text=True).splitlines()
