@@ -36,6 +36,7 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
   }
   let present = group_exists(pid)
   guard present >= 0 else {
+    let repeated = group_exists(pid)
     raise AdapterError(
       "Cannot inspect transport process group (errno " +
       (-present).to_string() +
@@ -45,6 +46,8 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
       current.to_string() +
       ", current group " +
       process_group(pid).to_string() +
+      ", repeated group result " +
+      repeated.to_string() +
       ")",
     )
   }
