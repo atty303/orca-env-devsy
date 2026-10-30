@@ -60,7 +60,13 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       return response.json() as Promise<GitServerStats>;
     };
     await until(async () => {
-      if (connections.some(connection => connection.exitCode !== null)) throw new Error("Git fixture connection exited");
+      const exited = connections.flatMap((connection, index) => connection.exitCode !== null ? [{
+        name: index === 0 ? "fixture-server" : "source-tunnel",
+        exitCode: connection.exitCode,
+        signal: connection.signalCode,
+        stderrCategories: sshErrorCategories(connectionErrors[index] ?? ""),
+      }] : []);
+      if (exited.length > 0) throw new Error(`Git fixture connection exited: ${JSON.stringify(exited)}`);
       try { return (await stats()).filesystem === "tmpfs"; }
       catch { signal?.throwIfAborted(); return false; }
     }, budgets.lifecycle);
