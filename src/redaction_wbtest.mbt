@@ -42,3 +42,45 @@ test "credential values are masked without discarding surrounding causes" {
     assert_eq(progress.safe_message(safe), Some(safe))
   }
 }
+
+///|
+test "workspace info arguments are redacted before diagnostic truncation" {
+  let progress = Progress::new("test")
+  let encoded = "workspace-data with spaces ".repeat(100)
+  let safe = progress
+    .safe_message(
+      "delete container --workspace-info \"" +
+      encoded +
+      "\" command failed with exit code 128: original build failure",
+    )
+    .unwrap()
+  assert_false(safe.contains("workspace-data"), msg=safe)
+  assert_true(
+    safe.contains("command failed with exit code 128: original build failure"),
+    msg=safe,
+  )
+  assert_false(safe.contains("[truncated]"), msg=safe)
+}
+
+///|
+test "escaped quotes inside workspace info arguments are redacted" {
+  let progress = Progress::new("test")
+  let encoded = "{\\\"secret\\\": \\\"workspace data\\\"} ".repeat(100)
+  let second_encoded = "second workspace data ".repeat(100)
+  let safe = progress
+    .safe_message(
+      "delete container --workspace-info \"" +
+      encoded +
+      "\" --workspace-info \"" +
+      second_encoded +
+      "\" command failed with exit code 128: original build failure",
+    )
+    .unwrap()
+  assert_false(safe.contains("workspace data"), msg=safe)
+  assert_false(safe.contains("second workspace data"), msg=safe)
+  assert_true(
+    safe.contains("command failed with exit code 128: original build failure"),
+    msg=safe,
+  )
+  assert_false(safe.contains("[truncated]"), msg=safe)
+}

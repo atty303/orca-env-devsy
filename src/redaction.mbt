@@ -267,10 +267,51 @@ fn Progress::safe_message(self : Progress, text : String) -> String? {
   for secret in self.secrets {
     safe = safe.replace_all(old=secret, new="[redacted]")
   }
+  safe = redact_workspace_info_argument(safe)
   safe = redact_credentials(safe)
   if safe.length() > 1024 {
     safe = safe[:1024].to_owned() + "… [truncated]"
     self.details_truncated = true
   }
   Some(safe)
+}
+
+///|
+fn redact_workspace_info_argument(text : String) -> String {
+  match text.split_once("--workspace-info ") {
+    Some((prefix, argument_and_suffix)) =>
+      prefix.to_owned() +
+      "--workspace-info [redacted]" +
+      redact_workspace_info_argument_suffix(argument_and_suffix.to_owned())
+    None => text
+  }
+}
+
+///|
+fn redact_workspace_info_argument_suffix(text : String) -> String {
+  if text.has_prefix("\"") {
+    let chars = text.iter().to_array()
+    let mut i = 1
+    let mut escaped = false
+    while i < chars.length() {
+      if chars[i] == '"' && !escaped {
+        return redact_workspace_info_argument(
+          character_text(chars, i + 1, chars.length()),
+        )
+      }
+      if chars[i] == '\\' {
+        escaped = !escaped
+      } else {
+        escaped = false
+      }
+      i += 1
+    }
+    ""
+  } else {
+    match text.split_once(" ") {
+      Some((_, suffix)) =>
+        " " + redact_workspace_info_argument(suffix.to_owned())
+      None => ""
+    }
+  }
 }
