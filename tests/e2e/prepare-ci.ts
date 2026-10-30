@@ -37,10 +37,10 @@ if (provider === "docker") {
   assert.equal(process.arch, "x64");
   const root = resolve(".tools/e2e/microsandbox");
   await mkdir(root, { recursive: true });
-  const response = await fetch("https://github.com/superradcompany/microsandbox/releases/download/v0.7.7/microsandbox-linux-x86_64.tar.gz");
+  const response = await fetch("https://github.com/superradcompany/microsandbox/releases/download/v0.7.11/microsandbox-linux-x86_64.tar.gz");
   assert(response.ok, "Microsandbox download failed");
   const data = new Uint8Array(await response.arrayBuffer());
-  assert.equal(new Bun.CryptoHasher("sha256").update(data).digest("hex"), "b3cc4a5e3f52dfdd938a6f67ac4a9a959ddfe304bab56de4964044b8613f01bb");
+  assert.equal(new Bun.CryptoHasher("sha256").update(data).digest("hex"), "5fc2206fbe35b471743bd5af15e3931cd2439a0c8b8e6ef08a493ddabcdc1b4c");
   await Bun.write(root + "/msb.tar.gz", data);
   await run(["tar", "-xzf", root + "/msb.tar.gz", "-C", root], { inherit: true });
   await chmod(root + "/msb", 0o755);
