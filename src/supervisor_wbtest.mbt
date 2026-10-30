@@ -367,15 +367,19 @@ async test "bulk restart terminates active transport and replaces supervisor" {
                     .split(" ")
                     .filter(value => value != "")
                     .to_array()
-                  columns.length() >= 5 && group_ids.contains(columns[2])
+                  columns.length() >= 5 &&
+                  (
+                    group_ids.contains(columns[0]) ||
+                    group_ids.contains(columns[2])
+                  )
                 })
                 .join("\n")
-              "transport group IDs examined: " +
+              "transport process/group IDs examined: " +
               group_ids.join(",") +
               (if group_members == "" {
-                "\nno process rows matched the transport group IDs"
+                "\nno process rows matched the transport PIDs or group IDs"
               } else {
-                "\ntransport group members (pid ppid pgid state uid):\n" +
+                "\ntransport process/group rows (pid ppid pgid state uid):\n" +
                 group_members
               })
             } else {
