@@ -11,7 +11,7 @@ import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
 import { installMicrosandboxDiagnostics } from "./microsandbox.ts";
 import { installPodmanDiagnostics } from "./podman.ts";
 import { type GitServerStats } from "./git-server.ts";
-import { failureCategory, provisionFailure, adapterDiagnostics } from "./diagnostics.ts";
+import { failureCategory, provisionFailure, adapterDiagnostics, diagnosticTextSummary } from "./diagnostics.ts";
 
 const index = process.argv.indexOf("--provider");
 const provider = index < 0 ? undefined : process.argv[index + 1];
@@ -35,6 +35,7 @@ let shared: Awaited<ReturnType<typeof services>> | undefined;
 let failure: unknown;
 let podmanStoreOwned = false;
 const cleanupErrors: string[] = [];
+const devsyCleanupFailures: { operation: string; outcome: "exit" | "timeout" | "aborted"; exitCode: number | null; signal: NodeJS.Signals | null; stderr?: string; stderrTruncated?: boolean }[] = [];
 let gitStats: GitServerStats | undefined;
 let gitServerDiagnostics: Awaited<ReturnType<NonNullable<typeof shared>["diagnostics"]>> | undefined;
 let cloneAudit: { recipe: string; pinned: boolean; strategies: string[] }[] = [];
@@ -289,7 +290,10 @@ try {
   phase.beginCleanup();
   const cleanup = cleanupDeadline(cleanupErrors);
   await Orca.settleLaunches(cleanup.signal).catch(() => cleanupErrors.push("orca-launch"));
-  const cleanDevsy = (args: string[], timeout: number) => cleanupRun([devsy, "--home", dhome, ...args], { env, timeout, signal: cleanup.signal });
+  const cleanDevsy = (operation: string, args: string[], timeout: number) => cleanupRun([devsy, "--home", dhome, ...args], { env, timeout, signal: cleanup.signal, onFailure: result => {
+    const summary = result.stderr === "" ? undefined : diagnosticTextSummary(result.stderr, 4096);
+    devsyCleanupFailures.push({ operation, outcome: result.outcome, exitCode: result.exitCode, signal: result.signal, ...(summary ? { stderr: summary.text, stderrTruncated: summary.truncated } : {}) });
+  } });
   const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
   for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }, cleanup.signal).catch(() => cleanupErrors.push("cancel-provision"));
   await orca?.settleProvisionCalls(cleanup.signal).catch(() => { orca?.observations.recordingFailure(); });
@@ -313,10 +317,10 @@ try {
   // This Devsy home was created for this run and contained no user workspaces.
   // Reap creations that failed before Orca could persist their receipts as well.
   try {
-    const remaining = source ? JSON.parse(await cleanDevsy(["--result-format", "json", "workspace", "list", "--skip-pro"], budgets.operation)) as { id: string }[] : [];
+    const remaining = source ? JSON.parse(await cleanDevsy("workspace-list", ["--result-format", "json", "workspace", "list", "--skip-pro"], budgets.operation)) as { id: string }[] : [];
     for (const item of remaining) assert(/^[a-z0-9-]+-[a-z]+-[a-z0-9]{2}$/.test(item.id));
     await Promise.all(remaining.map(async item => {
-      await cleanDevsy(["workspace", "delete", item.id, "--force", "--ignore-not-found"], budgets.lifecycle).catch(() => cleanupErrors.push("devsy-cleanup"));
+      await cleanDevsy("workspace-delete", ["workspace", "delete", item.id, "--force", "--ignore-not-found"], budgets.lifecycle).catch(() => cleanupErrors.push("devsy-cleanup"));
       cleanupErrors.push("unreleased-workspace");
     }));
   } catch { cleanupErrors.push("devsy-cleanup"); }
@@ -349,7 +353,7 @@ try {
   finishPhase(cleanupErrors.length === 0);
   const podmanOperations = await readOperationRecords(root + "/podman-operations.jsonl", 64);
   const microsandboxOperations = await readOperationRecords(root + "/msb-operations.jsonl", 64);
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, gitServer: gitStats, gitServerDiagnostics, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, gitServer: gitStats, gitServerDiagnostics, devsyCleanupFailures, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();

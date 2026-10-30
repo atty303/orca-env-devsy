@@ -84,14 +84,26 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     const hostGateway = (await stats()).hostGateway;
     const gatewayProbeScript = [
       "import urllib.request",
+      "import urllib.error",
+      "import errno",
       `url = ${JSON.stringify(`http://${hostGateway}:${port}/__metrics`)}`,
       "try:",
       "    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=3) as response:",
       "        print('http_' + str(response.status))",
       "except TimeoutError:",
       "    print('timeout')",
+      "except urllib.error.URLError as error:",
+      "    reason = error.reason",
+      "    if isinstance(reason, TimeoutError):",
+      "        print('timeout')",
+      "    elif isinstance(reason, OSError):",
+      "        categories = {errno.ECONNREFUSED: 'connection_refused', errno.EHOSTUNREACH: 'host_unreachable', errno.ENETUNREACH: 'network_unreachable', errno.ETIMEDOUT: 'timeout'}",
+      "        print(categories.get(reason.errno, 'os_error'))",
+      "    else:",
+      "        print('url_error')",
       "except OSError as error:",
-      "    print(type(error).__name__ + ':' + str(error.errno))",
+      "    categories = {errno.ECONNREFUSED: 'connection_refused', errno.EHOSTUNREACH: 'host_unreachable', errno.ENETUNREACH: 'network_unreachable', errno.ETIMEDOUT: 'timeout'}",
+      "    print(categories.get(error.errno, 'os_error'))",
     ].join("\n");
     const gatewayProbe = await run([
       ...ssh,

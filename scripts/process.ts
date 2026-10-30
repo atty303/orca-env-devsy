@@ -131,9 +131,15 @@ export function processFailureCategory(output: string) {
   return "process_exit";
 }
 
-export async function run(argv: string[], options: { cwd?: string; env?: Environment; input?: string; timeout?: number; output?: "stdout" | "stderr"; inherit?: boolean; signal?: AbortSignal } = {}) {
+export async function run(argv: string[], options: { cwd?: string; env?: Environment; input?: string; timeout?: number; output?: "stdout" | "stderr"; inherit?: boolean; signal?: AbortSignal; onFailure?: (result: { outcome: "exit" | "timeout" | "aborted"; exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }) => void } = {}) {
   const child = start(argv, options);
   let stdout = "", stderr = "";
+  let failureObserved = false;
+  const observeFailure = (outcome: "exit" | "timeout" | "aborted", exitCode: number | null, signal: NodeJS.Signals | null) => {
+    if (failureObserved) return;
+    failureObserved = true;
+    try { options.onFailure?.({ outcome, exitCode, signal, stdout, stderr }); } catch { /* Diagnostics must not replace the process result. */ }
+  };
   const limit = 8 * 1024 * 1024;
   const collect = (which: "stdout" | "stderr", data: Buffer) => {
     if (which === "stdout") stdout += data.toString(); else stderr += data.toString();
@@ -147,12 +153,14 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
     const code = await new Promise<number | null>((resolve, reject) => {
       abort = () => {
         try { stop(child); } catch { /* Cleanup retains ownership if signaling fails. */ }
+        observeFailure("aborted", child.exitCode, child.signalCode);
         abandonStreams(child);
         reject(options.signal!.reason);
       };
       options.signal?.addEventListener("abort", abort, { once: true });
       timer = setTimeout(() => {
         try { stop(child, "SIGKILL"); } catch { /* Report the deadline failure below. */ }
+        observeFailure("timeout", child.exitCode, child.signalCode);
         abandonStreams(child);
         reject(new Error("Child command deadline exceeded (timeout)"));
       }, options.timeout ?? 120_000);
@@ -160,6 +168,7 @@ export async function run(argv: string[], options: { cwd?: string; env?: Environ
       child.once("close", resolve);
     });
     if (code !== 0) {
+      observeFailure("exit", code, child.signalCode);
       // Subprocess streams can contain pairing/authentication data. Callers
       // consume successful results; failures expose only a fixed category and code.
       throw new Error(`${argv[0].split("/").at(-1)} failed (${code ?? child.signalCode}, ${processFailureCategory(stdout + "\n" + stderr)})`);
