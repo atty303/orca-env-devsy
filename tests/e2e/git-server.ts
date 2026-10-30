@@ -117,17 +117,30 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       "with ThreadPoolExecutor(max_workers=16) as pool:",
       "    pending = {(name, address): pool.submit(probe, address) for name, addresses in targets.items() for address in addresses}",
       "    results = {name: sorted({future.result() for (target, _), future in pending.items() if target == name}) if addresses else ['name_resolution'] for name, addresses in targets.items()}",
-      "print(json.dumps(results, sort_keys=True))",
+      "    reachable = {name: sorted({address for (target, address), future in pending.items() if target == name and future.result() == 'http_200'}) for name in targets}",
+      "print(json.dumps({'results': results, 'reachable': reachable}, sort_keys=True))",
     ].join("\n");
+    let reachableHostAddresses: Record<string, string[]> = {};
     const hostProbes: HostProbe[] = await run([
       ...ssh,
       "--command",
       `python3 -c ${quote(hostProbeScript)}`,
-    ], { env, timeout: budgets.operation }).then(output => JSON.parse(output.trim()) as Record<string, string[]>).then(results => Object.entries(results).map(([target, values]) => ({ target, result: values.join(",") }))).catch(() => {
+    ], { env, timeout: budgets.operation }).then(output => {
+      const probes = JSON.parse(output.trim()) as { results: Record<string, string[]>; reachable: Record<string, string[]> };
+      reachableHostAddresses = probes.reachable;
+      return Object.entries(probes.results).map(([target, values]) => ({ target, result: values.join(",") }));
+    }).catch(() => {
       signal?.throwIfAborted();
       return [{ target: "probe", result: "unavailable" }];
     });
-    const sourceTargets = [
+    const sourceTargets = options.provider === "microsandbox" ? [
+      { target: "host.microsandbox.internal", host: "host.microsandbox.internal" },
+      { target: "default_gateway", host: hostGateway },
+    ] : options.provider === "podman" ? [
+      { target: "host.containers.internal", host: reachableHostAddresses["host.containers.internal"]?.[0] },
+      { target: "host.docker.internal", host: reachableHostAddresses["host.docker.internal"]?.[0] },
+      { target: "default_gateway", host: hostGateway },
+    ] : [
       { target: "default_gateway", host: hostGateway },
       { target: "host.containers.internal", host: "host.containers.internal" },
       { target: "host.docker.internal", host: "host.docker.internal" },
