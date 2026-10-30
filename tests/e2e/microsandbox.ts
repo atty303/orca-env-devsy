@@ -18,7 +18,7 @@ export async function launch(binary: string, home: string, report: string) {
   // Lifecycle arguments are generated sandbox names. Keep their failure stderr;
   // inspect stdout contains configuration and must not enter the report.
   const lifecycle = ["inspect", "start", "stop", "remove"].includes(process.argv[2]);
-  const tracked = lifecycle || ["run", "load"].includes(process.argv[2]);
+  const tracked = lifecycle || ["run", "load", "exec"].includes(process.argv[2]);
   const before = tracked ? await oomCount() : NaN;
   const child = Bun.spawn([binary, ...process.argv.slice(2)], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const interrupt = () => child.kill("SIGTERM");

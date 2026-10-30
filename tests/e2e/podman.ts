@@ -39,7 +39,7 @@ export async function launch(binary: string, report: string) {
   })();
   const [code] = await Promise.all([child.exited, forwarding]);
   const operation = args.find(arg => operations.has(arg)) ?? "other";
-  if (code !== 0 && ["run", "start", "create", "build", "pull", "network"].includes(operation)) try {
+  if (code !== 0 && ["run", "start", "create", "build", "pull", "exec", "network"].includes(operation)) try {
     await appendFile(report, JSON.stringify({ operation, exitCode: code, elapsedMs: Math.ceil(performance.now() - started), ...classifyPodman(tail) }) + "\n", { mode: 0o600 });
   } catch { /* Recording must preserve the runtime's result. */ }
   process.exit(code);
