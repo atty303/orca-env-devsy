@@ -301,9 +301,10 @@ try {
 test("Microsandbox lifecycle failures preserve stderr and exit without exporting inspect stdout", async () => {
   const root = await mkdtemp(tmpdir() + "/orca-msb-diagnostic-");
   try {
-    const binary = root + "/msb", report = root + "/failures.jsonl", launcher = root + "/launch.ts";
+    const binary = root + "/msb", report = root + "/failures.jsonl", operations = root + "/operations.jsonl", launcher = root + "/launch.ts";
     await writeFile(binary, "#!/bin/sh\nprintf 'fixture configuration must stay private'\nprintf 'remove: permission denied /tmp/owned-sandbox/state.db' >&2\nexit 7\n", { mode: 0o700 });
-    await writeFile(launcher, `import { launch } from ${JSON.stringify(resolve("tests/e2e/microsandbox.ts"))};\nawait launch(${JSON.stringify(binary)}, ${JSON.stringify(root)}, ${JSON.stringify(report)});\n`);
+    await writeFile(operations, "");
+    await writeFile(launcher, `import { launch } from ${JSON.stringify(resolve("tests/e2e/microsandbox.ts"))};\nawait launch(${JSON.stringify(binary)}, ${JSON.stringify(root)}, ${JSON.stringify(report)}, ${JSON.stringify(operations)});\n`);
     for (const operation of ["inspect", "start", "stop", "remove", "exec"]) {
       const child = start([process.execPath, launcher, operation, "fixture-sandbox"]);
       let stdout = "", stderr = "";
@@ -321,5 +322,9 @@ test("Microsandbox lifecycle failures preserve stderr and exit without exporting
     expect(records[4]).not.toHaveProperty("message");
     expect(records[4].exitCode).toBe(7);
     expect(text).not.toContain("fixture configuration must stay private");
+    const operationRecords = (await readFile(operations, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(operationRecords.map(record => record.operation)).toEqual(["inspect", "start", "stop", "remove", "exec"]);
+    expect(operationRecords.every(record => record.status === "exit_error" && record.stderrSummary === "remove: permission denied /tmp/owned-sandbox/state.db")).toBe(true);
+    expect(JSON.stringify(operationRecords)).not.toContain("fixture configuration must stay private");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -345,10 +345,26 @@ try {
   if (phase.interrupted && failure === undefined) failure = new Error("E2E interrupted");
   await mkdir(resolve(report, ".."), { recursive: true, mode: 0o700 });
   finishPhase(cleanupErrors.length === 0);
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), gitServer: gitStats, gitServerDiagnostics, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  const podmanOperations = await readOperationRecords(root + "/podman-operations.jsonl", 64);
+  const microsandboxOperations = await readOperationRecords(root + "/msb-operations.jsonl", 64);
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, gitServer: gitStats, gitServerDiagnostics, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();
+}
+
+async function readOperationRecords(path: string, limit: number) {
+  const file = Bun.file(path);
+  if (!await file.exists()) return { available: false, records: [] };
+  if (file.size > 128_000) return { available: false, oversized: true, records: [] };
+  const lines = (await file.text()).split("\n").filter(Boolean);
+  const records: unknown[] = [];
+  let invalid = 0;
+  for (const line of lines.slice(-limit)) {
+    try { records.push(JSON.parse(line)); }
+    catch { invalid++; }
+  }
+  return { available: true, truncated: lines.length > limit, invalid, records };
 }
 
 function volumeNames(output: string): string[] {

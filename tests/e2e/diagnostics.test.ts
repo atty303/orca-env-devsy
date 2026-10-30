@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { DiagnosticError, failureCategory, provisionFailure, sshStartupPhases } from "./diagnostics.ts";
+import { DiagnosticError, diagnosticTextSummary, failureCategory, provisionFailure, providerOperationObservation, sshStartupPhases } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
 import { classifyPodman } from "./podman.ts";
 import { processFailureCategory } from "../../scripts/process.ts";
@@ -264,6 +264,17 @@ test("missing resource diagnostics retain filenames and paths without unrelated 
   expect(JSON.stringify(credential)).not.toContain(privateValue);
   expect(JSON.stringify(provisionFailure(wrapped))).not.toContain("fixture-user");
   expect(provisionFailure(privateValue).missingResource).toBeUndefined();
+});
+
+test("provider operation records distinguish slow success from failure and redact only identified secrets", () => {
+  expect(providerOperationObservation("inspect", 29_999, 0, "")).toBeUndefined();
+  expect(providerOperationObservation("run", 30_001, 0, "")).toMatchObject({ status: "success", slow: true, elapsedMs: 30_001 });
+  const failed = providerOperationObservation("run", 12, 1, `container failed; GITHUB_TOKEN=${privateValue}; retry the build`);
+  expect(failed).toMatchObject({ status: "exit_error", exitCode: 1, stderrSummary: `container failed; GITHUB_TOKEN=[redacted]; retry the build`, stderrSummaryTruncated: false });
+  expect(JSON.stringify(failed)).not.toContain(privateValue);
+  const summary = diagnosticTextSummary("cause: " + "x".repeat(3000), 2048);
+  expect(summary).toMatchObject({ truncated: true });
+  expect(summary.text).toHaveLength(2048);
 });
 
 

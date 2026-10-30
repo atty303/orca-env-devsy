@@ -104,7 +104,7 @@ export type FailureObservation = {
   boundary?: "recipe" | "ssh_setup" | "server_registration";
 };
 
-function failureSummary(text: string, maxLength = 2048) {
+export function diagnosticTextSummary(text: string, maxLength = 2048) {
   const safe = text
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/gi, "[private key redacted]")
     .replace(/(--workspace-info(?:\s+|=))(?:"(?:\\.|[^"])*"|'[^']*'|\S+)/gi, "$1[redacted]")
@@ -113,10 +113,29 @@ function failureSummary(text: string, maxLength = 2048) {
     .replace(/\/private\/[^\s,:;]+/g, "[private-path]")
     .replace(/[A-Za-z]:\\Users\\[^\\\s]+/gi, "~")
     .replace(/\b(bearer|basic)\s+[^\s,;]+/gi, "$1 [redacted]")
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g, "[token redacted]")
-    .replace(/\b([A-Za-z0-9_]*(?:access[_-]?key|secret(?:[_-]access[_-]?key)?|token|password|passwd|api[_-]?key|authorization|cookie|set[_-]?cookie)["']?\s*[:=]\s*["']?)(?:"(?:\\.|[^"])*"|'[^']*'|[^\s,;\]}]+)/gi, "$1[redacted]");
+    .replace(/\b([A-Za-z0-9_]*(?:access[_-]?key|secret(?:[_-]access[_-]?key)?|token|password|passwd|api[_-]?key|authorization|cookie|set[_-]?cookie)["']?\s*[:=]\s*["']?)(?:"(?:\\.|[^"])*"|'[^']*'|[^\s,;\]}]+)/gi, "$1[redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g, "[token redacted]");
   const truncated = safe.length > maxLength;
   return { text: truncated ? safe.slice(-maxLength) : safe, truncated };
+}
+
+export function providerOperationObservation(
+  operation: string,
+  elapsedMs: number,
+  exitCode: number,
+  stderr: string,
+) {
+  const slow = elapsedMs >= 30_000;
+  if (exitCode === 0 && !slow) return undefined;
+  const output = exitCode === 0 || stderr === "" ? undefined : diagnosticTextSummary(stderr);
+  return {
+    operation,
+    status: exitCode === 0 ? "success" : "exit_error",
+    elapsedMs: Math.ceil(elapsedMs),
+    exitCode,
+    ...(slow ? { slow: true } : {}),
+    ...(output === undefined ? {} : { stderrSummary: output.text, stderrSummaryTruncated: output.truncated }),
+  };
 }
 
 export function sshStartupPhases(stderr: string) {
@@ -192,9 +211,9 @@ export function provisionFailure(error: unknown, stderr?: string, stdout?: strin
     ...(missingResource === undefined ? {} : { missingResource }),
     signals: Object.entries(errorPatterns).filter(([, phrases]) => phrases.some(phrase => message.toLowerCase().includes(phrase.toLowerCase()))).map(([signal]) => signal),
   };
-  const errorSummary = message === "" || !(error instanceof Error || typeof error === "string") ? undefined : failureSummary(message);
-  const adapterSummary = stderr === undefined || stderr === "" || markers(stderr).length === 0 ? undefined : failureSummary(stderr, 16_384);
-  const recipeOutputSummary = stdout === undefined || stdout === "" || recipe?.valid !== false ? undefined : failureSummary(stdout);
+  const errorSummary = message === "" || !(error instanceof Error || typeof error === "string") ? undefined : diagnosticTextSummary(message);
+  const adapterSummary = stderr === undefined || stderr === "" || markers(stderr).length === 0 ? undefined : diagnosticTextSummary(stderr, 16_384);
+  const recipeOutputSummary = stdout === undefined || stdout === "" || recipe?.valid !== false ? undefined : diagnosticTextSummary(stdout);
   return {
     ...observation,
     ...(errorSummary === undefined ? {} : { errorSummary: errorSummary.text, errorSummaryTruncated: errorSummary.truncated }),

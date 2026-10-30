@@ -1,6 +1,7 @@
 import { appendFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { processFailureCategory } from "../../scripts/process.ts";
+import { providerOperationObservation } from "./diagnostics.ts";
 
 const operations = new Set(["run", "start", "create", "build", "pull", "exec", "inspect", "rm", "stop", "kill", "network", "volume", "info", "version"]);
 const markers = ["crun", "runc", "netavark", "aardvark", "slirp4netns", "rootlessport", "conmon", "cgroup", "dbus", "systemd", "overlay", "mount", "network", "namespace", "permission", "not found", "already exists", "invalid", "quota", "lock", "database", "socket", "timeout", "resource", "busy", "setns", "address", "port", "rootfs", "chown", "uid", "gid", "subuid", "iptables", "nftables", "re-exec", "oci runtime", "executable file", "short-name", "manifest", "registry", "unauthorized", "connection refused"];
@@ -20,12 +21,14 @@ export async function installPodmanDiagnostics(root: string) {
   const binary = Bun.which("podman");
   if (!binary) throw new Error("Podman binary missing");
   const wrapper = root + "/bin/podman";
-  await writeFile(wrapper, `#!${process.execPath}\nimport { launch } from ${JSON.stringify(resolve("tests/e2e/podman.ts"))};\nawait launch(${JSON.stringify(binary)}, ${JSON.stringify(root + "/podman-failures.jsonl")});\n`, { mode: 0o700 });
+  await writeFile(root + "/podman-operations.jsonl", "", { mode: 0o600 });
+  await writeFile(wrapper, `#!${process.execPath}\nimport { launch } from ${JSON.stringify(resolve("tests/e2e/podman.ts"))};\nawait launch(${JSON.stringify(binary)}, ${JSON.stringify(root + "/podman-failures.jsonl")}, ${JSON.stringify(root + "/podman-operations.jsonl")});\n`, { mode: 0o700 });
   return wrapper;
 }
 
-export async function launch(binary: string, report: string) {
+export async function launch(binary: string, report: string, operationsReport: string) {
   const args = process.argv.slice(2);
+  const startedAt = new Date().toISOString();
   const started = performance.now();
   const child = Bun.spawn([binary, ...args], { stdin: "inherit", stdout: "inherit", stderr: "pipe" });
   process.once("SIGTERM", () => child.kill("SIGTERM"));
@@ -39,8 +42,15 @@ export async function launch(binary: string, report: string) {
   })();
   const [code] = await Promise.all([child.exited, forwarding]);
   const operation = args.find(arg => operations.has(arg)) ?? "other";
+  const elapsedMs = Math.ceil(performance.now() - started);
+  const observation = providerOperationObservation(operation, elapsedMs, code, tail);
+  if (observation) try {
+    await appendFile(operationsReport, JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), ...observation }) + "\n", { mode: 0o600 });
+  } catch {
+    process.stderr.write("E2E provider operation recording failed (podman)\n");
+  }
   if (code !== 0 && ["run", "start", "create", "build", "pull", "exec", "network"].includes(operation)) try {
-    await appendFile(report, JSON.stringify({ operation, exitCode: code, elapsedMs: Math.ceil(performance.now() - started), ...classifyPodman(tail) }) + "\n", { mode: 0o600 });
+    await appendFile(report, JSON.stringify({ operation, exitCode: code, elapsedMs, ...classifyPodman(tail) }) + "\n", { mode: 0o600 });
   } catch { /* Recording must preserve the runtime's result. */ }
   process.exit(code);
 }
