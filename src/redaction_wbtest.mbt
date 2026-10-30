@@ -84,3 +84,40 @@ test "escaped quotes inside workspace info arguments are redacted" {
   )
   assert_false(safe.contains("[truncated]"), msg=safe)
 }
+
+///|
+test "failure detail preserves a bounded redacted stderr tail" {
+  let environment : Map[String, String] = Map([
+    ("GITHUB_TOKEN", "fixture-secret"),
+  ])
+  let progress = Progress::new("test", environment~)
+  let detail = progress.failure_detail(
+    stderr_tail="provider failed: token=fixture-secret\nworkspace-create: failed (exit 128)",
+  )
+  assert_true(detail.contains("provider failed: token=[redacted]"), msg=detail)
+  assert_true(
+    detail.contains("workspace-create: failed (exit 128)"),
+    msg=detail,
+  )
+  assert_false(detail.contains("fixture-secret"), msg=detail)
+  let bounded = Progress::new("test").failure_detail(
+    stderr_tail=[
+      "line 0", "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7",
+      "line 8", "line 9",
+    ].join("\n"),
+  )
+  assert_false(bounded.contains("line 0"), msg=bounded)
+  assert_true(bounded.contains("line 9"), msg=bounded)
+  assert_true(
+    bounded.contains("error details incomplete or truncated"),
+    msg=bounded,
+  )
+  let binary = Progress::new("test").failure_detail(
+    stderr_tail="\u{fffd} private-binary-secret",
+  )
+  assert_false(binary.contains("private-binary-secret"), msg=binary)
+  assert_true(
+    binary.contains("error details incomplete or truncated"),
+    msg=binary,
+  )
+}

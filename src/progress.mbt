@@ -108,6 +108,8 @@ priv struct Progress {
   mut classic_build : Bool
   recent : Array[String]
   failures : Array[String]
+  mut stderr_tail : String
+  mut stderr_tail_safe : Bool
   mut details_truncated : Bool
 }
 
@@ -154,6 +156,8 @@ fn Progress::new(
     classic_build: false,
     recent: [],
     failures: [],
+    stderr_tail: "",
+    stderr_tail_safe: true,
     details_truncated: false,
   }
 }
@@ -210,15 +214,50 @@ fn Progress::remember(
 }
 
 ///|
-fn Progress::failure_detail(self : Progress) -> String {
+fn Progress::failure_detail(
+  self : Progress,
+  stderr_tail~ : String = "",
+) -> String {
   let lines = self.failures +
     self.recent.filter(line => !self.failures.contains(line))
+  let mut stderr_lines : Array[String] = []
+  let stderr_tail = if stderr_tail == "" {
+    self.stderr_tail
+  } else {
+    stderr_tail
+  }
+  let stderr_tail = if self.stderr_tail_safe {
+    stderr_tail
+  } else {
+    self.details_truncated = true
+    ""
+  }
+  for line in stderr_tail.split("\n") {
+    let line = line.trim().to_owned()
+    if line.contains("�") {
+      self.details_truncated = true
+    } else if line != "" &&
+      self.safe_message(line) is Some(safe) &&
+      !lines.contains(safe) &&
+      !stderr_lines.contains(safe) {
+      stderr_lines.push(safe)
+    }
+  }
+  if stderr_lines.length() > 8 {
+    stderr_lines = stderr_lines[stderr_lines.length() - 8:].to_owned()
+    self.details_truncated = true
+  }
   let detail = if lines.is_empty() {
     "no readable error message from subprocess"
   } else {
     lines.join("\n")
   }
   detail +
+  (if stderr_lines.is_empty() {
+    ""
+  } else {
+    "\nSubprocess stderr tail:\n" + stderr_lines.join("\n")
+  }) +
   (if self.details_truncated {
     "\n[error details incomplete or truncated]"
   } else {
@@ -465,6 +504,7 @@ async fn Progress::read_output(
       if tail.length() > 8192 {
         tail = tail[tail.length() - 8192:].to_owned()
       }
+      self.stderr_tail = tail
     }
     for byte in chunk {
       if byte == b'\n' || byte == b'\r' {
@@ -472,6 +512,9 @@ async fn Progress::read_output(
           let line = @utf8.decode(pending.to_bytes()) catch {
             _ => {
               self.details_truncated = true
+              if !capture {
+                self.stderr_tail_safe = false
+              }
               ""
             }
           }
@@ -488,6 +531,9 @@ async fn Progress::read_output(
           pending.reset()
           oversized = true
           self.details_truncated = true
+          if !capture {
+            self.stderr_tail_safe = false
+          }
         } else {
           pending.write_byte(byte)
         }
@@ -498,6 +544,9 @@ async fn Progress::read_output(
     let line = @utf8.decode(pending.to_bytes()) catch {
       _ => {
         self.details_truncated = true
+        if !capture {
+          self.stderr_tail_safe = false
+        }
         ""
       }
     }

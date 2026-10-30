@@ -2442,7 +2442,7 @@ async test "binary stderr never changes command failure with recording enabled o
       "connection": "ssh",
       "buildRef": "refs/heads/main",
       "command": [
-        "/bin/sh", "-c", "printf '\\377 Permission denied (publickey). private-binary-secret\\n' >&2; exit 7",
+        "/bin/sh", "-c", "printf '\\377' >&2; i=0; while test $i -lt 9000; do printf 'A' >&2; i=$((i+1)); done; printf ' Permission denied (publickey). private-binary-secret\\n' >&2; exit 7",
         "sh",
       ],
     },
@@ -2463,6 +2463,7 @@ async test "binary stderr never changes command failure with recording enabled o
   assert_true(records.contains("authentication_failed"))
   assert_true(records.contains("\"exitCode\":7"))
   assert_false(records.contains("private-binary-secret"))
+  assert_true(records.contains("\"detailsTruncated\":true"))
 }
 
 ///|

@@ -152,7 +152,7 @@ async fn command_result(
     error_message?=if status == 0 {
       None
     } else {
-      Some(progress.failure_detail())
+      Some(progress.failure_detail(stderr_tail=errors))
     },
     details_truncated=progress.details_truncated,
     error_type?=if status == 0 || !recording {
