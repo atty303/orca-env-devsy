@@ -2,6 +2,7 @@ import { provisionFailure, provisionStderrObservation, type FailureObservation }
 
 const maxProvisionStderrBytes = 16_384;
 const pemBoundaryCarry = 128;
+const failureConsoleGraceMs = 1_000;
 const consoleStages = [
   ["[ssh] Managed Orca server setup failed", "managed_setup", "failed"],
   ["[ssh] Managed Orca server setup deferred", "managed_setup", "deferred"],
@@ -76,6 +77,7 @@ export class OrcaObservations {
   private sequence = 0;
   private dropped = 0;
   private degraded = 0;
+  private failureConsoleUntil = 0;
   constructor(readonly enabled = true) {}
 
   begin(workspace: number) { if (this.enabled) this.active.add(workspace); }
@@ -83,6 +85,7 @@ export class OrcaObservations {
     if (!this.enabled) return;
     const streamed = this.stderrTails.get(workspace);
     if (!result.ok) {
+      this.failureConsoleUntil = performance.now() + failureConsoleGraceMs;
       const stderr = result.stderr || streamed?.text;
       const error = provisionFailure(result.error, stderr, result.stdout);
       error.adapterStreamBytes = streamed?.bytes ?? 0;
@@ -96,18 +99,24 @@ export class OrcaObservations {
     this.active.delete(workspace);
     this.lineTails.delete(workspace);
   }
-  acceptsConsole(text: string) { return this.enabled && consoleStages.some(([prefix]) => text.startsWith(prefix)); }
-  private consoleEvent(text: string) {
-    const entry = consoleStages.find(([prefix]) => text.startsWith(prefix));
-    if (!this.enabled || !entry) return;
-    return this.add({ source: "console", activeWorkspaces: [...this.active], stage: entry[1], status: entry[2] });
+  private observingProvisionFailure() { return this.active.size > 0 || performance.now() <= this.failureConsoleUntil; }
+  acceptsConsole(text: string, type?: string) {
+    return this.enabled && (consoleStages.some(([prefix]) => text.startsWith(prefix)) || (this.observingProvisionFailure() && type === "error"));
   }
-  console(text: string, error: unknown) {
-    const event = this.consoleEvent(text);
+  private consoleEvent(text: string, type?: string) {
+    const entry = consoleStages.find(([prefix]) => text.startsWith(prefix));
+    if (!this.enabled) return;
+    if (entry) return this.add({ source: "console", activeWorkspaces: [...this.active], stage: entry[1], status: entry[2] });
+    if (this.observingProvisionFailure() && type === "error") {
+      return this.add({ source: "console", activeWorkspaces: [...this.active], stage: "renderer-error", status: "observed" });
+    }
+  }
+  console(text: string, error: unknown, type?: string) {
+    const event = this.consoleEvent(text, type);
     if (event) event.error = provisionFailure(error);
   }
-  captureConsole(text: string, read: () => Promise<unknown>) {
-    const event = this.consoleEvent(text);
+  captureConsole(text: string, read: () => Promise<unknown>, type?: string) {
+    const event = this.consoleEvent(text, type);
     if (event) this.capture(async () => { event.error = provisionFailure(await read()); });
   }
   provision(event: { provisionId?: unknown; stream?: unknown; chunk?: unknown }) {
@@ -169,6 +178,7 @@ export class OrcaObservations {
     this.stderrTails.clear();
     this.lineTails.clear();
     this.finishedFailures.clear();
+    this.failureConsoleUntil = 0;
     return snapshot;
   }
 }

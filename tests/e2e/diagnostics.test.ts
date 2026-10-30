@@ -176,6 +176,20 @@ test("workspace progress and native console cause are retained across chunk boun
   expect(JSON.stringify(report)).not.toContain(privateValue);
 });
 
+test("renderer errors during provisioning are retained with bounded redaction", async () => {
+  const observed = new OrcaObservations();
+  observed.console("unrelated renderer error", new Error("outside provision"), "error");
+  observed.begin(1);
+  observed.captureConsole("build failed while pulling base image", async () => new Error(`request failed: token=${privateValue}`), "error");
+  observed.finish(1, { ok: false, error: "Recipe exited with code 1." });
+  const report = await observed.snapshot();
+  expect(report.events).toHaveLength(2);
+  expect(report.events[0]).toMatchObject({ source: "console", activeWorkspaces: [1], stage: "renderer-error", status: "observed" });
+  expect(report.events[0].error?.errorSummary).toContain("request failed: token=[redacted]");
+  expect(report.events[0].error?.errorSummary?.length).toBeLessThanOrEqual(2048);
+  expect(JSON.stringify(report)).not.toContain(privateValue);
+});
+
 test("provision stderr recording retains a bounded tail and exposes truncation", async () => {
   const observed = new OrcaObservations();
   observed.begin(0);

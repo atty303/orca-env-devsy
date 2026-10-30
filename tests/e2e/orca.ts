@@ -92,7 +92,8 @@ export class Orca {
       signal?.throwIfAborted();
       app.on("console", message => {
         const text = message.text().slice(0, 16_384);
-        if (!observations.acceptsConsole(text)) return;
+        const type = message.type();
+        if (!observations.acceptsConsole(text, type)) return;
         observations.captureConsole(text, async () => {
           const args = message.args();
           const argument = args.length > 1 ? await args[args.length - 1].evaluate(value => {
@@ -120,7 +121,7 @@ export class Orca {
           }) : { value: text, truncated: false };
           if (argument.truncated) observations.recordingFailure();
           return argument.value;
-        });
+        }, type);
       });
       const actual = await measure("electron-home", budgets.lifecycle, () => withAbort(signal, () => app.evaluate(({ app }) => app.getPath("home"))));
       if (await withAbort(signal, () => realpath(actual)) !== home) { app.process().kill("SIGKILL"); throw new Error("Orca escaped disposable HOME"); }
