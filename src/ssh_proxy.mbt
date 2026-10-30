@@ -14,6 +14,9 @@ extern "C" fn proxy_signal(pid : Int32, signal : Int32) -> Int32 = "kill"
 extern "C" fn process_start(pid : Int32) -> Int64 = "orca_process_start"
 
 ///|
+extern "C" fn process_is_zombie(pid : Int32) -> Int32 = "orca_process_is_zombie"
+
+///|
 extern "C" fn process_group(pid : Int32) -> Int32 = "getpgid"
 
 ///|
@@ -37,6 +40,7 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
   let present = group_exists(pid)
   guard present >= 0 else {
     let repeated = group_exists(pid)
+    let zombie = process_is_zombie(pid)
     raise AdapterError(
       "Cannot inspect transport process group (errno " +
       (-present).to_string() +
@@ -48,6 +52,8 @@ fn transport_group_alive(pid : Int32, start : Int64) -> Bool raise {
       process_group(pid).to_string() +
       ", repeated group result " +
       repeated.to_string() +
+      ", transport leader zombie status " +
+      zombie.to_string() +
       ")",
     )
   }
