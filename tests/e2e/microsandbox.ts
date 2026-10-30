@@ -26,7 +26,7 @@ export async function launch(binary: string, home: string, report: string, opera
   const started = performance.now();
   const before = tracked ? await oomCount() : NaN;
   const args = process.argv.slice(2);
-  if (args[0] === "run") args.splice(1, 0, "--net-rule", "allow@host");
+  if (args[0] === "run") args.splice(1, 0, "--net", "host");
   const child = Bun.spawn([binary, ...args], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const interrupt = () => child.kill("SIGTERM");
   process.once("SIGTERM", interrupt);
