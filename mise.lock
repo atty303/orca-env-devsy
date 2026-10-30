@@ -83,36 +83,32 @@ url = "https://github.com/apple/container/releases/download/1.5.0/container-1.5.
 url_api = "https://api.github.com/repos/apple/container/releases/assets/597136570"
 
 [[tools."github:atty303/devsy"]]
-version = "1.25.0-beta.8"
+version = "1.25.0-beta.9"
 backend = "github:atty303/devsy"
-specifiers = ["1.25.0-beta.8"]
+specifiers = ["1.25.0-beta.9"]
 
 [tools."github:atty303/devsy".options]
 matching = "devsy-"
 
 [tools."github:atty303/devsy"."platforms.linux-arm64"]
-checksum = "sha256:39312a599de99b0837433215e2f5e474025a0208aecef65febd3d150620d15af"
-checksum_source = "mise-versions"
-url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-linux-arm64"
-url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625511"
+checksum = "sha256:8b383695dda29c4b77cc8756c12d93bbafe169ec1f3a7816ada28499b07aa4d2"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.9/devsy-linux-arm64"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/693024236"
 
 [tools."github:atty303/devsy"."platforms.linux-x64"]
-checksum = "sha256:e8e254d86204d96d2ae6074f1f24c8d37fb2b4fbb21d6e91e08e30552b06cf27"
-checksum_source = "mise-versions"
-url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-linux-amd64"
-url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625509"
+checksum = "sha256:bd034f986aacfff8434c027ecb476c3306eb0e1515760144aa9d49d3d29db0de"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.9/devsy-linux-amd64"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/693024234"
 
 [tools."github:atty303/devsy"."platforms.macos-arm64"]
-checksum = "sha256:77d3c68cb4b5c61e306b2b2d899c02e6a1cf9629c082968ca90807446f1180b0"
-checksum_source = "mise-versions"
-url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-darwin-arm64"
-url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625508"
+checksum = "sha256:5c6efee072a2e1fb534746949c42e3a3b2762476d477e930f0d84c86c974467c"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.9/devsy-darwin-arm64"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/693024235"
 
 [tools."github:atty303/devsy"."platforms.windows-x64"]
-checksum = "sha256:d01d1d05c2fda51c8f4eca1dcf78dae384dfc597fbf4391f87ac752218be460a"
-checksum_source = "mise-versions"
-url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-windows-amd64.exe"
-url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625497"
+checksum = "sha256:084f324247512c49945afd1bfa2910073b762d6b06753c81b3b4a376c258b91d"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.9/devsy-windows-amd64.exe"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/693024231"
 
 [[tools."github:devsy-org/devsy"]]
 version = "1.25.0-beta.3"

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, mkdtemp, rm, realpath, writeFile, readFile, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, realpath, writeFile, readFile, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { run as cleanupRun, processScope, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
 import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
@@ -103,7 +103,7 @@ try {
   await d(["provider", "add", provider, ...options]);
   source = await fixture(root, env, release.version, phase.signal);
   shared = await services(root, env, { devsy, home: dhome, provider, source: source.bare }, phase.signal);
-  await appendFile(env.GIT_CONFIG_GLOBAL!, `\n[url "${shared.localSourceUrl}"]\n\tinsteadOf = ${shared.sourceUrl}\n`);
+  env.DEVSY_GIT_INSPECTION_REPOSITORY = shared.localSourceUrl;
   await source.connect(shared.localSourceUrl);
   env.ORCA_E2E_REPO_HOST_URL = shared.localSourceUrl;
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");

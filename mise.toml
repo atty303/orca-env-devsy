@@ -84,7 +84,7 @@ run = "bun install --frozen-lockfile && touch node_modules/.installed"
 [tasks."test:e2e"]
 description = "Run stable Orca/provider integration scenarios (explicit --provider required)"
 depends = ["build"]
-tools = { "github:atty303/devsy[matching=devsy-]" = "1.25.0-beta.8" }
+tools = { "github:atty303/devsy[matching=devsy-]" = "1.25.0-beta.9" }
 run = "bun tests/e2e/main.ts"
 
 [tasks."test:e2e:prepare-ci"]
