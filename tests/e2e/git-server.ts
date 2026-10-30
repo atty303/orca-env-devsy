@@ -6,6 +6,7 @@ import { processScope, quote, run as cleanupRun, terminate, type Environment } f
 import { budgets } from "./timing.ts";
 
 export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]>; hostGateway: string };
+type HostProbe = { target: string; result: string };
 export type GitServerOptions = { devsy: string; home: string; provider: string; source: string };
 
 function sshErrorCategories(text: string) {
@@ -82,42 +83,55 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       catch { signal?.throwIfAborted(); return false; }
     }, budgets.lifecycle);
     const hostGateway = (await stats()).hostGateway;
-    const gatewayProbeScript = [
+    const hostProbeScript = [
       "import urllib.request",
       "import urllib.error",
       "import errno",
-      `url = ${JSON.stringify(`http://${hostGateway}:${port}/__metrics`)}`,
-      "try:",
-      "    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=3) as response:",
-      "        print('http_' + str(response.status))",
-      "except TimeoutError:",
-      "    print('timeout')",
-      "except urllib.error.URLError as error:",
-      "    reason = error.reason",
-      "    if isinstance(reason, TimeoutError):",
-      "        print('timeout')",
-      "    elif isinstance(reason, OSError):",
+      "import socket",
+      "import json",
+      "from concurrent.futures import ThreadPoolExecutor",
+      `targets = {"default_gateway": [${JSON.stringify(hostGateway)}], "vm_host_alias": ["10.0.2.2"]}`,
+      "for name in ('host.containers.internal', 'host.docker.internal'):",
+      "    try:",
+      "        targets[name] = sorted({item[4][0] for item in socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)})",
+      "    except OSError:",
+      "        targets[name] = []",
+      "def probe(address):",
+      "    authority = '[' + address + ']' if ':' in address else address",
+      `    url = 'http://' + authority + ':' + ${JSON.stringify(String(port))} + '/__metrics'`,
+      "    try:",
+      "        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=1) as response:",
+      "            return 'http_' + str(response.status)",
+      "    except TimeoutError:",
+      "        return 'timeout'",
+      "    except urllib.error.URLError as error:",
+      "        reason = error.reason",
+      "        if isinstance(reason, TimeoutError): return 'timeout'",
+      "        if isinstance(reason, OSError):",
+      "            categories = {errno.ECONNREFUSED: 'connection_refused', errno.EHOSTUNREACH: 'host_unreachable', errno.ENETUNREACH: 'network_unreachable', errno.ETIMEDOUT: 'timeout'}",
+      "            return categories.get(reason.errno, 'os_error')",
+      "        return 'url_error'",
+      "    except OSError as error:",
       "        categories = {errno.ECONNREFUSED: 'connection_refused', errno.EHOSTUNREACH: 'host_unreachable', errno.ENETUNREACH: 'network_unreachable', errno.ETIMEDOUT: 'timeout'}",
-      "        print(categories.get(reason.errno, 'os_error'))",
-      "    else:",
-      "        print('url_error')",
-      "except OSError as error:",
-      "    categories = {errno.ECONNREFUSED: 'connection_refused', errno.EHOSTUNREACH: 'host_unreachable', errno.ENETUNREACH: 'network_unreachable', errno.ETIMEDOUT: 'timeout'}",
-      "    print(categories.get(error.errno, 'os_error'))",
+      "        return categories.get(error.errno, 'os_error')",
+      "with ThreadPoolExecutor(max_workers=16) as pool:",
+      "    pending = {(name, address): pool.submit(probe, address) for name, addresses in targets.items() for address in addresses}",
+      "    results = {name: sorted({future.result() for (target, _), future in pending.items() if target == name}) if addresses else ['name_resolution'] for name, addresses in targets.items()}",
+      "print(json.dumps(results, sort_keys=True))",
     ].join("\n");
-    const gatewayProbe = await run([
+    const hostProbes: HostProbe[] = await run([
       ...ssh,
       "--command",
-      `python3 -c ${quote(gatewayProbeScript)}`,
-    ], { env, timeout: budgets.operation }).then(output => output.trim()).catch(() => {
+      `python3 -c ${quote(hostProbeScript)}`,
+    ], { env, timeout: budgets.operation }).then(output => JSON.parse(output.trim()) as Record<string, string[]>).then(results => Object.entries(results).map(([target, values]) => ({ target, result: values.join(",") }))).catch(() => {
       signal?.throwIfAborted();
-      return "unavailable";
+      return [{ target: "probe", result: "unavailable" }];
     });
     const diagnostics = async () => {
       const metricsReachable = await stats().then(() => true, () => false);
       return {
         metricsReachable,
-        gatewayProbe,
+        hostProbes,
         connections: connections.map((connection, index) => ({
           exitCode: connection.exitCode,
           signal: connection.signalCode,

@@ -1178,7 +1178,15 @@ async fn with_fake_tunnel(directory : String, run : async () -> Unit) -> Unit {
       let listener = @socket.TcpServer(
         @socket.Addr::parse("127.0.0.1:" + port),
         reuse_addr=true,
-      )
+      ) catch {
+        error =>
+          raise AdapterError(
+            "fake tunnel listener bind failed for requested port " +
+            port +
+            ": " +
+            error.to_string(),
+          )
+      }
       defer listener.close()
       @fs.write_file(directory + "/listener-ready", "")
       while true {
