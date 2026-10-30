@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, realpath, writeFile, readFile, symlink } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, realpath, writeFile, readFile, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { run as cleanupRun, processScope, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
 import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
@@ -35,7 +35,7 @@ let shared: Awaited<ReturnType<typeof services>> | undefined;
 let failure: unknown;
 let podmanStoreOwned = false;
 const cleanupErrors: string[] = [];
-const devsyCleanupFailures: { operation: string; outcome: "exit" | "timeout" | "aborted"; exitCode: number | null; signal: NodeJS.Signals | null; stderr?: string; stderrTruncated?: boolean }[] = [];
+const devsyCleanupFailures: { operation: string; outcome: "exit" | "timeout" | "aborted" | "exception"; exitCode: number | null; signal: NodeJS.Signals | null; stderr?: string; stderrTruncated?: boolean; errorSummary?: string; errorSummaryTruncated?: boolean }[] = [];
 let gitStats: GitServerStats | undefined;
 let gitServerDiagnostics: Awaited<ReturnType<NonNullable<typeof shared>["diagnostics"]>> | undefined;
 let cloneAudit: { recipe: string; pinned: boolean; strategies: string[] }[] = [];
@@ -103,6 +103,7 @@ try {
   await d(["provider", "add", provider, ...options]);
   source = await fixture(root, env, release.version, phase.signal);
   shared = await services(root, env, { devsy, home: dhome, provider, source: source.bare }, phase.signal);
+  await appendFile(env.GIT_CONFIG_GLOBAL!, `\n[url "${shared.localSourceUrl}"]\n\tinsteadOf = ${shared.sourceUrl}\n`);
   await source.connect(shared.localSourceUrl);
   env.ORCA_E2E_REPO_HOST_URL = shared.localSourceUrl;
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
@@ -290,10 +291,23 @@ try {
   phase.beginCleanup();
   const cleanup = cleanupDeadline(cleanupErrors);
   await Orca.settleLaunches(cleanup.signal).catch(() => cleanupErrors.push("orca-launch"));
-  const cleanDevsy = (operation: string, args: string[], timeout: number) => cleanupRun([devsy, "--home", dhome, ...args], { env, timeout, signal: cleanup.signal, onFailure: result => {
-    const summary = result.stderr === "" ? undefined : diagnosticTextSummary(result.stderr, 4096);
-    devsyCleanupFailures.push({ operation, outcome: result.outcome, exitCode: result.exitCode, signal: result.signal, ...(summary ? { stderr: summary.text, stderrTruncated: summary.truncated } : {}) });
-  } });
+  const cleanDevsy = async (operation: string, args: string[], timeout: number) => {
+    let observed = false;
+    try {
+      return await cleanupRun([devsy, "--home", dhome, ...args], { env, timeout, signal: cleanup.signal, onFailure: result => {
+        observed = true;
+        const summary = result.stderr === "" ? undefined : diagnosticTextSummary(result.stderr, 4096);
+        devsyCleanupFailures.push({ operation, outcome: result.outcome, exitCode: result.exitCode, signal: result.signal, ...(summary ? { stderr: summary.text, stderrTruncated: summary.truncated } : {}) });
+      } });
+    } catch (error) {
+      if (!observed) {
+        const message = error instanceof Error ? error.message : String(error);
+        const summary = diagnosticTextSummary(message, 4096);
+        devsyCleanupFailures.push({ operation, outcome: "exception", exitCode: null, signal: null, errorSummary: summary.text, errorSummaryTruncated: summary.truncated });
+      }
+      throw error;
+    }
+  };
   const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
   for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }, cleanup.signal).catch(() => cleanupErrors.push("cancel-provision"));
   await orca?.settleProvisionCalls(cleanup.signal).catch(() => { orca?.observations.recordingFailure(); });
@@ -316,14 +330,24 @@ try {
   await shared?.close(cleanup.signal).catch(() => cleanupErrors.push("git-server-cleanup"));
   // This Devsy home was created for this run and contained no user workspaces.
   // Reap creations that failed before Orca could persist their receipts as well.
+  let devsyCleanupStage = "workspace-list";
   try {
     const remaining = source ? JSON.parse(await cleanDevsy("workspace-list", ["--result-format", "json", "workspace", "list", "--skip-pro"], budgets.operation)) as { id: string }[] : [];
+    devsyCleanupStage = "workspace-id-validation";
     for (const item of remaining) assert(/^[a-z0-9-]+-[a-z]+-[a-z0-9]{2}$/.test(item.id));
+    devsyCleanupStage = "workspace-delete";
     await Promise.all(remaining.map(async item => {
       await cleanDevsy("workspace-delete", ["workspace", "delete", item.id, "--force", "--ignore-not-found"], budgets.lifecycle).catch(() => cleanupErrors.push("devsy-cleanup"));
       cleanupErrors.push("unreleased-workspace");
     }));
-  } catch { cleanupErrors.push("devsy-cleanup"); }
+  } catch (error) {
+    if (!devsyCleanupFailures.some(item => item.operation === devsyCleanupStage)) {
+      const message = error instanceof Error ? error.message : String(error);
+      const summary = diagnosticTextSummary(message, 4096);
+      devsyCleanupFailures.push({ operation: devsyCleanupStage, outcome: "exception", exitCode: null, signal: null, errorSummary: summary.text, errorSummaryTruncated: summary.truncated });
+    }
+    cleanupErrors.push("devsy-cleanup");
+  }
   if (provider === "apple" || provider === "docker" || provider === "podman") {
     const volumes = new Set(runtimes.map(runtime => runtime.recipeResult.userData.orcaVolume).filter((value): value is string => typeof value === "string"));
     const rawEvents = await Bun.file(env.XDG_STATE_HOME + "/orca-env-devsy/events.jsonl").text().catch(() => "");
