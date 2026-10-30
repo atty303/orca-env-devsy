@@ -2651,8 +2651,11 @@ async test "receipt restart stops legacy masters without worker state" {
 ///|
 async test "bulk recover restores persistent XDG state without a receipt or current YAML" {
   let (directory, env) = fixture()
-  defer cleanup_fixture(directory)
   env.set("XDG_STATE_HOME", directory + "/xdg-state")
+  defer cleanup_fixture(
+    directory,
+    state_home=env.get("XDG_STATE_HOME").unwrap(),
+  )
   with_fake_tunnel(directory, async fn() {
     let document : Json = {
       "devsy": {
@@ -3015,7 +3018,8 @@ async test "filesystem failure reports its cause and elapsed time before any sub
 }
 
 ///|
-async fn cleanup_fixture(directory : String) -> Unit {
+async fn cleanup_fixture(directory : String, state_home? : String) -> Unit {
+  let state_home = state_home.unwrap_or(directory + "/.local/state")
   let leased = @fs.exists(directory + "/fixture-permit")
   defer (if leased { fixture_permits.release() })
   if @fs.exists(directory + "/orca-host/orca-runtime.json") {
@@ -3026,7 +3030,7 @@ async fn cleanup_fixture(directory : String) -> Unit {
       ignore(proxy_signal(pid.to_int(), 15))
     }
   }
-  let base = directory + "/.local/state/orca-env-devsy/tunnels"
+  let base = state_home + "/orca-env-devsy/tunnels"
   if @fs.exists(base) {
     for name in @fs.readdir(base) {
       let worker = base + "/" + name
@@ -3053,7 +3057,7 @@ async fn cleanup_fixture(directory : String) -> Unit {
       }
     }
   }
-  let root = directory + "/.local/state/orca-env-devsy"
+  let root = state_home + "/orca-env-devsy"
   if @fs.exists(root) {
     @async.with_timeout(5000, async fn() {
       while supervisor_alive(root) {

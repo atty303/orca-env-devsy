@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { DiagnosticError, diagnosticTextSummary, failureCategory, provisionFailure, providerOperationObservation, sshStartupPhases } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
-import { classifyPodman } from "./podman.ts";
+import { classifyPodman, podmanExecProgram } from "./podman.ts";
 import { processFailureCategory } from "../../scripts/process.ts";
 
 import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
@@ -275,6 +275,12 @@ test("provider operation records distinguish slow success from failure and redac
   const summary = diagnosticTextSummary("cause: " + "x".repeat(3000), 2048);
   expect(summary).toMatchObject({ truncated: true });
   expect(summary.text).toHaveLength(2048);
+});
+
+test("Podman exec observations retain only an allowlisted executable name", () => {
+  expect(podmanExecProgram(["exec", "--user", "root", "container", "/bin/sh", "-c", "private command"])).toBe("sh");
+  expect(podmanExecProgram(["exec", "--latest", "custom-secret-name", "argument"])).toBe("other");
+  expect(podmanExecProgram(["run", "image"])).toBeUndefined();
 });
 
 

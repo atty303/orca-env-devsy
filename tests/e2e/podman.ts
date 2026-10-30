@@ -45,7 +45,7 @@ export async function launch(binary: string, report: string, operationsReport: s
   const elapsedMs = Math.ceil(performance.now() - started);
   const observation = providerOperationObservation(operation, elapsedMs, code, tail);
   if (observation) try {
-    await appendFile(operationsReport, JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), ...observation }) + "\n", { mode: 0o600 });
+    await appendFile(operationsReport, JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), ...observation, ...(operation === "exec" ? { program: podmanExecProgram(args) } : {}) }) + "\n", { mode: 0o600 });
   } catch {
     process.stderr.write("E2E provider operation recording failed (podman)\n");
   }
@@ -53,4 +53,24 @@ export async function launch(binary: string, report: string, operationsReport: s
     await appendFile(report, JSON.stringify({ operation, exitCode: code, elapsedMs, ...classifyPodman(tail) }) + "\n", { mode: 0o600 });
   } catch { /* Recording must preserve the runtime's result. */ }
   process.exit(code);
+}
+
+export function podmanExecProgram(args: string[]) {
+  const commandIndex = args.indexOf("exec");
+  if (commandIndex < 0) return undefined;
+  const valueOptions = new Set(["--detach-keys", "--env", "--env-file", "--preserve-fd", "--user", "--workdir", "-e", "-u", "-w"]);
+  const programs = new Set(["ash", "bash", "cat", "chmod", "chown", "cp", "dash", "env", "git", "mkdir", "mv", "node", "python", "python3", "rm", "sh", "sleep", "test", "timeout"]);
+  let index = commandIndex + 1;
+  let latest = false;
+  while (index < args.length && args[index].startsWith("-")) {
+    const option = args[index];
+    if (option === "--latest") { latest = true; index++; continue; }
+    if (valueOptions.has(option) && index + 1 < args.length) index++;
+    index++;
+  }
+  if (!latest) index++;
+  const command = args[index];
+  if (!command) return undefined;
+  const basename = command.split("/").at(-1)!;
+  return programs.has(basename) ? basename : "other";
 }
