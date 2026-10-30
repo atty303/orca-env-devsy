@@ -290,9 +290,11 @@ try {
   const cleanup = cleanupDeadline(cleanupErrors);
   await Orca.settleLaunches(cleanup.signal).catch(() => cleanupErrors.push("orca-launch"));
   const cleanDevsy = (args: string[], timeout: number) => cleanupRun([devsy, "--home", dhome, ...args], { env, timeout, signal: cleanup.signal });
-  const orcaObservations = await orca?.observations.snapshot();
   const diagnostics = await adapterDiagnostics(env.XDG_STATE_HOME!).catch(() => ({ available: false, readFailed: true, events: [] }));
   for (const provisionId of pending) await orca?.call("ephemeralVm", "cancelProvision", { provisionId }, cleanup.signal).catch(() => cleanupErrors.push("cancel-provision"));
+  await orca?.settleProvisionCalls(cleanup.signal).catch(() => { orca?.observations.recordingFailure(); });
+  await orca?.drainProvisionObservations(cleanup.signal).catch(() => { orca?.observations.recordingFailure(); });
+  const orcaObservations = await orca?.observations.snapshot();
   if (shared) {
     gitServerDiagnostics ??= await shared.diagnostics().catch(() => undefined);
     gitStats = await shared.stats(cleanup.signal).catch(() => { cleanupErrors.push("git-server-metrics"); return undefined; });

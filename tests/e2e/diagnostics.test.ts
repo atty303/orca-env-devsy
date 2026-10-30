@@ -100,6 +100,9 @@ test("provision failures retain bounded causes after masking credentials and wor
   expect(JSON.stringify(observed)).not.toContain(privateValue);
   expect(observed.errorSummaryTruncated).toBe(false);
   expect(observed.adapterSummaryTruncated).toBe(false);
+  const unknownOutput = provisionFailure("Recipe exited with code 1", "provider returned an unclassified cause");
+  expect(unknownOutput.adapterMarkers).toEqual([]);
+  expect(unknownOutput.adapterSummary).toContain("provider returned an unclassified cause");
   const context = "x".repeat(4096) + "GitHub API returned 403\n" + "cleanup\n".repeat(2000);
   const contextual = provisionFailure("Recipe exited with code 1", context);
   expect(contextual.adapterMarkers).toContain("403");
@@ -151,14 +154,75 @@ test("workspace progress and native console cause are retained across chunk boun
   observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: "ning…\n" + privateValue + "\n12:00:01 create: done (1.0s)\n" });
   observed.provision({ provisionId: "provision-0", stream: "stdout", chunk: receipt });
   observed.console("[ssh] Managed Orca server setup failed; using the relay this session:", { message: privateValue, code: "orcad_candidate_preflight_failed" });
-  observed.finish(0, { ok: false, error: "Orca couldn’t start its server on this host.", stderr: privateValue, stdout: receipt });
+  observed.finish(0, { ok: false, error: "Orca couldn’t start its server on this host.", stdout: receipt });
+  observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: `provider command failed (exit 128): clone failed; token=${privateValue}\n` });
   const report = await observed.snapshot();
   expect(report.completeness).toBe("complete");
   expect(report.events.map(event => event.status)).toEqual(["running", "done", "failed", "failed"]);
   expect(report.events[2].activeWorkspaces).toEqual([0]);
   expect(report.events[2].error?.category).toBe("managed_preflight");
   expect(report.events[3].error?.boundary).toBe("ssh_setup");
+  expect(report.events[3].error?.adapterSummary).toContain("clone failed");
+  expect(report.events[3].error?.adapterSummary).toContain("token=[redacted]");
+  expect(report.events[3].error?.adapterStreamBytes).toBeGreaterThan(0);
+  expect(report.events[3].error?.adapterStreamTruncated).toBe(false);
   expect(JSON.stringify(report)).not.toContain(privateValue);
+});
+
+test("provision stderr recording retains a bounded tail and exposes truncation", async () => {
+  const observed = new OrcaObservations();
+  observed.begin(0);
+  const cause = "x".repeat(20_000) + "\nprovider command failed (exit 128).";
+  observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: cause });
+  observed.finish(0, { ok: false, error: "Recipe exited with code 1." });
+  const report = await observed.snapshot();
+  const error = report.events[0].error!;
+  expect(error.adapterStreamBytes).toBe(Buffer.byteLength(cause));
+  expect(error.adapterStreamTruncated).toBe(true);
+  expect(error.adapterSummary?.length).toBe(16_384);
+  expect(error.adapterSummaryTruncated).toBe(false);
+});
+
+test("provision stream metadata is independent from result stderr", async () => {
+  const observed = new OrcaObservations();
+  observed.begin(0);
+  observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: "x".repeat(17_000) });
+  observed.finish(0, { ok: false, error: "Recipe exited with code 1.", stderr: "different result stderr" });
+  const report = await observed.snapshot();
+  const error = report.events[0].error!;
+  expect(error.adapterSummary).toBe("different result stderr");
+  expect(error.adapterStreamBytes).toBe(17_000);
+  expect(error.adapterStreamTruncated).toBe(true);
+});
+
+test("empty result stderr does not hide streamed provision failure output", async () => {
+  const observed = new OrcaObservations();
+  observed.begin(0);
+  observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: "provider clone failed: remote closed the connection" });
+  observed.finish(0, { ok: false, error: "Recipe exited with code 1.", stderr: "" });
+  const report = await observed.snapshot();
+  expect(report.events[0].error?.adapterSummary).toContain("remote closed the connection");
+  expect(report.events[0].error?.adapterStreamBytes).toBeGreaterThan(0);
+});
+
+test("provision stderr removes a private key block before bounding the retained tail", async () => {
+  const observed = new OrcaObservations();
+  observed.begin(0);
+  const keyType = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+  const marker = "-----" + ["BEGIN", keyType].join(" ") + "-----\n";
+  const body = "NOT_BASE64_SECRET_CONTENT\n".repeat(900);
+  const end = "-----" + ["END", keyType].join(" ") + "-----\n";
+  const cause = marker + body + end + "provider command failed (exit 128).";
+  observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: marker.slice(0, 17) });
+  observed.provision({ provisionId: "provision-0", stream: "stderr", chunk: cause.slice(17) });
+  observed.finish(0, { ok: false, error: "Recipe exited with code 1." });
+  const report = await observed.snapshot();
+  const error = report.events[0].error!;
+  expect(error.adapterSummary).toContain("[private key redacted]");
+  expect(error.adapterSummary).toContain("provider command failed");
+  expect(error.adapterSummary).not.toContain("NOT_BASE64_SECRET_CONTENT");
+  expect(error.adapterStreamBytes).toBe(Buffer.byteLength(cause));
+  expect(error.adapterStreamTruncated).toBe(true);
 });
 
 test("opt-out, capacity loss and reader failure do not affect the result contract", async () => {

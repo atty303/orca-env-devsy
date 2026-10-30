@@ -51,6 +51,7 @@ export async function latestOrca(signal?: AbortSignal) {
 
 export class Orca {
   private constructor(readonly app: ElectronApplication, readonly bridgeId: number, readonly observations: OrcaObservations, readonly signal?: AbortSignal) {}
+  private readonly provisionOperations = new Set<Promise<unknown>>();
   private static readonly launches = new Set<Promise<boolean>>();
   static launch(executable: string, profile: string, env: Environment, signal?: AbortSignal, launchApplication: typeof _electron.launch = options => _electron.launch(options)) {
     const owner = { cleanupFailed: false };
@@ -138,8 +139,18 @@ export class Orca {
           if (bridge) {
             await withAbort(signal, () => bridge!.exposeFunction("__orcaE2EObserve", (event: { provisionId?: unknown; stream?: unknown; chunk?: unknown }) => { try { observations.provision(event); } catch { observations.recordingFailure(); } }));
             await withAbort(signal, () => bridge!.evaluate(() => {
-              const view = window as unknown as { api: { ephemeralVm: { onProvisionEvent(callback: (event: unknown) => void): () => void } }; __orcaE2EObserve(event: unknown): Promise<void> };
-              view.api.ephemeralVm.onProvisionEvent(event => { void view.__orcaE2EObserve(event).catch(() => {}); });
+              const view = window as unknown as { api: { ephemeralVm: { onProvisionEvent(callback: (event: unknown) => void): () => void } }; __orcaE2EObserve(event: unknown): Promise<void>; __orcaE2EDrain?: () => Promise<{ completed: boolean; failures: number }> };
+              let observationQueue = Promise.resolve();
+              let observationFailures = 0;
+              view.api.ephemeralVm.onProvisionEvent(event => {
+                observationQueue = observationQueue.then(() => view.__orcaE2EObserve(event)).catch(() => { observationFailures++; });
+              });
+              view.__orcaE2EDrain = async () => {
+                const completed = await Promise.race([observationQueue.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 500))]);
+                const failures = observationFailures + (completed ? 0 : 1);
+                observationFailures = 0;
+                return { completed, failures };
+              };
             }));
           }
         } catch { observations.recordingFailure(); }
@@ -161,13 +172,24 @@ export class Orca {
       const bridge = BrowserWindow.fromId(request.id);
       if (!bridge) throw new Error("IPC bridge window disappeared");
       return await bridge.webContents.executeJavaScript(`(async () => {
-        try { return { ok: true, value: await window.api[${JSON.stringify(request.section)}][${JSON.stringify(request.method)}](${request.args === undefined ? "" : JSON.stringify(request.args)}) }; }
-        catch (error) { return { ok: false, error: { name: error?.name, message: error?.message, code: error?.code } }; }
+        try {
+          const value = await window.api[${JSON.stringify(request.section)}][${JSON.stringify(request.method)}](${request.args === undefined ? "" : JSON.stringify(request.args)});
+          const observationDrain = ${JSON.stringify(request.section)} === "ephemeralVm" && ${JSON.stringify(request.method)} === "provision" ? await window.__orcaE2EDrain?.() : undefined;
+          return { ok: true, value, observationFailures: observationDrain?.failures ?? 0 };
+        } catch (error) {
+          const observationDrain = ${JSON.stringify(request.section)} === "ephemeralVm" && ${JSON.stringify(request.method)} === "provision" ? await window.__orcaE2EDrain?.().catch(() => undefined) : undefined;
+          return { ok: false, error: { name: error?.name, message: error?.message, code: error?.code }, observationFailures: observationDrain?.failures ?? 0 };
+        }
       })()`);
     }, { id: this.bridgeId, section, method, args }).then(reply => {
+      if (reply.observationFailures > 0) this.observations.recordingFailure();
       if (!reply.ok) throw reply.error;
       return reply.value as T;
     });
+    if (workspace !== undefined) {
+      this.provisionOperations.add(operation);
+      void operation.then(() => this.provisionOperations.delete(operation), () => this.provisionOperations.delete(operation));
+    }
     let timer: ReturnType<typeof setTimeout>;
     const budget = method === "provision" ? budgets.provision : ["resumeWorkspace", "sleep", "cleanup"].includes(method) ? budgets.lifecycle : budgets.operation;
     try {
@@ -198,5 +220,18 @@ export class Orca {
       console.log("Orca close: failed");
       throw error;
     } finally { clearTimeout(timer!); }
+  }
+  async drainProvisionObservations(signal = this.signal) {
+    if (!this.observations.enabled) return;
+    const result = await withAbort(signal, () => this.app.evaluate(({ BrowserWindow }, request) => {
+      const bridge = BrowserWindow.fromId(request.id);
+      if (!bridge) throw new Error("IPC bridge window disappeared");
+      return bridge.webContents.executeJavaScript("window.__orcaE2EDrain?.() ?? Promise.resolve()");
+    }, { id: this.bridgeId }));
+    if (result?.failures > 0 || result?.completed === false) this.observations.recordingFailure();
+  }
+  async settleProvisionCalls(signal = this.signal) {
+    const pending = [...this.provisionOperations];
+    await withAbort(signal, () => Promise.allSettled(pending));
   }
 }

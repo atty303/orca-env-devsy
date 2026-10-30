@@ -37,6 +37,21 @@ const errorPatterns = {
   channel_closed: ["channel closed without exit status", "premature close"],
   sftp: ["sftp", "subsystem request failed"],
 } as const;
+const diagnosticMarkers = ["ssh", "managed", "orcad", "registration", "generation", "profile", "preflight", "candidate", "bootstrap", "install", "deploy", "launch", "release", "download", "github", "rate limit", "rate_limited", "rate-limit", "429", "403", "fetch", "network", "connection", "socket", "closed", "reset", "handshake", "authentication", "channel", "exec", "exit", "signal", "killed", "memory", "certificate", "checksum", "sqlite", "database", "timeout", "unverifiable", "not connected", "not found", "no such file", "permission", "address", "already", "port", "stale", "pending"];
+
+export function provisionStderrObservation(stderr: string): Pick<FailureObservation, "adapterMarkers" | "adapterSummary" | "adapterSummaryTruncated"> {
+  const summary = diagnosticTextSummary(stderr, 16_384);
+  return {
+    adapterMarkers: diagnosticTextMarkers(stderr),
+    adapterSummary: summary.text,
+    adapterSummaryTruncated: summary.truncated,
+  };
+}
+
+function diagnosticTextMarkers(text: string) {
+  const lower = text.slice(-16_384).toLowerCase();
+  return diagnosticMarkers.filter(label => lower.includes(label));
+}
 
 function inputKind(value: unknown): string {
   return value === null ? "null" : value instanceof Error ? "error" : Array.isArray(value) ? "array" : typeof value;
@@ -98,6 +113,8 @@ export type FailureObservation = {
   errorSummaryTruncated?: boolean;
   adapterSummary?: string;
   adapterSummaryTruncated?: boolean;
+  adapterStreamBytes?: number;
+  adapterStreamTruncated?: boolean;
   recipeOutputSummary?: string;
   recipeOutputSummaryTruncated?: boolean;
   recipe?: { valid: boolean; connection?: "ssh" | "orca-server" };
@@ -185,11 +202,6 @@ export function failureCategory(error: unknown): string {
 export function provisionFailure(error: unknown, stderr?: string, stdout?: string): FailureObservation {
   const information = errorInformation(error);
   const message = information.message;
-  const labels = ["ssh", "managed", "orcad", "registration", "generation", "profile", "preflight", "candidate", "bootstrap", "install", "deploy", "launch", "release", "download", "github", "rate limit", "rate_limited", "rate-limit", "429", "403", "fetch", "network", "connection", "socket", "closed", "reset", "handshake", "authentication", "channel", "exec", "exit", "signal", "killed", "memory", "certificate", "checksum", "sqlite", "database", "timeout", "unverifiable", "not connected", "not found", "no such file", "permission", "address", "already", "port", "stale", "pending"];
-  const markers = (text: string) => {
-    const lower = text.slice(-16_384).toLowerCase();
-    return labels.filter(label => lower.includes(label));
-  };
   let recipe: FailureObservation["recipe"];
   if (stdout !== undefined) {
     recipe = { valid: false };
@@ -207,18 +219,17 @@ export function provisionFailure(error: unknown, stderr?: string, stdout?: strin
     operation: missing[1], path: diagnosticPath, resource: /\.(?:tar(?:\.(?:gz|xz|zst))?|zip)$/.test(missing[3]) ? "archive" : "other",
   } : spawn && diagnosticPath !== undefined ? { operation: "spawn", path: diagnosticPath, resource: "executable" } : undefined;
   const observation = error instanceof DiagnosticError ? error.observation : {
-    category: failureCategory(error), markers: markers(message), error: information.shape,
+    category: failureCategory(error), markers: diagnosticTextMarkers(message), error: information.shape,
     ...(missingResource === undefined ? {} : { missingResource }),
     signals: Object.entries(errorPatterns).filter(([, phrases]) => phrases.some(phrase => message.toLowerCase().includes(phrase.toLowerCase()))).map(([signal]) => signal),
   };
   const errorSummary = message === "" || !(error instanceof Error || typeof error === "string") ? undefined : diagnosticTextSummary(message);
-  const adapterSummary = stderr === undefined || stderr === "" || markers(stderr).length === 0 ? undefined : diagnosticTextSummary(stderr, 16_384);
+  const adapterStderr = stderr === undefined || stderr === "" ? undefined : provisionStderrObservation(stderr);
   const recipeOutputSummary = stdout === undefined || stdout === "" || recipe?.valid !== false ? undefined : diagnosticTextSummary(stdout);
   return {
     ...observation,
     ...(errorSummary === undefined ? {} : { errorSummary: errorSummary.text, errorSummaryTruncated: errorSummary.truncated }),
-    ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }),
-    ...(adapterSummary === undefined ? {} : { adapterSummary: adapterSummary.text, adapterSummaryTruncated: adapterSummary.truncated }),
+    ...(adapterStderr === undefined ? {} : adapterStderr),
     ...(recipeOutputSummary === undefined ? {} : { recipeOutputSummary: recipeOutputSummary.text, recipeOutputSummaryTruncated: recipeOutputSummary.truncated }),
     ...(recipe === undefined ? {} : { recipe, boundary: recipe.connection === "ssh" ? "ssh_setup" : recipe.connection === "orca-server" ? "server_registration" : "recipe" }),
   };
