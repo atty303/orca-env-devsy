@@ -7,7 +7,13 @@ import { budgets } from "./timing.ts";
 
 export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]>; hostGateway: string };
 type HostProbe = { target: string; result: string };
-export type GitServerOptions = { devsy: string; home: string; provider: string; source: string };
+export type GitServerOptions = {
+  devsy: string;
+  home: string;
+  provider: string;
+  source: string;
+  onWorkspaceUpFailure?: (failure: { outcome: "exit" | "timeout" | "aborted"; exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }) => void;
+};
 
 function sshErrorCategories(text: string) {
   const categories = new Set<string>();
@@ -47,7 +53,11 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     finally { await cleanupRun([...args, "workspace", "delete", id, "--force", "--ignore-not-found"], { env, signal: cleanupSignal, timeout: budgets.lifecycle }); }
   };
   try {
-    await run([...args, "--result-format", "json", "workspace", "up", source, "--id", id, "--provider", options.provider, "--ide-launch", "skip"], { env, timeout: budgets.provision });
+    await run([...args, "--result-format", "json", "workspace", "up", source, "--id", id, "--provider", options.provider, "--ide-launch", "skip"], {
+      env,
+      timeout: budgets.provision,
+      onFailure: options.onWorkspaceUpFailure,
+    });
     const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     const port = listener.port;
     listener.stop(true);

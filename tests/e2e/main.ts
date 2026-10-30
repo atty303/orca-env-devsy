@@ -36,6 +36,7 @@ let failure: unknown;
 let podmanStoreOwned = false;
 const cleanupErrors: string[] = [];
 const devsyCleanupFailures: { operation: string; outcome: "exit" | "timeout" | "aborted" | "exception"; exitCode: number | null; signal: NodeJS.Signals | null; stderr?: string; stderrTruncated?: boolean; errorSummary?: string; errorSummaryTruncated?: boolean }[] = [];
+const devsyFailures: { operation: "workspace-up"; outcome: "exit" | "timeout" | "aborted"; exitCode: number | null; signal: NodeJS.Signals | null; stderrSummary?: string; stderrSummaryTruncated?: boolean; stdoutSummary?: string; stdoutSummaryTruncated?: boolean }[] = [];
 let gitStats: GitServerStats | undefined;
 let gitServerDiagnostics: Awaited<ReturnType<NonNullable<typeof shared>["diagnostics"]>> | undefined;
 let cloneAudit: { recipe: string; pinned: boolean; strategies: string[] }[] = [];
@@ -102,7 +103,24 @@ try {
   const options = provider === "apple" ? ["-o", "CONTAINER_PATH=" + Bun.which("container")!] : provider === "docker" ? ["-o", "DOCKER_PATH=" + Bun.which("docker")!] : provider === "podman" ? ["-o", "PODMAN_PATH=" + podman!] : [];
   await d(["provider", "add", provider, ...options]);
   source = await fixture(root, env, release.version, phase.signal);
-  shared = await services(root, env, { devsy, home: dhome, provider, source: source.bare }, phase.signal);
+  shared = await services(root, env, {
+    devsy,
+    home: dhome,
+    provider,
+    source: source.bare,
+    onWorkspaceUpFailure: result => {
+      const stderr = result.stderr === "" ? undefined : diagnosticTextSummary(result.stderr, 4096);
+      const stdout = result.stdout === "" ? undefined : diagnosticTextSummary(result.stdout, 4096);
+      devsyFailures.push({
+        operation: "workspace-up",
+        outcome: result.outcome,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        ...(stderr === undefined ? {} : { stderrSummary: stderr.text, stderrSummaryTruncated: stderr.truncated }),
+        ...(stdout === undefined ? {} : { stdoutSummary: stdout.text, stdoutSummaryTruncated: stdout.truncated }),
+      });
+    },
+  }, phase.signal);
   env.DEVSY_GIT_INSPECTION_REPOSITORY = shared.localSourceUrl;
   await source.connect(shared.localSourceUrl);
   env.ORCA_E2E_REPO_HOST_URL = shared.localSourceUrl;
@@ -377,7 +395,7 @@ try {
   finishPhase(cleanupErrors.length === 0);
   const podmanOperations = await readOperationRecords(root + "/podman-operations.jsonl", 64);
   const microsandboxOperations = await readOperationRecords(root + "/msb-operations.jsonl", 64);
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, gitServer: gitStats, gitServerDiagnostics, devsyCleanupFailures, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, gitServer: gitStats, gitServerDiagnostics, devsyFailures, devsyCleanupFailures, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();
