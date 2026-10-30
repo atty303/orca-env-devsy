@@ -2,7 +2,7 @@ import { type ChildProcess } from "node:child_process";
 import assert from "node:assert/strict";
 import { cp } from "node:fs/promises";
 import { resolve } from "node:path";
-import { processScope, run as cleanupRun, terminate, type Environment } from "../../scripts/process.ts";
+import { processScope, quote, run as cleanupRun, terminate, type Environment } from "../../scripts/process.ts";
 import { budgets } from "./timing.ts";
 
 export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]>; hostGateway: string };
@@ -82,10 +82,30 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       catch { signal?.throwIfAborted(); return false; }
     }, budgets.lifecycle);
     const hostGateway = (await stats()).hostGateway;
+    const gatewayProbeScript = [
+      "import urllib.request",
+      `url = ${JSON.stringify(`http://${hostGateway}:${port}/__metrics`)}`,
+      "try:",
+      "    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=3) as response:",
+      "        print('http_' + str(response.status))",
+      "except TimeoutError:",
+      "    print('timeout')",
+      "except OSError as error:",
+      "    print(type(error).__name__ + ':' + str(error.errno))",
+    ].join("\n");
+    const gatewayProbe = await run([
+      ...ssh,
+      "--command",
+      `python3 -c ${quote(gatewayProbeScript)}`,
+    ], { env, timeout: budgets.operation }).then(output => output.trim()).catch(() => {
+      signal?.throwIfAborted();
+      return "unavailable";
+    });
     const diagnostics = async () => {
       const metricsReachable = await stats().then(() => true, () => false);
       return {
         metricsReachable,
+        gatewayProbe,
         connections: connections.map((connection, index) => ({
           exitCode: connection.exitCode,
           signal: connection.signalCode,
