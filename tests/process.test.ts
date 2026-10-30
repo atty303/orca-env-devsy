@@ -323,8 +323,12 @@ test("Microsandbox lifecycle failures preserve stderr and exit without exporting
     expect(records[4].exitCode).toBe(7);
     expect(text).not.toContain("fixture configuration must stay private");
     const operationRecords = (await readFile(operations, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(operationRecords.map(record => record.operation)).toEqual(["inspect", "start", "stop", "remove", "exec"]);
-    expect(operationRecords.every(record => record.status === "exit_error" && record.stderrSummary === "remove: permission denied /tmp/owned-sandbox/state.db")).toBe(true);
+    const execRecords = operationRecords.filter(record => record.operation === "exec");
+    expect(operationRecords.map(record => record.operation)).toEqual(["inspect", "start", "stop", "remove", "exec", "exec"]);
+    expect(execRecords.map(record => record.phase)).toEqual(["started", "completed"]);
+    expect(execRecords[0].invocationId).toBe(execRecords[1].invocationId);
+    const completedRecords = operationRecords.filter(record => record.phase !== "started");
+    expect(completedRecords.every(record => record.status === "exit_error" && record.stderrSummary === "remove: permission denied /tmp/owned-sandbox/state.db")).toBe(true);
     expect(JSON.stringify(operationRecords)).not.toContain("fixture configuration must stay private");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,6 +1,7 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { processFailureCategory, type Environment } from "../../scripts/process.ts";
 import { diagnosticTextSummary, providerOperationObservation } from "./diagnostics.ts";
@@ -46,6 +47,12 @@ export async function launch(binary: string, home: string, report: string, opera
   const before = tracked ? await oomCount() : NaN;
   const args = process.argv.slice(2);
   if (args[0] === "run") args.splice(1, 0, "--net", "host");
+  const invocationId = operation === "exec" ? randomUUID() : undefined;
+  if (operation === "exec") try {
+    await appendFile(operationsReport, JSON.stringify({ phase: "started", operation, invocationId, startedAt }) + "\n", { mode: 0o600 });
+  } catch {
+    process.stderr.write("E2E provider operation recording failed (microsandbox)\n");
+  }
   const child = Bun.spawn([binary, ...args], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const interrupt = () => child.kill("SIGTERM");
   process.once("SIGTERM", interrupt);
@@ -62,11 +69,12 @@ export async function launch(binary: string, home: string, report: string, opera
   const elapsedMs = Math.ceil(performance.now() - started);
   if (tracked) {
     const observation = providerOperationObservation(operation, elapsedMs, code, stderrTail);
-    if (observation || operation === "run") try {
+    if (observation || operation === "run" || operation === "exec") try {
       const networkProfile = operation === "run"
         ? args.some((arg, index) => arg === "--net" && args[index + 1] === "host") ? "host" : "default"
         : undefined;
-      await appendFile(operationsReport, JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), ...observation, ...(networkProfile === undefined ? {} : { networkProfile }) }) + "\n", { mode: 0o600 });
+      const completed = observation ?? { operation, status: "success", elapsedMs: Math.ceil(elapsedMs), exitCode: code };
+      await appendFile(operationsReport, JSON.stringify({ phase: "completed", ...(invocationId === undefined ? {} : { invocationId }), startedAt, finishedAt: new Date().toISOString(), ...completed, ...(networkProfile === undefined ? {} : { networkProfile }) }) + "\n", { mode: 0o600 });
     } catch {
       process.stderr.write("E2E provider operation recording failed (microsandbox)\n");
     }
