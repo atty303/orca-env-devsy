@@ -748,7 +748,7 @@ async test "orca-worktree initializes origin heads without changing user fetch d
   let env = {
     "PATH": @env.get_env_var("PATH").unwrap_or("/usr/bin:/bin"),
     "HOME": directory + "/home",
-    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_GLOBAL": directory + "/gitconfig",
     "GIT_CONFIG_SYSTEM": "/dev/null",
     "GIT_TERMINAL_PROMPT": "0",
   }
@@ -782,6 +782,7 @@ async test "orca-worktree initializes origin heads without changing user fetch d
   env.set("PATH", directory + "/bin:" + env.get("PATH").unwrap())
   let setup =
     #|set -eu
+    #|git config --file "$1/gitconfig" maintenance.auto false
     #|git init -q "$1/source"
     #|git -C "$1/source" checkout -qb main
     #|git -C "$1/source" config uploadpack.allowFilter true
