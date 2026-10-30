@@ -93,7 +93,7 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       assert.equal((await exec(0, "cat /tmp/orca-e2e-lifecycle-source")).trim(), buildIdentity);
       assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse --is-shallow-repository")).trim(), index === 3 ? "false" : "true");
       if (index !== 3) {
-        const shallowBranches = await exec(0, `for branch in main task devcontainer; do printf '%s=' "$branch"; git -C ${quote(path)} rev-list --count "refs/remotes/origin/$branch" || true; printf '\n'; done`);
+        const shallowBranches = await exec(0, `for branch in main task devcontainer; do count=$(git -C ${quote(path)} rev-list --count "refs/remotes/origin/$branch" 2>/dev/null) || count=error; printf '%s=%s\n' "$branch" "$count"; done`);
         assert.deepEqual(shallowBranches.trim().split("\n"), ["main=1", "task=1", "devcontainer=1"]);
       }
       assert(runtime.runtimeEnvironmentId);
