@@ -2,10 +2,10 @@ import { type ChildProcess } from "node:child_process";
 import assert from "node:assert/strict";
 import { cp } from "node:fs/promises";
 import { resolve } from "node:path";
-import { processScope, quote, run as cleanupRun, terminate, type Environment } from "../../scripts/process.ts";
+import { processScope, run as cleanupRun, terminate, type Environment } from "../../scripts/process.ts";
 import { budgets } from "./timing.ts";
 
-export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]> };
+export type GitServerStats = { accepted: Record<string, number>; rejected: Record<string, number>; backendFailures: number; filesystem: string; refs: Record<string, string[]>; hostGateway: string };
 export type GitServerOptions = { devsy: string; home: string; provider: string; source: string };
 
 function sshErrorCategories(text: string) {
@@ -56,7 +56,6 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     for (const [index, command] of [
       [...ssh, "--command", "python3 /usr/local/bin/git-fixture.py"],
       [...ssh, "--forward-ports", `0.0.0.0:${port}:127.0.0.1:18081`],
-      [...ssh, "--reverse-forward-ports", `18082:127.0.0.1:${port}`],
     ].entries()) {
       const connection = processScope().start(command, { env });
       connection.stdout?.resume();
@@ -72,7 +71,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     };
     await until(async () => {
       const exited = connections.flatMap((connection, index) => connection.exitCode !== null ? [{
-        name: ["fixture-server", "metrics-tunnel", "origin-tunnel"][index],
+        name: index === 0 ? "fixture-server" : "source-tunnel",
         exitCode: connection.exitCode,
         signal: connection.signalCode,
         stderrCategories: sshErrorCategories(connectionErrors[index] ?? ""),
@@ -82,34 +81,11 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       try { return (await stats()).filesystem === "tmpfs"; }
       catch { signal?.throwIfAborted(); return false; }
     }, budgets.lifecycle);
-    const originProbeScript = [
-      "import socket, time",
-      "for host, family in [('127.0.0.1', socket.AF_INET), ('::1', socket.AF_INET6)]:",
-      "    result = 'unreachable'",
-      "    for _ in range(20):",
-      "        connection = socket.socket(family, socket.SOCK_STREAM)",
-      "        connection.settimeout(0.5)",
-      "        try:",
-      "            connection.connect((host, 18082))",
-      "            result = 'connected'",
-      "            break",
-      "        except OSError as error:",
-      "            result = type(error).__name__ + ':' + str(error.errno)",
-      "            time.sleep(0.1)",
-      "        finally:",
-      "            connection.close()",
-      "    print(host + '=' + result)",
-    ].join("\n");
-    const originTunnelProbe = await run([
-      ...ssh,
-      "--command",
-      `python3 -c ${quote(originProbeScript)}`,
-    ], { env, timeout: budgets.operation }).catch(() => "probe command failed");
+    const hostGateway = (await stats()).hostGateway;
     const diagnostics = async () => {
       const metricsReachable = await stats().then(() => true, () => false);
       return {
         metricsReachable,
-        originTunnelProbe,
         connections: connections.map((connection, index) => ({
           exitCode: connection.exitCode,
           signal: connection.signalCode,
@@ -120,7 +96,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     return {
       port,
       localSourceUrl: `http://127.0.0.1:${port}/source.git`,
-      sourceUrl: "http://127.0.0.1:18082/source.git",
+      sourceUrl: `http://${hostGateway}:${port}/source.git`,
       stats,
       diagnostics,
       close,
