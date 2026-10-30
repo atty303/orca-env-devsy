@@ -43,8 +43,11 @@ export async function launch(binary: string, home: string, report: string, opera
   const elapsedMs = Math.ceil(performance.now() - started);
   if (tracked) {
     const observation = providerOperationObservation(operation, elapsedMs, code, stderrTail);
-    if (observation) try {
-      await appendFile(operationsReport, JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), ...observation }) + "\n", { mode: 0o600 });
+    if (observation || operation === "run") try {
+      const networkProfile = operation === "run"
+        ? args.some((arg, index) => arg === "--net" && args[index + 1] === "host") ? "host" : "default"
+        : undefined;
+      await appendFile(operationsReport, JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), ...observation, ...(networkProfile === undefined ? {} : { networkProfile }) }) + "\n", { mode: 0o600 });
     } catch {
       process.stderr.write("E2E provider operation recording failed (microsandbox)\n");
     }
