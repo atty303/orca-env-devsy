@@ -80,14 +80,14 @@ int64_t orca_process_start(int pid) {
 #endif
 }
 
-int orca_process_is_zombie(int pid) {
+int orca_process_zombie_parent(int pid) {
 #ifdef __APPLE__
   struct kinfo_proc info;
   size_t size = sizeof(info);
   int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
   if (sysctl(mib, 4, &info, &size, NULL, 0) != 0) return -errno;
   if (size == 0) return 0;
-  return info.kp_proc.p_stat == SZOMB ? 1 : 0;
+  return info.kp_proc.p_stat == SZOMB ? info.kp_eproc.e_ppid : 0;
 #else
   char path[64], buffer[4096];
   snprintf(path, sizeof(path), "/proc/%d/stat", pid);
@@ -98,7 +98,10 @@ int orca_process_is_zombie(int pid) {
   if (!read) return -EIO;
   char *field = strrchr(buffer, ')');
   if (!field) return -EINVAL;
-  return field[2] == 'Z' ? 1 : 0;
+  char state;
+  int parent;
+  if (sscanf(field + 2, "%c %d", &state, &parent) != 2) return -EINVAL;
+  return state == 'Z' ? parent : 0;
 #endif
 }
 
