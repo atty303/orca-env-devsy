@@ -82,6 +82,38 @@ checksum = "sha256:a24808cb202318fa1c3bbee0c6c6887fe1225fe899d7b687a0ddd939bd657
 url = "https://github.com/apple/container/releases/download/1.5.0/container-1.5.0-installer-signed.pkg"
 url_api = "https://api.github.com/repos/apple/container/releases/assets/597136570"
 
+[[tools."github:atty303/devsy"]]
+version = "1.25.0-beta.8"
+backend = "github:atty303/devsy"
+specifiers = ["1.25.0-beta.8"]
+
+[tools."github:atty303/devsy".options]
+matching = "devsy-"
+
+[tools."github:atty303/devsy"."platforms.linux-arm64"]
+checksum = "sha256:39312a599de99b0837433215e2f5e474025a0208aecef65febd3d150620d15af"
+checksum_source = "mise-versions"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-linux-arm64"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625511"
+
+[tools."github:atty303/devsy"."platforms.linux-x64"]
+checksum = "sha256:e8e254d86204d96d2ae6074f1f24c8d37fb2b4fbb21d6e91e08e30552b06cf27"
+checksum_source = "mise-versions"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-linux-amd64"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625509"
+
+[tools."github:atty303/devsy"."platforms.macos-arm64"]
+checksum = "sha256:77d3c68cb4b5c61e306b2b2d899c02e6a1cf9629c082968ca90807446f1180b0"
+checksum_source = "mise-versions"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-darwin-arm64"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625508"
+
+[tools."github:atty303/devsy"."platforms.windows-x64"]
+checksum = "sha256:d01d1d05c2fda51c8f4eca1dcf78dae384dfc597fbf4391f87ac752218be460a"
+checksum_source = "mise-versions"
+url = "https://github.com/atty303/devsy/releases/download/v1.25.0-beta.8/devsy-windows-amd64.exe"
+url_api = "https://api.github.com/repos/atty303/devsy/releases/assets/692625497"
+
 [[tools."github:devsy-org/devsy"]]
 version = "1.25.0-beta.3"
 backend = "github:devsy-org/devsy"
