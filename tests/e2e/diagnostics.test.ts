@@ -354,6 +354,9 @@ test("missing resource diagnostics retain filenames and paths without unrelated 
 test("provider operation records distinguish slow success from failure and redact only identified secrets", () => {
   expect(providerOperationObservation("inspect", 29_999, 0, "")).toBeUndefined();
   expect(providerOperationObservation("run", 30_001, 0, "")).toMatchObject({ status: "success", slow: true, elapsedMs: 30_001 });
+  const slowSuccess = providerOperationObservation("exec", 611_000, 0, `slow operation token=${privateValue}`);
+  expect(slowSuccess).toMatchObject({ status: "success", slow: true, stderrSummary: "slow operation token=[redacted]", stderrSummaryTruncated: false });
+  expect(JSON.stringify(slowSuccess)).not.toContain(privateValue);
   const failed = providerOperationObservation("run", 12, 1, `container failed; GITHUB_TOKEN=${privateValue}; retry the build`);
   expect(failed).toMatchObject({ status: "exit_error", exitCode: 1, stderrSummary: `container failed; GITHUB_TOKEN=[redacted]; retry the build`, stderrSummaryTruncated: false });
   expect(JSON.stringify(failed)).not.toContain(privateValue);

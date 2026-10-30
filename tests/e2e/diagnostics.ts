@@ -144,7 +144,7 @@ export function providerOperationObservation(
 ) {
   const slow = elapsedMs >= 30_000;
   if (exitCode === 0 && !slow) return undefined;
-  const output = exitCode === 0 || stderr === "" ? undefined : diagnosticTextSummary(stderr);
+  const output = stderr === "" || (exitCode === 0 && !slow) ? undefined : diagnosticTextSummary(stderr);
   return {
     operation,
     status: exitCode === 0 ? "success" : "exit_error",
