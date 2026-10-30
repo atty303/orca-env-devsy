@@ -100,14 +100,17 @@ test "failure detail preserves a bounded redacted stderr tail" {
     msg=detail,
   )
   assert_false(detail.contains("fixture-secret"), msg=detail)
+  let stderr_lines = Array::make(40, "")
+  for i in 0..<40 {
+    stderr_lines[i] = "line " + i.to_string()
+  }
   let bounded = Progress::new("test").failure_detail(
-    stderr_tail=[
-      "line 0", "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7",
-      "line 8", "line 9",
-    ].join("\n"),
+    stderr_tail=stderr_lines.join("\n"),
   )
   assert_false(bounded.contains("line 0"), msg=bounded)
-  assert_true(bounded.contains("line 9"), msg=bounded)
+  assert_false(bounded.contains("line 7"), msg=bounded)
+  assert_true(bounded.contains("line 8"), msg=bounded)
+  assert_true(bounded.contains("line 39"), msg=bounded)
   assert_true(
     bounded.contains("error details incomplete or truncated"),
     msg=bounded,

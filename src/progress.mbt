@@ -243,8 +243,8 @@ fn Progress::failure_detail(
       stderr_lines.push(safe)
     }
   }
-  if stderr_lines.length() > 8 {
-    stderr_lines = stderr_lines[stderr_lines.length() - 8:].to_owned()
+  if stderr_lines.length() > 32 {
+    stderr_lines = stderr_lines[stderr_lines.length() - 32:].to_owned()
     self.details_truncated = true
   }
   let detail = if lines.is_empty() {
