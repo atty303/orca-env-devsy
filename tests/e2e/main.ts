@@ -8,7 +8,7 @@ import { fixture, recipes } from "./fixture.ts";
 import { services, auth, access } from "./services.ts";
 import { workspace, firstUse, firstUseFailures, sshConnectionFailures, gitFailures } from "./scenarios.ts";
 import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
-import { installMicrosandboxDiagnostics } from "./microsandbox.ts";
+import { installMicrosandboxDiagnostics, microsandboxMigrationHistory } from "./microsandbox.ts";
 import { installPodmanDiagnostics } from "./podman.ts";
 import { type GitServerStats } from "./git-server.ts";
 import { failureCategory, provisionFailure, adapterDiagnostics, diagnosticTextSummary } from "./diagnostics.ts";
@@ -34,6 +34,7 @@ const workspaces: Awaited<ReturnType<typeof workspace>>[] = [];
 let shared: Awaited<ReturnType<typeof services>> | undefined;
 let failure: unknown;
 let podmanStoreOwned = false;
+let microsandboxBinary: { executable: string; version: string } | undefined;
 const cleanupErrors: string[] = [];
 const devsyCleanupFailures: { operation: string; outcome: "exit" | "timeout" | "aborted" | "exception"; exitCode: number | null; signal: NodeJS.Signals | null; stderr?: string; stderrTruncated?: boolean; errorSummary?: string; errorSummaryTruncated?: boolean }[] = [];
 const devsyFailures: { operation: "workspace-up"; outcome: "exit" | "timeout" | "aborted"; exitCode: number | null; signal: NodeJS.Signals | null; stderrSummary?: string; stderrSummaryTruncated?: boolean; stdoutSummary?: string; stdoutSummaryTruncated?: boolean }[] = [];
@@ -94,7 +95,7 @@ try {
     await symlink(tar, root + "/bin/tar");
     versions.tar = await version([tar, "--version"]);
   }
-  if (provider === "microsandbox") await installMicrosandboxDiagnostics(root, env);
+  if (provider === "microsandbox") microsandboxBinary = await installMicrosandboxDiagnostics(root, env);
   const podman = provider === "podman" ? await installPodmanDiagnostics(root) : undefined;
   await writeFile(root + "/bin/ssh", '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
   await d(["context", "set", "-o", "TELEMETRY=false", "-o", "SSH_INJECT_DOCKER_CREDENTIALS=false"]);
@@ -395,7 +396,7 @@ try {
   finishPhase(cleanupErrors.length === 0);
   const podmanOperations = await readOperationRecords(root + "/podman-operations.jsonl", 64);
   const microsandboxOperations = await readOperationRecords(root + "/msb-operations.jsonl", 64);
-  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, gitServer: gitStats, gitServerDiagnostics, devsyFailures, devsyCleanupFailures, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
+  await writeFile(report, JSON.stringify({ schemaVersion: 1, provider, platform: process.platform, arch: process.arch, versions, targets, bufferMs, budgets, phases, timings, cloneAudit, gitFailures, firstUseFailures, sshConnectionFailures, provisionFailures, adapterDiagnostics: diagnostics, orcaDiagnostics: orcaObservations, podmanFailures: await Bun.file(root + "/podman-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-32).map(line => JSON.parse(line)), () => []), microsandboxFailures: await Bun.file(root + "/msb-failures.jsonl").text().then(text => text.split("\n").filter(Boolean).slice(-16).map(line => JSON.parse(line)), () => []), podmanOperations, microsandboxOperations, ...(microsandboxBinary === undefined ? {} : { microsandboxBinary, microsandboxMigrationHistory: microsandboxMigrationHistory(env.MSB_HOME!) }), gitServer: gitStats, gitServerDiagnostics, devsyFailures, devsyCleanupFailures, status: failure || cleanupErrors.length ? "failed" : "passed", ...(failure === undefined ? {} : { failure: { category: failureCategory(failure) } }), cleanupErrors, workspaces: workspaces.map(w => ({ index: w.index, runtimeId: w.runtime.id, serverVersion: w.serverVersion })) }, null, 2), { mode: 0o600 });
   if (!cleanupErrors.length) await rm(root, { recursive: true, force: true });
   else console.error(`Cleanup diagnostics retained in ${root}`);
   phase.close();

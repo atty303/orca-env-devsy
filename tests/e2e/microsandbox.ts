@@ -1,6 +1,7 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import { processFailureCategory, type Environment } from "../../scripts/process.ts";
 import { diagnosticTextSummary, providerOperationObservation } from "./diagnostics.ts";
 
@@ -10,6 +11,24 @@ export async function installMicrosandboxDiagnostics(root: string, env: Environm
   env.MSB_HOME = root + "/microsandbox";
   await writeFile(root + "/msb-operations.jsonl", "", { mode: 0o600 });
   await writeFile(root + "/bin/msb", `#!${process.execPath}\nimport { launch } from ${JSON.stringify(resolve("tests/e2e/microsandbox.ts"))};\nawait launch(${JSON.stringify(binary)}, ${JSON.stringify(env.MSB_HOME)}, ${JSON.stringify(root + "/msb-failures.jsonl")}, ${JSON.stringify(root + "/msb-operations.jsonl")});\n`, { mode: 0o700 });
+  return { executable: binary, version: (await Bun.$`${binary} --version`.text()).trim() };
+}
+
+export function microsandboxMigrationHistory(home: string) {
+  const path = home + "/db/msb.db";
+  try {
+    const db = new Database(path, { readonly: true });
+    try {
+      const tables = db.query("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'seaql_migrations'").all();
+      if (tables.length === 0) return { available: true, migrationTable: false };
+      const versions = db.query("SELECT version FROM seaql_migrations ORDER BY rowid").all() as { version: string }[];
+      return { available: true, migrationTable: true, versions: versions.map(({ version }) => version) };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return { available: false };
+  }
 }
 
 export async function launch(binary: string, home: string, report: string, operationsReport: string) {
