@@ -344,6 +344,20 @@ async test "bulk restart terminates active transport and replaces supervisor" {
               let group_ids = @fs.readdir(root + "/transports")
                 .filter(name => name.contains("."))
                 .map(name => name.split(".").to_array()[0])
+              for line in errors.split("\n") {
+                if line.contains("/transports/") {
+                  let name = line
+                    .split("/transports/")
+                    .to_array()
+                    .last()
+                    .unwrap_or("")
+                    .split(".")
+                    .to_array()[0]
+                  if name != "" && !group_ids.contains(name) {
+                    group_ids.push(name)
+                  }
+                }
+              }
               let group_members = ps_output
                 .text()
                 .split("\n")
