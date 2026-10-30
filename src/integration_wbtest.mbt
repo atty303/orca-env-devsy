@@ -3060,7 +3060,51 @@ async fn cleanup_fixture(directory : String) -> Unit {
       }
     })
   }
-  @fs.rmdir(directory, recursive=true)
+  @fs.rmdir(directory, recursive=true) catch {
+    error => {
+      let error_message = error.to_string()
+      let error_detail = if error_message.length() <= 384 {
+        error_message
+      } else {
+        "[cleanup error message exceeds 384 characters]"
+      }
+      let remaining : Ref[Array[String]] = { val: [], }
+      let remaining_chars : Ref[Int32] = { val: 0, }
+      @fs.walk(
+        directory,
+        fn(path, names) {
+          for name in names {
+            if remaining.val.length() < 64 && remaining_chars.val < 1280 {
+              let entry = path + "/" + name
+              let bounded_entry = if entry.length() <= 512 {
+                entry
+              } else {
+                "[remaining path exceeds 512 characters]"
+              }
+              if remaining_chars.val + bounded_entry.length() <= 1280 {
+                remaining.val.push(bounded_entry)
+                remaining_chars.val = remaining_chars.val +
+                  bounded_entry.length()
+              }
+            }
+          }
+        },
+        exclude=_ => remaining.val.length() >= 64,
+        max_concurrency=1,
+        allow_failure=true,
+      )
+      raise AdapterError(
+        "Fixture cleanup failed: " +
+        error_detail +
+        (if remaining.val.is_empty() {
+          "\nno remaining entries could be read"
+        } else {
+          "\nremaining entries (up to 64 and 1280 characters):\n" +
+          remaining.val.join("\n")
+        }),
+      )
+    }
+  }
 }
 
 ///|
@@ -3549,17 +3593,25 @@ async test "provisioned task checkout waits for relay even with present commits"
     "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
   )
   @fs.write_file(directory + "/git-unavailable", "")
+  let create_finished : Ref[Bool] = { val: false, }
   let (status, output, errors) = @async.with_task_group(async fn(group) {
     group.spawn_bg(async fn() {
-      while !@fs.exists(directory + "/git-probed") {
+      while !@fs.exists(directory + "/git-probed") && !create_finished.val {
         @async.sleep(10)
+      }
+      if !@fs.exists(directory + "/git-probed") {
+        return
       }
       @async.sleep(1000)
       @fs.remove(directory + "/git-unavailable")
     })
+    defer {
+      create_finished.val = true
+    }
     invoke("create", env, directory)
   })
   assert_eq(status, 0, msg=errors)
+  assert_true(@fs.exists(directory + "/git-probed"), msg=errors)
   assert_false(errors.contains("readiness is unavailable"))
   let payload : Json = {
     "schemaVersion": 1,

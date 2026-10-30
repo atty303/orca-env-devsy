@@ -6,7 +6,7 @@ import { processFailureCategory } from "../../scripts/process.ts";
 
 import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
 
-const privateValue = "private-credential-fixture";
+const privateValue = "ghp_privatecredentialfixture1234567890";
 const receipt = JSON.stringify({ schemaVersion: 1, connection: { type: "ssh", pairingCode: privateValue, projectRoot: "/private/path" }, userData: { token: privateValue } });
 
 test("specific VM start failures take precedence over generic boot failures", () => {
@@ -86,6 +86,30 @@ test("causal IPC error codes and post-recipe boundary survive wrapping without r
   expect(JSON.stringify(observation)).not.toContain(privateValue);
   expect(JSON.stringify(observation)).not.toContain("/private/path");
   expect(failureCategory("read EPIPE " + privateValue)).toBe("broken_pipe");
+});
+
+test("provision failures retain bounded causes after masking credentials and workspace info", () => {
+  const error = `Command "git clone --workspace-info ${privateValue}" failed (exit 128): clone failed: token=${privateValue}`;
+  const stderr = `fatal: GitHub fetch failed; Authorization: Bearer ${privateValue}; password: "${privateValue}"; --workspace-info ${privateValue}`;
+  const observed = provisionFailure(error, stderr);
+  expect(observed.errorSummary).toContain("clone failed");
+  expect(observed.error.exitCodes).toEqual([128]);
+  expect(observed.adapterSummary).toContain("GitHub fetch failed");
+  expect(observed.adapterSummary).toContain("password:");
+  expect(observed.adapterSummary).toContain("--workspace-info [redacted]");
+  expect(JSON.stringify(observed)).not.toContain(privateValue);
+  expect(observed.errorSummaryTruncated).toBe(false);
+  expect(observed.adapterSummaryTruncated).toBe(false);
+  const objectError = provisionFailure(new Error(`Command failed (exit 128): AWS_SECRET_ACCESS_KEY=${privateValue}`));
+  expect(objectError.errorSummary).toContain("Command failed");
+  expect(objectError.errorSummary).toContain("AWS_SECRET_ACCESS_KEY=[redacted]");
+  expect(JSON.stringify(objectError)).not.toContain(privateValue);
+  const aws = provisionFailure("provider failed (exit 1): AWS_SECRET_ACCESS_KEY=fixture_secret; AWS_SESSION_TOKEN=fixture_token");
+  expect(aws.errorSummary).not.toContain("fixture_secret");
+  expect(aws.errorSummary).not.toContain("fixture_token");
+  const long = provisionFailure("x".repeat(4096));
+  expect(long.errorSummary?.length).toBe(2048);
+  expect(long.errorSummaryTruncated).toBe(true);
 });
 
 test("Orca generic setup error is distinguished from a missing or non-string error", () => {

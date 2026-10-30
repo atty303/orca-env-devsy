@@ -94,9 +94,28 @@ export type FailureObservation = {
   signals: string[];
   missingResource?: { operation: string; path: string; resource: "archive" | "executable" | "other" };
   adapterMarkers?: string[];
+  errorSummary?: string;
+  errorSummaryTruncated?: boolean;
+  adapterSummary?: string;
+  adapterSummaryTruncated?: boolean;
   recipe?: { valid: boolean; connection?: "ssh" | "orca-server" };
   boundary?: "recipe" | "ssh_setup" | "server_registration";
 };
+
+function failureSummary(text: string) {
+  const safe = text
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/gi, "[private key redacted]")
+    .replace(/(--workspace-info(?:\s+|=))(?:"(?:\\.|[^"])*"|'[^']*'|\S+)/gi, "$1[redacted]")
+    .replace(/https?:\/\/[^/\s:@]+:[^/\s@]+@/gi, "https://[credential-redacted]@")
+    .replace(/\/(?:Users|home)\/[^/\s]+/g, "/~")
+    .replace(/\/private\/[^\s,:;]+/g, "[private-path]")
+    .replace(/[A-Za-z]:\\Users\\[^\\\s]+/gi, "~")
+    .replace(/\b(bearer|basic)\s+[^\s,;]+/gi, "$1 [redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g, "[token redacted]")
+    .replace(/\b([A-Za-z0-9_]*(?:access[_-]?key|secret(?:[_-]access[_-]?key)?|token|password|passwd|api[_-]?key|authorization|cookie|set[_-]?cookie)["']?\s*[:=]\s*["']?)(?:"(?:\\.|[^"])*"|'[^']*'|[^\s,;\]}]+)/gi, "$1[redacted]");
+  const truncated = safe.length > 2048;
+  return { text: truncated ? safe.slice(-2048) : safe, truncated };
+}
 
 export function sshStartupPhases(stderr: string) {
   const phases = {
@@ -171,7 +190,15 @@ export function provisionFailure(error: unknown, stderr?: string, stdout?: strin
     ...(missingResource === undefined ? {} : { missingResource }),
     signals: Object.entries(errorPatterns).filter(([, phrases]) => phrases.some(phrase => message.toLowerCase().includes(phrase.toLowerCase()))).map(([signal]) => signal),
   };
-  return { ...observation, ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }), ...(recipe === undefined ? {} : { recipe, boundary: recipe.connection === "ssh" ? "ssh_setup" : recipe.connection === "orca-server" ? "server_registration" : "recipe" }) };
+  const errorSummary = message === "" || !(error instanceof Error || typeof error === "string") ? undefined : failureSummary(message);
+  const adapterSummary = stderr === undefined || stderr === "" || markers(stderr).length === 0 ? undefined : failureSummary(stderr);
+  return {
+    ...observation,
+    ...(errorSummary === undefined ? {} : { errorSummary: errorSummary.text, errorSummaryTruncated: errorSummary.truncated }),
+    ...(stderr === undefined ? {} : { adapterMarkers: markers(stderr) }),
+    ...(adapterSummary === undefined ? {} : { adapterSummary: adapterSummary.text, adapterSummaryTruncated: adapterSummary.truncated }),
+    ...(recipe === undefined ? {} : { recipe, boundary: recipe.connection === "ssh" ? "ssh_setup" : recipe.connection === "orca-server" ? "server_registration" : "recipe" }),
+  };
 
 }
 

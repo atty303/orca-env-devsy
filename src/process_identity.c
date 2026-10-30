@@ -106,13 +106,37 @@ int orca_process_zombie_parent(int pid) {
 }
 
 int orca_group_exists(int pid) {
+#ifdef __APPLE__
+  int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PGRP, pid};
+  size_t size = 0;
+  if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0) return -errno;
+  if (size == 0) return 0;
+  if (size % sizeof(struct kinfo_proc) != 0) return -EIO;
+  struct kinfo_proc *processes = malloc(size);
+  if (!processes) return -ENOMEM;
+  if (sysctl(mib, 4, processes, &size, NULL, 0) != 0) {
+    int error = errno;
+    free(processes);
+    return -error;
+  }
+  if (size % sizeof(struct kinfo_proc) != 0) {
+    free(processes);
+    return -EIO;
+  }
+  size_t count = size / sizeof(struct kinfo_proc);
+  for (size_t i = 0; i < count; i++) {
+    if (processes[i].kp_proc.p_stat != SZOMB) {
+      free(processes);
+      return 1;
+    }
+  }
+  free(processes);
+  return 0;
+#else
   if (kill(-pid, 0) != 0) {
     int error = errno;
     return error == ESRCH ? 0 : -error;
   }
-#ifdef __APPLE__
-  return 1;
-#else
   DIR *proc = opendir("/proc");
   if (!proc) return -errno;
   int unknown = 0;
