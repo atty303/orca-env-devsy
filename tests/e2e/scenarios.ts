@@ -92,7 +92,10 @@ export async function workspace(orca: Orca, runtime: Runtime, index: number, env
       assert.equal((await exec(0, "cat /tmp/orca-e2e-image-source")).trim(), buildIdentity);
       assert.equal((await exec(0, "cat /tmp/orca-e2e-lifecycle-source")).trim(), buildIdentity);
       assert.equal((await exec(0, "git -C " + quote(path) + " rev-parse --is-shallow-repository")).trim(), index === 3 ? "false" : "true");
-      if (index !== 3) assert.equal((await exec(0, "git -C " + quote(path) + " rev-list --all --count")).trim(), "1");
+      if (index !== 3) {
+        const shallowBranches = await exec(0, `for branch in main task devcontainer; do test "$(git -C ${quote(path)} rev-list --count "refs/remotes/origin/$branch")" = 1 || exit; done; printf shallow-branches`);
+        assert.equal(shallowBranches.trim(), "shallow-branches");
+      }
       assert(runtime.runtimeEnvironmentId);
       const call = async <T>(method: string, params: unknown) => {
         const response = await orca.call<{ ok: true; result: T } | { ok: false; error: unknown }>("runtimeEnvironments", "call", { selector: runtime.runtimeEnvironmentId, method, params, timeoutMs: budgets.operation });
