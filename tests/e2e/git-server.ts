@@ -91,7 +91,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       "import json",
       "from concurrent.futures import ThreadPoolExecutor",
       `targets = {"default_gateway": [${JSON.stringify(hostGateway)}], "vm_host_alias": ["10.0.2.2"]}`,
-      "for name in ('host.containers.internal', 'host.docker.internal'):",
+      "for name in ('host.containers.internal', 'host.docker.internal', 'host.microsandbox.internal'):",
       "    try:",
       "        targets[name] = sorted({item[4][0] for item in socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)})",
       "    except OSError:",
@@ -127,10 +127,20 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       signal?.throwIfAborted();
       return [{ target: "probe", result: "unavailable" }];
     });
+    const sourceTargets = [
+      { target: "default_gateway", host: hostGateway },
+      { target: "host.containers.internal", host: "host.containers.internal" },
+      { target: "host.docker.internal", host: "host.docker.internal" },
+      { target: "host.microsandbox.internal", host: "host.microsandbox.internal" },
+    ];
+    const selectedSource = sourceTargets.find(({ target }) => hostProbes.some(probe => probe.target === target && probe.result.split(",").includes("http_200")));
+    const sourceTarget = selectedSource?.target ?? "default_gateway";
+    const sourceHost = selectedSource?.host ?? hostGateway;
     const diagnostics = async () => {
       const metricsReachable = await stats().then(() => true, () => false);
       return {
         metricsReachable,
+        sourceTarget,
         hostProbes,
         connections: connections.map((connection, index) => ({
           exitCode: connection.exitCode,
@@ -142,7 +152,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
     return {
       port,
       localSourceUrl: `http://127.0.0.1:${port}/source.git`,
-      sourceUrl: `http://${hostGateway}:${port}/source.git`,
+      sourceUrl: `http://${sourceHost}:${port}/source.git`,
       stats,
       diagnostics,
       close,

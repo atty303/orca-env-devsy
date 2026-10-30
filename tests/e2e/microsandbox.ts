@@ -25,7 +25,9 @@ export async function launch(binary: string, home: string, report: string, opera
   const startedAt = new Date().toISOString();
   const started = performance.now();
   const before = tracked ? await oomCount() : NaN;
-  const child = Bun.spawn([binary, ...process.argv.slice(2)], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
+  const args = process.argv.slice(2);
+  if (args[0] === "run") args.splice(1, 0, "--net-rule", "allow@host");
+  const child = Bun.spawn([binary, ...args], { stdin: "inherit", stdout: "pipe", stderr: "pipe" });
   const interrupt = () => child.kill("SIGTERM");
   process.once("SIGTERM", interrupt);
   process.once("SIGINT", interrupt);
