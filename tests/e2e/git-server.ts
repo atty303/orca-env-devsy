@@ -19,6 +19,16 @@ function sshErrorCategories(text: string) {
   return [...categories];
 }
 
+function sshErrorSummary(text: string) {
+  return text
+    .replace(/https?:\/\/[^\s/@:]+:[^\s/@]+@/gi, "https://[redacted]@")
+    .replace(/\b(bearer|basic)\s+\S+/gi, "$1 [redacted]")
+    .replace(/\b(token|password|secret|authorization|cookie)(\s*[:=]\s*)\S+/gi, "$1$2[redacted]")
+    .replace(/\b[A-Za-z0-9_=-]{24,}\b/g, "[long-value]")
+    .trim()
+    .slice(-512);
+}
+
 export async function gitServer(root: string, env: Environment, options: GitServerOptions, signal?: AbortSignal) {
   const { run, until } = processScope(signal);
   const source = root + "/git-server";
@@ -65,6 +75,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
         exitCode: connection.exitCode,
         signal: connection.signalCode,
         stderrCategories: sshErrorCategories(connectionErrors[index] ?? ""),
+        stderrSummary: sshErrorSummary(connectionErrors[index] ?? ""),
       }] : []);
       if (exited.length > 0) throw new Error(`Git fixture connection exited: ${JSON.stringify(exited)}`);
       try { return (await stats()).filesystem === "tmpfs"; }
