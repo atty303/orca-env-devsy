@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { orcaReleaseEndpoint } from "./orca.ts";
 import { DiagnosticError, diagnosticTextSummary, failureCategory, provisionFailure, providerOperationObservation, sshStartupPhases } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
 import { classifyPodman, podmanExecProgram } from "./podman.ts";
@@ -8,6 +9,12 @@ import { targets, bufferMs, budgets, timings, measure } from "./timing.ts";
 
 const privateValue = "ghp_privatecredentialfixture1234567890";
 const receipt = JSON.stringify({ schemaVersion: 1, connection: { type: "ssh", pairingCode: privateValue, projectRoot: "/private/path" }, userData: { token: privateValue } });
+
+test("Orca release override selects only a stable exact tag", () => {
+  expect(orcaReleaseEndpoint()).toBe("https://api.github.com/repos/stablyai/orca/releases/latest");
+  expect(orcaReleaseEndpoint("1.4.244")).toBe("https://api.github.com/repos/stablyai/orca/releases/tags/v1.4.244");
+  expect(() => orcaReleaseEndpoint("latest")).toThrow("stable version");
+});
 
 test("specific VM start failures take precedence over generic boot failures", () => {
   expect(processFailureCategory("failed to start vm")).toBe("vm_start");

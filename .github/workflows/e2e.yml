@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      orca_version:
+        description: Stable Orca version for a controlled E2E comparison; empty uses latest
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
@@ -30,6 +35,7 @@ jobs:
       - name: Exercise pinned Orca with the adapter
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          ORCA_E2E_ORCA_VERSION: ${{ inputs.orca_version }}
         run: xvfb-run -a mise run test:e2e -- --provider "${{ matrix.provider }}"
       - name: Preserve sanitized run result
         if: always()
