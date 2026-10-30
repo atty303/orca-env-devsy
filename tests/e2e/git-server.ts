@@ -134,7 +134,7 @@ export async function gitServer(root: string, env: Environment, options: GitServ
       return [{ target: "probe", result: "unavailable" }];
     });
     const sourceTargets = options.provider === "microsandbox" ? [
-      { target: "host.microsandbox.internal", host: reachableHostAddresses["host.microsandbox.internal"]?.[0] },
+      { target: "host.microsandbox.internal", host: "host.microsandbox.internal" },
       { target: "default_gateway", host: hostGateway },
     ] : options.provider === "podman" ? [
       { target: "host.containers.internal", host: reachableHostAddresses["host.containers.internal"]?.[0] },
