@@ -140,6 +140,11 @@ async fn command_result(
     progress_timing(started) +
     ")",
   )
+  let result_error = if status == 0 {
+    None
+  } else {
+    failed_result_error(output)
+  }
   save_diagnostic(
     stage,
     if status == 0 {
@@ -152,7 +157,7 @@ async fn command_result(
     error_message?=if status == 0 {
       None
     } else {
-      Some(progress.failure_detail(stderr_tail=errors))
+      Some(progress.failure_detail(stderr_tail=errors, result_error?))
     },
     details_truncated=progress.details_truncated,
     error_type?=if status == 0 || !recording {
@@ -163,6 +168,19 @@ async fn command_result(
     recording~,
   )
   (status, output, progress.failure_detail())
+}
+
+///|
+fn failed_result_error(output : String) -> String? {
+  for line in output.split("\n") {
+    let parsed = @json.parse(line.to_owned()) catch { _ => continue }
+    if field(parsed, "kind") == Some(Json::string("result")) &&
+      field(parsed, "Error") is Some(Json::String(message)) &&
+      message != "" {
+      return Some(message)
+    }
+  }
+  None
 }
 
 ///|

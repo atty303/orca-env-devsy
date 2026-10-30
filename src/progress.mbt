@@ -217,9 +217,15 @@ fn Progress::remember(
 fn Progress::failure_detail(
   self : Progress,
   stderr_tail~ : String = "",
+  result_error? : String,
 ) -> String {
   let lines = self.failures +
     self.recent.filter(line => !self.failures.contains(line))
+  if result_error is Some(message) &&
+    self.safe_message(message) is Some(safe) &&
+    !lines.contains(safe) {
+    lines.push(safe)
+  }
   let mut stderr_lines : Array[String] = []
   let stderr_tail = if stderr_tail == "" {
     self.stderr_tail

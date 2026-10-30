@@ -124,3 +124,21 @@ test "failure detail preserves a bounded redacted stderr tail" {
     msg=binary,
   )
 }
+
+///|
+test "failure detail retains only a redacted Devsy result error" {
+  let progress = Progress::new(
+    "test",
+    environment=Map([("GITHUB_TOKEN", "fixture-secret")]),
+  )
+  let error = failed_result_error(
+    "{\"kind\":\"result\",\"Error\":\"build failed: token=fixture-secret\",\"private\":\"ignored\"}",
+  )
+  let detail = progress.failure_detail(result_error?=error)
+  assert_true(detail.contains("build failed: token=[redacted]"), msg=detail)
+  assert_false(detail.contains("fixture-secret"), msg=detail)
+  assert_false(detail.contains("ignored"), msg=detail)
+  assert_true(
+    failed_result_error("{\"kind\":\"result\",\"outcome\":\"success\"}") == None,
+  )
+}
