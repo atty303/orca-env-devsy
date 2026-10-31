@@ -18,10 +18,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
-        provider: [docker, podman, microsandbox]
-        exclude:
-          - os: ubuntu-24.04-arm
-            provider: microsandbox
+        # Temporarily omit MicroSandbox E2E until the provider releases the SDK migration fix.
+        provider: [docker, podman]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
