@@ -39,7 +39,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'workspace status'*) test ! -f "$HOME/fail-status"; if test -f "$HOME/busy"; then printf '{"state":"Busy"}\n'; elif test -f "$HOME/stopped"; then printf '{"state":"Stopped"}\n'; else printf '{"state":"Running"}\n'; fi ;;
     #|  *'workspace up'*) rm -f "$HOME/stopped"; touch "$HOME/created" "$HOME/volume-present"; test ! -f "$HOME/fail-up"
     #|    if test -f "$HOME/up-result"; then cat "$HOME/up-result"; else printf '{"kind":"result","outcome":"success","remoteUser":"developer","remoteWorkspaceFolder":"/workspace/repo"}\n'; fi ;;
-    #|  *'workspace ssh'*'/proc/self/mountinfo'*) test ! -f "$HOME/fail-storage" ;;
+    #|  *'workspace ssh'*'/proc/self/mountinfo'*) test ! -f "$HOME/fail-storage"; if test -f "$HOME/drop-master-on-storage"; then rm -f "$HOME/drop-master-on-storage" "$(cat "$HOME/master-control")"; fi ;;
     #|  *'workspace stop'*) test ! -f "$HOME/fail-stop"; touch "$HOME/stopped" ;;
     #|  *'workspace delete'*) test ! -f "$HOME/fail-delete"; rm -f "$HOME/created" ;;
     #|  *) exit 2 ;;
@@ -63,7 +63,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  previous="$arg"
     #|done
     #|case "$*" in
-    #|  *'-N'*) if test -f "$HOME/recover-on-master"; then rm -f "$HOME/rpc-unavailable" "$HOME/recover-on-master"; fi; printf '%s\n' "$$" > "$HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$HOME/primary-services" ;; *) printf enabled > "$HOME/primary-services" ;; esac ;;
+    #|  *'-N'*) if test -f "$HOME/recover-on-master"; then rm -f "$HOME/rpc-unavailable" "$HOME/recover-on-master"; fi; printf '%s\n' "$control" > "$HOME/master-control"; printf '%s\n' "$$" > "$HOME/master-pid"; case "$*" in *'--start-services=false'*) printf disabled > "$HOME/primary-services" ;; *) printf enabled > "$HOME/primary-services" ;; esac ;;
     #|esac
     #|case "$*" in
     #|  *'candidate="$base/update-$version"'* )
@@ -5247,6 +5247,35 @@ async test "worker recovery reinstalls a missing server into the retained profil
     assert_true(commands.contains(".local/bin:"))
     assert_true(commands.contains("ORCA_USER_DATA_PATH=/worktrees/.orca"))
     assert_false(@fs.exists(directory + "/missing-orca"))
+  })
+}
+
+///|
+async test "worker reconnects when the master disappears while starting the server" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let payload : Json = {
+      "schemaVersion": 1,
+      "recipeResult": @json.parse(output),
+    }
+    defer ignore(invoke("destroy", env, directory, payload~))
+    @fs.remove(directory + "/served")
+    @fs.write_file(directory + "/drop-master-on-storage", "")
+    let (status, _, errors) = invoke("recover", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+    assert_false(@fs.exists(directory + "/drop-master-on-storage"))
+    assert_true(@fs.exists(directory + "/served"))
+    let events = @fs.read_file(
+      env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy/events.jsonl",
+    ).text()
+    assert_true(events.contains("\"errorType\":\"tunnel_unavailable\""))
   })
 }
 

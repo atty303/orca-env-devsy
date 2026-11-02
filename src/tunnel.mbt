@@ -1387,9 +1387,15 @@ async fn tunnel_worker(
               attempt = 0
               if @fs.exists(directory + "/server-enabled") &&
                 !@fs.exists(directory + "/server-update-pending") {
+                let worker_state = @json.parse(state.stringify())
+                set_field(
+                  worker_state,
+                  "workerRequiresTunnel",
+                  Json::boolean(true),
+                )
                 let server_error = try {
                   @async.with_timeout(connection_timeout_ms(state~), async fn() {
-                    ignore(recover_server(state))
+                    ignore(recover_server(worker_state))
                   })
                   None
                 } catch {
@@ -1403,6 +1409,22 @@ async fn tunnel_worker(
                     }
                 }
                 if server_error is Some(error) {
+                  let tunnel_available = try {
+                    check_tunnel(state, directory)
+                    true
+                  } catch {
+                    _ => false
+                  }
+                  if !tunnel_available {
+                    save_diagnostic(
+                      "server-relay-sync",
+                      "retry",
+                      error_type="tunnel_unavailable",
+                      tunnel_directory=directory,
+                      recording=workspace_recording(state),
+                    )
+                    break
+                  }
                   let progress = Progress::new(
                     "server-relay-sync",
                     environment=workspace_environment(state),

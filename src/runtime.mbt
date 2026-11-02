@@ -455,6 +455,9 @@ async fn mux_ssh_args(state : Json) -> Array[String] {
         }
         return ssh_mux_options(saved, directory)
       }
+      if field(state, "workerRequiresTunnel") == Some(Json::boolean(true)) {
+        raise AdapterError("SSH master unavailable during worker recovery")
+      }
       if !waiting {
         waiting = true
         save_diagnostic(
