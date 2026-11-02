@@ -76,14 +76,9 @@ configuration. No host HEAD is consulted to infer Orca's task starting commit.
 `ORCA_REPO_REF_HEAD` then select the build source. An explicit `buildRef`
 overrides the build source without changing Orca's task commit.
 
-Build branches matching the remote's default branch use shallow clones.
-Provisioned-root builds from Orca's supplied start branch also use shallow clones
-when its tip matches the expected commit. Devsy resolves branch sources;
-the adapter verifies the build checkout against its fetched remote-tracking ref.
-A moved provisioned-root start ref or a missing shallow commit can retry with a
-full clone of the required commit. Other build branches, tags and fixed commits
-use full clones, keeping other remote branches available for Orca's later
-worktree. Explicit native clone options in `upArgs` override the automatic choice.
+Devsy resolves branch sources; the adapter verifies the build checkout against
+its fetched remote-tracking ref. Explicit native clone options in `upArgs`
+override the automatic choice.
 
 The complete build checkout supplies Dockerfile, context and lifecycle commands.
 For provisioned-root the adapter subsequently checks out Orca's task commit,

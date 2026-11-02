@@ -192,7 +192,7 @@ try {
     const attempts = cloneAudit.filter(entry => entry.recipe === definition.id);
     assert.equal(attempts.length, 1, "Creation must not retry into a full clone");
     assert.equal(attempts[0].pinned, false, "Devsy must resolve branch builds without an adapter-pinned SHA");
-    assert.deepEqual(attempts[0].strategies, [index === 3 ? "" : "shallow"]);
+    assert.deepEqual(attempts[0].strategies, [index === 1 ? "shallow" : "blobless"]);
   }
   assert.equal(new Set(runtimes.map(r => r.recipeResult.userData.workspaceId)).size, 4);
   const routeIds = runtimes.map(runtime => runtime.recipeResult.connection.type === "ssh" ? runtime.sshTargetId : runtime.runtimeEnvironmentId);

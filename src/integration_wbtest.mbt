@@ -114,6 +114,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    touch "$HOME/git-probed"
     #|    if test -f "$HOME/git-invalid-stderr"; then printf '\377helper pending\n' >&2; fi
     #|    test ! -f "$HOME/git-unavailable" ;;
+    #|  *'ORCA_FETCH_FILTER:'*) printf 'ORCA_FETCH_FILTER:%s\nORCA_FETCH_SHALLOW:%s\n' "${FAKE_FETCH_FILTER:-none}" "${FAKE_FETCH_SHALLOW:-false}" ;;
     #|  *'then printf present; else printf missing; fi'*) if test -f "$HOME/task-commit-missing"; then printf missing; else printf present; fi ;;
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'rev-parse HEAD'*) test ! -f "$HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
@@ -306,7 +307,7 @@ async test "native CLI preserves creation settings across lifecycle and emits on
   assert_eq(saved_command(state), ["devsy"])
   assert_eq(field(state, "upArgs"), None)
   let args = @fs.read_file(directory + "/args")
-  assert_true(args.text().contains("\n--git-clone-strategy=shallow\n"))
+  assert_true(args.text().contains("\n--git-clone-strategy=blobless\n"))
   assert_true(args.text().contains("VALUE=two words; $(ignored)\n"))
   @fs.write_file(directory + "/orca.yaml", "deliberately invalid yaml: [")
   let payload : Json = { "schemaVersion": 1, "recipeResult": result }
@@ -799,6 +800,7 @@ async test "orca-worktree initializes origin heads without changing user fetch d
     #|git -C "$1/source" checkout -q main
     #|git clone --depth=1 --single-branch --branch main "file://$1/source" "$1/shallow"
     #|git clone --single-branch --branch main "file://$1/source" "$1/full"
+    #|git clone --filter=blob:none --single-branch --branch main "file://$1/source" "$1/blobless"
   let (status, _, errors) = @process.collect_output(
     "/bin/sh",
     ["-c", setup, "sh", directory],
@@ -807,12 +809,14 @@ async test "orca-worktree initializes origin heads without changing user fetch d
   assert_eq(status, 0, msg=errors.text())
 
   let shallow = directory + "/shallow"
-  let (status, _, errors) = @process.collect_output(
+  let (status, output, errors) = @process.collect_output(
     "/bin/sh",
     ["-c", worktree_git_config_script(shallow)],
     extra_env=env,
   )
   assert_eq(status, 0, msg=errors.text())
+  assert_true(output.text().contains("ORCA_FETCH_FILTER:none"))
+  assert_true(output.text().contains("ORCA_FETCH_SHALLOW:true"))
   let (status, output, errors) = @process.collect_output(
     "/bin/sh",
     ["-c", worktree_git_fetch_script(shallow)],
@@ -857,7 +861,7 @@ async test "orca-worktree initializes origin heads without changing user fetch d
   assert_eq(output.text(), "feature\n")
   let initial_fetch = @fs.read_file(directory + "/fetch-args").text()
   assert_true(initial_fetch.contains("--depth=1"))
-  assert_true(initial_fetch.contains("--filter=tree:0"))
+  assert_false(initial_fetch.contains("--filter="))
   assert_true(initial_fetch.contains("+refs/heads/*:refs/remotes/origin/*"))
 
   let add_normal_branch =
@@ -916,13 +920,43 @@ async test "orca-worktree initializes origin heads without changing user fetch d
     .split("\n")
     .to_array()
   assert_true(
-    full_fetches[2].contains("--filter=tree:0"),
+    !full_fetches[2].contains("--filter="),
     msg=full_fetches.join("\n"),
   )
   assert_false(
     full_fetches[2].contains("--depth="),
     msg=full_fetches.join("\n"),
   )
+
+  let blobless = directory + "/blobless"
+  let (status, output, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_config_script(blobless)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  assert_true(output.text().contains("ORCA_FETCH_FILTER:blob:none"))
+  assert_true(output.text().contains("ORCA_FETCH_SHALLOW:false"))
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    ["-c", worktree_git_fetch_script(blobless)],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "/bin/sh",
+    [
+      "-c",
+      "GIT_NO_LAZY_FETCH=1 git -C " +
+      quote(blobless) +
+      " cat-file -e 'origin/feature^{tree}'",
+    ],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
+  let blobless_fetches = @fs.read_file(directory + "/fetch-args").text()
+  assert_true(blobless_fetches.contains("--filter=blob:none"))
+  assert_false(blobless_fetches.contains("--filter=tree:0"))
 
   env.set("GIT_CONFIG_COUNT", "1")
   env.set("GIT_CONFIG_KEY_0", "remote.origin.partialclonefilter")
@@ -1005,6 +1039,12 @@ async test "orca-worktree initializes origin heads without changing user fetch d
     extra_env=env,
   )
   assert_eq(status, 0, msg=errors.text())
+  let (status, _, errors) = @process.collect_output(
+    "git",
+    ["-C", no_filter, "config", "remote.origin.partialclonefilter", "blob:none"],
+    extra_env=env,
+  )
+  assert_eq(status, 0, msg=errors.text())
   let (status, output, errors) = @process.collect_output(
     "/bin/sh",
     ["-c", worktree_git_fetch_script(no_filter)],
@@ -1012,6 +1052,35 @@ async test "orca-worktree initializes origin heads without changing user fetch d
   )
   assert_eq(status, 0, msg=errors.text())
   assert_true(output.text().contains("ORCA_FILTER_FALLBACK:"))
+}
+
+///|
+async test "worktree fetch selection is retained in create diagnostics" {
+  for kind in ["blob:none", "tree:0"] {
+    let (directory, env) = fixture()
+    defer cleanup_fixture(directory)
+    env.set("FAKE_FETCH_FILTER", kind)
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: ssh, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    let (status, output, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let selection = create_event(
+      fixture_events(directory),
+      "worktree-git-fetch",
+    )
+    assert_eq(field(selection, "status"), Some(Json::string("selected")))
+    let evidence = field(selection, "evidence").unwrap()
+    assert_eq(field(evidence, "filter"), Some(Json::string(kind)))
+    assert_eq(field(evidence, "shallow"), Some(Json::string("false")))
+    let payload : Json = {
+      "schemaVersion": 1,
+      "recipeResult": @json.parse(output),
+    }
+    let (status, _, errors) = invoke("destroy", env, directory, payload~)
+    assert_eq(status, 0, msg=errors)
+  }
 }
 
 ///|
@@ -1652,9 +1721,11 @@ async test "branch builds try shallow and retry only a missing pinned commit wit
       #|exec "$HOME/bin/devsy-original" "$@"
     @fs.write_file(directory + "/bin/devsy", wrapper + "\n", permission=0o700)
     env.set("CLONE_FAILURE", failure)
+    env.set("ORCA_REPO_REF_HEAD", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    env.set("ORCA_REPO_BRANCH", "task")
     @fs.write_file(
       directory + "/orca.yaml",
-      "devsy: {connection: ssh, buildRef: 'refs/heads/main'}\nenvironmentRecipes: [{id: test}]\n",
+      "devsy: {connection: ssh, buildRef: 'refs/heads/main'}\nenvironmentRecipes: [{id: test, checkoutMode: provisioned-root}]\n",
     )
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(
@@ -2015,7 +2086,7 @@ async test "tunnel worker recovers on the same port and remains running when sto
 }
 
 ///|
-async test "short tag build refs use full clones including annotated tag peeling" {
+async test "short tag build refs use blobless clones including annotated tag peeling" {
   for annotated in [false, true] {
     let (directory, env) = fixture()
     defer cleanup_fixture(directory)
@@ -2032,7 +2103,7 @@ async test "short tag build refs use full clones including annotated tag peeling
     let (status, output, errors) = invoke("create", env, directory)
     assert_eq(status, 0, msg=errors)
     let args = @fs.read_file(directory + "/args").text()
-    assert_true(args.contains("--git-clone-strategy=\n"))
+    assert_true(args.contains("--git-clone-strategy=blobless\n"))
     assert_false(args.contains("--git-clone-strategy=shallow"))
     let payload : Json = {
       "schemaVersion": 1,
@@ -4076,8 +4147,8 @@ async test "saved create sources separate Orca inputs configuration resolution a
       field(selected, "selectionReason"),
       Some(Json::string("configured-build-ref")),
     )
-    let clone = field(create_event(events, "clone-shallow"), "source").unwrap()
-    assert_eq(field(clone, "cloneStrategy"), Some(Json::string("shallow")))
+    let clone = field(create_event(events, "clone-blobless"), "source").unwrap()
+    assert_eq(field(clone, "cloneStrategy"), Some(Json::string("blobless")))
     assert_eq(field(clone, "fallback"), Some(Json::boolean(false)))
     let checkout = field(create_event(events, "build-checkout"), "source").unwrap()
     assert_eq(field(checkout, "scope"), Some(Json::string("build-checkout")))

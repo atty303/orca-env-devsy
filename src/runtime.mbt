@@ -888,7 +888,6 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     config.up_args +
     orca_storage_args(state)
   }
-  let pinned_args = create_args(repository + "@sha256:" + hash, "")
   let native_source = match resolved_branch {
     Some(branch) => {
       ignore(
@@ -909,13 +908,24 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     .any(arg => {
       arg == "--git-clone-strategy" || arg.has_prefix("--git-clone-strategy=")
     })
-  let strategy = if automatic_shallow && !overridden { "shallow" } else { "" }
+  let strategy = if overridden {
+    ""
+  } else if mode == "orca-worktree" {
+    "blobless"
+  } else if automatic_shallow {
+    "shallow"
+  } else {
+    ""
+  }
+  let pinned_args = create_args(repository + "@sha256:" + hash, "")
   let initial_args = create_args(native_source, strategy)
   save_diagnostic(
     if overridden {
       "clone-override"
     } else if strategy == "shallow" {
       "clone-shallow"
+    } else if strategy == "blobless" {
+      "clone-blobless"
     } else {
       "clone-full"
     },
@@ -977,13 +987,35 @@ async fn create_state(pinned_commit? : String) -> (Json, UInt64) {
     ignore(remote(state, git_object_storage_script(root), "git-object-storage"))
     if mode == "orca-worktree" {
       create_recording.phase = "worktree-git-config"
-      ignore(
-        remote(
-          state,
-          worktree_git_config_script(root),
-          "configure-worktree-git",
-        ),
+      let git_config_output = remote(
+        state,
+        worktree_git_config_script(root),
+        "configure-worktree-git",
       )
+      let filter_kind = if git_config_output.contains(
+          "ORCA_FETCH_FILTER:blob:none",
+        ) {
+        "blob:none"
+      } else if git_config_output.contains("ORCA_FETCH_FILTER:tree:0") {
+        "tree:0"
+      } else if git_config_output.contains("ORCA_FETCH_FILTER:none") {
+        "none"
+      } else {
+        "other-or-unknown"
+      }
+      let shallow_kind = if git_config_output.contains(
+          "ORCA_FETCH_SHALLOW:true",
+        ) {
+        "true"
+      } else if git_config_output.contains("ORCA_FETCH_SHALLOW:false") {
+        "false"
+      } else {
+        "unknown"
+      }
+      save_diagnostic("worktree-git-fetch", "selected", evidence={
+        "filter": filter_kind,
+        "shallow": shallow_kind,
+      })
       create_recording.phase = "worktree-git-fetch"
       let fetch_output = remote(
         state,
@@ -1153,6 +1185,11 @@ fn worktree_git_config_script(root : String) -> String {
     #|$fetches
     #|EOF
     #|if test "$found" = false; then git config --local --add remote.origin.fetch "$expected"; fi
+    #|filter=$(git config --get remote.origin.partialclonefilter) || status=$?
+    #|test "${status:-0}" -eq 0 || test "$status" -eq 1 || exit "$status"
+    #|case "$filter" in blob:none|tree:0) kind=$filter ;; '') kind=none ;; *) kind=other ;; esac
+    #|shallow=$(git rev-parse --is-shallow-repository)
+    #|printf 'ORCA_FETCH_FILTER:%s\nORCA_FETCH_SHALLOW:%s\n' "$kind" "$shallow"
   )
 }
 
@@ -1164,7 +1201,10 @@ fn worktree_git_fetch_script(root : String) -> String {
   (
     #|set -eu
     #|shallow=$(git rev-parse --is-shallow-repository)
-    #|set -- fetch --no-tags --no-recurse-submodules --filter=tree:0
+    #|set -- fetch --no-tags --no-recurse-submodules
+    #|filter=$(git config --get remote.origin.partialclonefilter) || status=$?
+    #|test "${status:-0}" -eq 0 || test "$status" -eq 1 || exit "$status"
+    #|if test -n "$filter"; then set -- "$@" "--filter=$filter"; fi
     #|if test "$shallow" = true; then set -- "$@" --depth=1; fi
     #|set -- "$@" origin '+refs/heads/*:refs/remotes/origin/*'
     #|if output=$(git "$@" 2>&1); then status=0; else status=$?; fi
