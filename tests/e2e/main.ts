@@ -198,6 +198,10 @@ try {
   const routeIds = runtimes.map(runtime => runtime.recipeResult.connection.type === "ssh" ? runtime.sshTargetId : runtime.runtimeEnvironmentId);
   assert(routeIds.every(id => typeof id === "string" && id.length > 0));
   assert.equal(new Set(routeIds).size, 4);
+  const activityStatus = JSON.parse(await run([adapter, "status", "--provider", provider], { env, timeout: budgets.provision })) as { workspaces: { id: string; activity: string; outcome: string }[] };
+  const serverWorkspace = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
+  const observed = activityStatus.workspaces.find(w => w.id === serverWorkspace.runtime.recipeResult.userData.workspaceId);
+  assert(observed && observed.outcome === "observed" && ["idle", "active"].includes(observed.activity), "Activity probe must observe an Orca Server workspace");
   if (phase.signal.aborted) throw new Error("E2E interrupted");
   const saved = await orca.call<Runtime[]>("ephemeralVm", "listRuntimes");
   for (const runtime of runtimes) assert(saved.some(r => r.id === runtime.id && r.workspaceId === runtime.workspaceId && r.sshTargetId === runtime.sshTargetId && r.runtimeEnvironmentId === runtime.runtimeEnvironmentId));

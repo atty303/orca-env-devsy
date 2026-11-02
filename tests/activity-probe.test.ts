@@ -42,7 +42,7 @@ async function runProbe(f: Facts = {}) {
     require(name: string) {
       if (name === "node:fs") return { readFileSync: () => JSON.stringify({ pairingCode: f.pairing ?? "private-credential" }) };
       if (name.endsWith("/client.js")) return { RuntimeClient: Client };
-      if (name.endsWith("/remote-runtime-client.js")) return remote;
+      if (name === "/fixture/.local/share/orca-env-devsy/orca/current/resources/app.asar.unpacked/out/shared/remote-runtime/remote-runtime-client.js") return remote;
       if (name.endsWith("/structured-agent-session-renderer-client-capabilities.js")) return { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: ["agent-session.structured.v1", "agent-session.structured.registered-agents.v1"] };
       throw Error("unexpected module");
     },
