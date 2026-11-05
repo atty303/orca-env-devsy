@@ -100,6 +100,16 @@ async fn host_orca_location() -> (String, String, String) {
 async fn host_orca_settings() -> String {
   let (executable, resources, user_data) = host_orca_location()
   let env = @env.get_env_vars()
+  let module_layout = if @fs.exists(
+      resources +
+      "/app.asar.unpacked/out/shared/source-control/ai/settings/source-control-ai-settings.js",
+    ) {
+    "relocated"
+  } else {
+    "legacy"
+  }
+  save_diagnostic("orca-settings-module", "selected", phase=module_layout)
+  env.set("ORCA_ENV_DEVSY_SETTINGS_MODULE_LAYOUT", module_layout)
   env.set("ELECTRON_RUN_AS_NODE", "1")
   env.remove("NODE_OPTIONS")
   env.remove("NODE_REPL_EXTERNAL_MODULE")
@@ -265,7 +275,8 @@ fn orca_settings_script() -> String {
     #|    const location = load('main/persistence/profile-state/profile-state-active-location.js').getActiveProfileStateLocation(userData);
     #|    const settings = read(location).values.get('settings');
     #|    phase = 'normalize';
-    #|    const source = load('shared/source-control-ai-settings.js').normalizeSourceControlAiSettings(settings.sourceControlAi, settings.commitMessageAi);
+    #|    const sourceControlSettings = 'shared/source-control/ai/settings/source-control-ai-settings.js';
+    #|    const source = load(process.env.ORCA_ENV_DEVSY_SETTINGS_MODULE_LAYOUT === 'relocated' ? sourceControlSettings : 'shared/source-control-ai-settings.js').normalizeSourceControlAiSettings(settings.sourceControlAi, settings.commitMessageAi);
     #|    const autoRename = load('shared/auto-rename-branch-from-work-settings.js').normalizeAutoRenameBranchFromWorkDefaultOn(settings);
     #|    const actions = {};
     #|    const modelOverridesByOperation = {};

@@ -14,7 +14,11 @@ fn activity_probe_source() -> String {
     #|async function openChannel(config) {
     #|  check(typeof config.pairingCode === 'string' && config.pairingCode.length > 0, 'missing_native_access');
     #|  const { subscribeRemoteRuntimeRequest } = require(base + '/shared/remote-runtime/remote-runtime-client.js');
-    #|  const { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: caps } = require(base + '/shared/structured-agent-session-renderer-client-capabilities.js');
+    #|  const relocatedCaps = base + '/shared/agent-session/structured-agent-session-renderer-client-capabilities.js';
+    #|  const relocated = fs.existsSync(relocatedCaps);
+    #|  let caps;
+    #|  try { ({ STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: caps } = require(relocated ? relocatedCaps : base + '/shared/structured-agent-session-renderer-client-capabilities.js')); }
+    #|  catch (cause) { throw Object.assign(new Error('capabilities module load failed', { cause }), { code: relocated ? 'capabilities_relocated_load_failed' : 'capabilities_legacy_load_failed' }); }
     #|  check(Array.isArray(caps) && caps.length > 0, 'unsupported_native_capabilities');
     #|  const remote = new RuntimeClient(undefined, 5000, config.pairingCode, null).remote;
     #|  remote.endpoint = 'ws://127.0.0.1:47121';

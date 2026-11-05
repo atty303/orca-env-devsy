@@ -153,6 +153,11 @@ async test "settings apply before serving only on create and payload never enter
       .text()
       .contains("\"stage\":\"orca-settings\",\"status\":\"success\""),
     )
+    assert_true(
+      @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
+      .text()
+      .contains("\"phase\":\"legacy\""),
+    )
     @fs.remove(directory + "/delivered-settings")
     let (status, _, errors) = invoke("suspend", env, directory, payload=receipt)
     assert_eq(status, 0, msg=errors)
@@ -188,5 +193,39 @@ async test "settings transfer failure prevents serving and reclaims created work
     assert_true(events.contains("\"phase\":\"remote/write\""))
     assert_true(events.contains("\"errorType\":\"ENOSPC\""))
     assert_true(events.contains("\"exitCode\":1"))
+  })
+}
+
+///|
+async test "settings transfer uses the relocated Orca settings module" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    settings_fixture(directory, env)
+    let shared = directory + "/orca-host/resources/app.asar.unpacked/out/shared"
+    let relocated = shared + "/source-control/ai/settings"
+    @fs.mkdir(relocated, recursive=true)
+    assert_eq(
+      @process.run("mv", [
+        shared + "/source-control-ai-settings.js",
+        relocated + "/source-control-ai-settings.js",
+      ]),
+      0,
+    )
+    let (status, _, errors) = invoke("create", env, directory)
+    assert_eq(status, 0, msg=errors)
+    let settings = @json.parse(
+      @fs.read_file(directory + "/delivered-settings").text(),
+    )
+    assert_eq(field(settings, "defaultTuiAgent"), Some(Json::string("codex")))
+    assert_true(
+      @fs.read_file(directory + "/.local/state/orca-env-devsy/events.jsonl")
+      .text()
+      .contains("\"phase\":\"relocated\""),
+    )
   })
 }

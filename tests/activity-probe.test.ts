@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../src/activity_probe.mbt", import.meta.url), "utf8").split("\n").filter(line => line.trimStart().startsWith("#|")).map(line => line.trimStart().slice(2)).join("\n");
-type Facts = { process?: string | null; children?: boolean; agent?: string; state?: string; program?: string; working?: boolean; queued?: number; prompts?: number; tasks?: number; truncated?: boolean; verdict?: string; nativeError?: boolean; emptyChats?: boolean; authoritative?: boolean; connected?: boolean; age?: number; pairing?: string; };
+type Facts = { process?: string | null; children?: boolean; agent?: string; state?: string; program?: string; working?: boolean; queued?: number; prompts?: number; tasks?: number; truncated?: boolean; verdict?: string; nativeError?: boolean; emptyChats?: boolean; authoritative?: boolean; connected?: boolean; age?: number; pairing?: string; relocated?: boolean; failCapabilities?: boolean; };
 async function runProbe(f: Facts = {}) {
   let output = "";
   let connections = 0;
@@ -40,10 +40,13 @@ async function runProbe(f: Facts = {}) {
   };
   await vm.runInNewContext(source, {
     require(name: string) {
-      if (name === "node:fs") return { readFileSync: () => JSON.stringify({ pairingCode: f.pairing ?? "private-credential" }) };
+      if (name === "node:fs") return { readFileSync: () => JSON.stringify({ pairingCode: f.pairing ?? "private-credential" }), existsSync: () => f.relocated ?? false };
       if (name.endsWith("/client.js")) return { RuntimeClient: Client };
       if (name === "/fixture/.local/share/orca-env-devsy/orca/current/resources/app.asar.unpacked/out/shared/remote-runtime/remote-runtime-client.js") return remote;
-      if (name.endsWith("/structured-agent-session-renderer-client-capabilities.js")) return { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: ["agent-session.structured.v1", "agent-session.structured.registered-agents.v1"] };
+      if (name === "/fixture/.local/share/orca-env-devsy/orca/current/resources/app.asar.unpacked/out/shared/" + (f.relocated ? "agent-session/" : "") + "structured-agent-session-renderer-client-capabilities.js") {
+        if (f.failCapabilities) throw new Error("module missing");
+        return { STRUCTURED_AGENT_SESSION_RENDERER_CLIENT_CAPABILITIES: ["agent-session.structured.v1", "agent-session.structured.registered-agents.v1"] };
+      }
       throw Error("unexpected module");
     },
     process: { env: { HOME: "/fixture" }, stdin: { once() {} }, stdout: { write(s: string) { output += s; } } },
@@ -56,6 +59,16 @@ async function runProbe(f: Facts = {}) {
 async function probe(f: Facts = {}) { return (await runProbe(f)).frames[0]; }
 
 describe("VM activity observation", () => {
+  test("observes with either Orca capabilities module layout", async () => {
+    for (const relocated of [false, true]) expect((await probe({ relocated })).activity).toBe("idle");
+  });
+  test("distinguishes capabilities module load failures by layout", async () => {
+    for (const relocated of [false, true]) {
+      const result = await probe({ relocated, failCapabilities: true });
+      expect(result.activity).toBe("unknown");
+      expect(result.errors[0].code).toBe(`capabilities_${relocated ? "relocated" : "legacy"}_load_failed`);
+    }
+  });
   test("each one-shot observation acquires a fresh snapshot, shares its RPC channel and closes it", async () => {
     for (const facts of [{}, { working: true }, {}]) {
       const run = await runProbe(facts);
