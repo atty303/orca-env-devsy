@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -78,8 +78,14 @@ test("termination retains ownership after the leader and all its pipes close", a
 
 test("Orca close rejects at its deadline even if killing Electron never settles close", async () => {
   let kills = 0;
-  const app = { close: () => new Promise<void>(() => {}), process: () => ({ kill(signal: string) { expect(signal).toBe("SIGKILL"); kills++; return false; } }) };
-  const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations()]) as Orca;
+  class Child extends EventEmitter {
+    exitCode = null;
+    signalCode = null;
+    kill(signal: string) { expect(signal).toBe("SIGKILL"); kills++; return false; }
+  }
+  const child = new Child();
+  const app = { close: () => new Promise<void>(() => {}), process: () => child };
+  const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations(), "/nonexistent-orca-test-profile"]) as Orca;
   const started = performance.now();
   const result = await Promise.race([
     orca.close(50).then(() => "success", error => (error as Error).message),
@@ -122,7 +128,7 @@ test("an interrupted Orca call rejects immediately while cleanup uses its own si
   const phase = new AbortController();
   const cleanup = new AbortController();
   const app = { evaluate: () => ++calls === 1 ? new Promise(() => {}) : Promise.resolve({ ok: true, value: { status: "cleaned" } }) };
-  const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations(), phase.signal]) as Orca;
+  const orca = Reflect.construct(Orca, [app, 0, new OrcaObservations(), "/nonexistent-orca-test-profile", phase.signal]) as Orca;
   const active = orca.call("ephemeralVm", "resumeWorkspace");
   phase.abort(new Error("E2E interrupted"));
   await expect(active).rejects.toThrow("IPC failed");

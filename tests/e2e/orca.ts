@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { budgets, measure } from "./timing.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { OrcaObservations } from "./observations.ts";
+import { stopOrcaDaemons } from "./orca-daemon.ts";
 import { run, until, withAbort, type Environment } from "../../scripts/process.ts";
 
 export type Runtime = {
@@ -58,7 +59,7 @@ export async function latestOrca(signal?: AbortSignal) {
 }
 
 export class Orca {
-  private constructor(readonly app: ElectronApplication, readonly bridgeId: number, readonly observations: OrcaObservations, readonly signal?: AbortSignal) {}
+  private constructor(readonly app: ElectronApplication, readonly bridgeId: number, readonly observations: OrcaObservations, readonly profile: string, readonly signal?: AbortSignal) {}
   private readonly provisionOperations = new Set<Promise<unknown>>();
   private static readonly launches = new Set<Promise<boolean>>();
   static launch(executable: string, profile: string, env: Environment, signal?: AbortSignal, launchApplication: typeof _electron.launch = options => _electron.launch(options)) {
@@ -165,9 +166,9 @@ export class Orca {
         } catch { observations.recordingFailure(); }
       }
       signal?.throwIfAborted();
-      return new Orca(app, id, observations, executionSignal);
+      return new Orca(app, id, observations, profile, executionSignal);
     } catch (error) {
-      if (acquired) await new Orca(acquired, 0, observations).close().catch(() => { owner.cleanupFailed = true; });
+      if (acquired) await new Orca(acquired, 0, observations, profile).close().catch(() => { owner.cleanupFailed = true; });
       throw error;
     }
   }
@@ -212,23 +213,14 @@ export class Orca {
     } finally { clearTimeout(timer!); }
   }
   async close(timeout = budgets.operation) {
-    let timer: ReturnType<typeof setTimeout>;
     console.log("Orca close: started");
     try {
-      await measure("orca-close", timeout, () => Promise.race([
-        this.app.close(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            try { this.app.process().kill("SIGKILL"); } catch { /* Closing still fails at the deadline. */ }
-            reject(new Error("Orca close deadline exceeded"));
-          }, timeout);
-        }),
-      ]));
+      await measure("orca-close", timeout * 4, () => closeOrca(this.app, this.profile, timeout));
       console.log("Orca close: completed");
     } catch (error) {
       console.log("Orca close: failed");
       throw error;
-    } finally { clearTimeout(timer!); }
+    }
   }
   async drainProvisionObservations(signal = this.signal) {
     if (!this.observations.enabled) return;
@@ -243,4 +235,30 @@ export class Orca {
     const pending = [...this.provisionOperations];
     await withAbort(signal, () => Promise.allSettled(pending));
   }
+}
+
+export async function closeOrca(app: ElectronApplication, profile: string, timeout: number, stopDaemons = stopOrcaDaemons) {
+  const child = app.process();
+  const waitForExit = () => new Promise<boolean>(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+    const timer = setTimeout(() => { child.removeListener("exit", onExit); resolve(false); }, timeout);
+    const onExit = () => { clearTimeout(timer); resolve(true); };
+    child.once("exit", onExit);
+  });
+  let closeFailure: unknown;
+  const closed = app.close().then(() => true, error => { closeFailure = error; return true; });
+  let exited = await waitForExit();
+  const forced = !exited;
+  if (forced) {
+    try { child.kill("SIGKILL"); } catch (error) { closeFailure ??= error; }
+    exited = await waitForExit();
+  }
+  let daemonFailure: unknown;
+  try { await stopDaemons(profile); } catch (error) { daemonFailure = error; }
+  let timer: ReturnType<typeof setTimeout>;
+  const closeSettled = await Promise.race([closed, new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), timeout); })]);
+  clearTimeout(timer!);
+  if (daemonFailure) throw daemonFailure;
+  if (closeFailure) throw closeFailure;
+  if (forced || !exited || !closeSettled) throw new Error("Orca close deadline exceeded");
 }

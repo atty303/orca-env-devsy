@@ -383,3 +383,50 @@ test("missing resource paths preserve embedded quotes from filesystem errors", a
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test.skipIf(process.platform !== "linux")("only the daemon identified by the disposable profile is stopped", async () => {
+  const { mkdtemp, mkdir, readFile, rm, writeFile } = await import("node:fs/promises");
+  const { stopOrcaDaemons } = await import("./orca-daemon.ts");
+  const root = await mkdtemp("/tmp/orca-daemon-test-");
+  const directory = root + "/daemon";
+  await mkdir(directory);
+  const entry = root + "/daemon-entry.js";
+  await writeFile(entry, "setInterval(() => {}, 1000);\n");
+  const child = Bun.spawn([process.execPath, entry, "--socket", directory + "/daemon.sock"], { stdout: "ignore", stderr: "ignore" });
+  try {
+    const stat = await readFile(`/proc/${child.pid}/stat`, "utf8");
+    const ticks = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19];
+    const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+    const record = { pid: child.pid, linuxStartTicks: ticks, bootId, entryPath: entry };
+    const path = directory + "/daemon-v55.pid";
+    await writeFile(path, JSON.stringify({ ...record, linuxStartTicks: "wrong" }));
+    await expect(stopOrcaDaemons(root)).rejects.toThrow("Cannot verify Orca daemon ownership");
+    expect(child.exitCode).toBeNull();
+    await writeFile(path, JSON.stringify(record));
+    await stopOrcaDaemons(root);
+    await child.exited;
+    expect(child.signalCode).toBe("SIGTERM");
+  } finally {
+    child.kill("SIGKILL");
+    await child.exited;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Orca close waits for daemon cleanup after timeout and close failure", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { closeOrca } = await import("./orca.ts");
+  for (const rejectClose of [false, true]) {
+    class Child extends EventEmitter {
+      exitCode: number | null = null;
+      signalCode: NodeJS.Signals | null = null;
+      kill() { this.signalCode = "SIGKILL"; this.emit("exit", null, this.signalCode); return true; }
+    }
+    const child = new Child();
+    let cleaned = false;
+    const app = { process: () => child, close: () => rejectClose ? Promise.reject(new Error("close failed")) : new Promise<void>(() => {}) };
+    await expect(closeOrca(app as never, "/profile", 10, async () => { await Bun.sleep(5); cleaned = true; })).rejects.toThrow(rejectClose ? "close failed" : "deadline");
+    expect(cleaned).toBe(true);
+    expect(child.signalCode).toBe("SIGKILL");
+  }
+});
