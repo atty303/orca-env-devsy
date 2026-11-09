@@ -229,3 +229,106 @@ async test "settings transfer uses the relocated Orca settings module" {
     )
   })
 }
+
+///|
+async test "settings import preserves SQLite state and rejects unsupported schemas" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  env.set("HOME", @env.get_env_var("HOME").unwrap())
+  let bun = "bun"
+  let resources = directory + "/resources"
+  let root = resources + "/app.asar.unpacked/out"
+  let user_data = directory + "/profile"
+  @fs.mkdir(root + "/main/persistence/profile-state", recursive=true)
+  @fs.mkdir(root + "/main/orca-profiles", recursive=true)
+  @fs.mkdir(root + "/shared", recursive=true)
+  @fs.mkdir(user_data, recursive=true)
+  @fs.write_file(
+    root + "/main/persistence/profile-state/profile-state-access.js",
+    "exports.acquireProfileStateMaintenance=()=>({release(){}})",
+  )
+  @fs.write_file(
+    root + "/main/orca-profiles/profile-index-store.js",
+    "exports.ensureActiveOrcaProfile=u=>({dataFile:u+'/legacy.json',stateDatabaseFile:u+'/state.db',profile:{id:'fixture'}})",
+  )
+  @fs.write_file(
+    root + "/shared/constants.js",
+    "exports.getDefaultPersistedState=()=>({settings:{agentStatusHooksEnabled:true,sourceControlAi:{actions:{branchName:{agentId:null},conversationName:{agentId:null}}}}})",
+  )
+  @fs.write_file(
+    root + "/main/persistence/profile-state/profile-state-domain-reader.js",
+    "const {DatabaseSync}=require('node:sqlite');const crypto=require('node:crypto');function read(db){const row=db.prepare(\"SELECT payload,content_hash FROM profile_state_documents WHERE domain='settings'\").get();if(row&&crypto.createHash('sha256').update(row.payload).digest('hex')!==row.content_hash)return {kind:'unreadable'};return {kind:'values',revision:Number(db.prepare(\"SELECT value FROM profile_state_meta WHERE key='revision'\").get().value),values:new Map(row?[[\"settings\",JSON.parse(row.payload)]]:[])}}exports.readProfileStateDomains=(file)=>{const db=new DatabaseSync(file);try{db.prepare('SELECT * FROM required_table').all();return read(db)}catch{return {kind:'unreadable'}}finally{db.close()}}",
+  )
+  let setup = "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);db.exec(\"PRAGMA user_version=3;CREATE TABLE required_table(id INTEGER);CREATE TABLE profile_state_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE profile_state_documents(domain TEXT PRIMARY KEY,payload TEXT NOT NULL,domain_version INTEGER NOT NULL,revision INTEGER NOT NULL,updated_at INTEGER NOT NULL,content_hash TEXT NOT NULL);INSERT INTO profile_state_meta VALUES('profile_id','fixture'),('revision','0')\");db.close()"
+  let db = user_data + "/state.db"
+  let (setup_status, _, setup_error) = @process.collect_output("bun", [
+    "-e", setup, db,
+  ])
+  assert_eq(setup_status, 0, msg=setup_error.text())
+  let payload = "{\"defaultTuiAgent\":\"codex\",\"sourceControlAi\":{\"actions\":{\"branchName\":{\"agentId\":\"codex\"}}}}"
+  ignore(
+    settings_process(
+      bun,
+      ["-e", orca_settings_script(), "--", "import", resources, user_data],
+      environment=env,
+      input=payload,
+    ),
+  )
+  let inspect = "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);const r=db.prepare(\"SELECT payload,revision,domain_version FROM profile_state_documents WHERE domain='settings'\").get();console.log(JSON.stringify({settings:JSON.parse(r.payload),revision:r.revision,version:r.domain_version}));db.exec('PRAGMA user_version=99');db.close()"
+  let (inspect_status, result, inspect_error) = @process.collect_output("bun", [
+    "-e", inspect, db,
+  ])
+  assert_eq(inspect_status, 0, msg=inspect_error.text())
+  let saved = @json.parse(result.text())
+  assert_eq(field(saved, "revision"), Some(Json::number(1)))
+  assert_eq(field(saved, "version"), Some(Json::number(1)))
+  assert_eq(
+    field(field(saved, "settings").unwrap(), "defaultTuiAgent"),
+    Some(Json::string("codex")),
+  )
+  try {
+    ignore(
+      settings_process(
+        bun,
+        ["-e", orca_settings_script(), "--", "import", resources, user_data],
+        environment=env,
+        input=payload,
+      ),
+    )
+    fail("unsupported schema must fail")
+  } catch {
+    SettingsProcessError(phase, code, _) => {
+      assert_eq(phase, "profile")
+      assert_eq(code, "INCOMPATIBLE")
+    }
+    _ => fail("unexpected error")
+  }
+  let corrupt = "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);db.exec('PRAGMA user_version=3;DROP TABLE required_table');db.close()"
+  let (corrupt_status, _, _) = @process.collect_output("bun", [
+    "-e", corrupt, db,
+  ])
+  assert_eq(corrupt_status, 0)
+  try {
+    ignore(
+      settings_process(
+        bun,
+        ["-e", orca_settings_script(), "--", "import", resources, user_data],
+        environment=env,
+        input=payload,
+      ),
+    )
+    fail("invalid database must fail before writing")
+  } catch {
+    SettingsProcessError(phase, code, _) => {
+      assert_eq(phase, "profile")
+      assert_eq(code, "INVALID")
+    }
+    _ => fail("unexpected error")
+  }
+  let check = "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);console.log(db.prepare(\"SELECT value FROM profile_state_meta WHERE key='revision'\").get().value);db.close()"
+  let (check_status, revision, _) = @process.collect_output("bun", [
+    "-e", check, db,
+  ])
+  assert_eq(check_status, 0)
+  assert_eq(revision.text().trim(), "1")
+}

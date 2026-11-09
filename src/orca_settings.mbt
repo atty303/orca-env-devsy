@@ -248,15 +248,7 @@ fn orca_settings_script() -> String {
     #|  const [mode, resources, userData] = process.argv.slice(-3);
     #|  const root = path.join(resources, 'app.asar.unpacked/out');
     #|  function load(name) { return require(path.join(root, name)); }
-    #|  function dependency(entry, prefix) {
-    #|    const id = require.resolve(path.join(root, entry));
-    #|    require(id);
-    #|    const matches = require.cache[id].children.filter(m => path.basename(m.filename).startsWith(prefix + '-'));
-    #|    if (matches.length !== 1) throw new Error('INCOMPATIBLE');
-    #|    return matches[0].exports;
-    #|  }
     #|  const readerEntry = 'main/persistence/profile-state/profile-state-domain-reader.js';
-    #|  const offlineEntry = 'main/persistence/profile-state/profile-state-offline-settings.js';
     #|  const reader = load(readerEntry);
     #|  function read(location) {
     #|    const result = reader.readProfileStateDomains(location.databaseFile, location.profileId, ['settings']);
@@ -305,26 +297,35 @@ fn orca_settings_script() -> String {
     #|    let database;
     #|    try {
     #|      const profile = load('main/orca-profiles/profile-index-store.js').ensureActiveOrcaProfile(userData);
-    #|      const location = { databaseFile: profile.stateDatabaseFile, profileId: profile.profile.id };
-    #|      const dbModule = dependency(readerEntry, 'profile-state-database');
-    #|      const authority = dependency(offlineEntry, 'profile-state-sqlite-authority');
-    #|      const constants = dependency(offlineEntry, 'constants');
-    #|      let defaults;
-    #|      for (const fn of [constants.s, constants.a]) {
-    #|        if (typeof fn !== 'function') continue;
-    #|        try { defaults = fn(os.homedir())?.settings; } catch { continue; }
-    #|        if (defaults?.sourceControlAi?.actions) break;
-    #|      }
+    #|      const location = { dataFile: profile.dataFile, databaseFile: profile.stateDatabaseFile, profileId: profile.profile.id };
+    #|      const defaults = load('shared/constants.js').getDefaultPersistedState(os.homedir())?.settings;
     #|      if (!defaults?.sourceControlAi?.actions) throw new Error('INCOMPATIBLE');
-    #|      database = dbModule.n(location.databaseFile, location.profileId);
-    #|      const current = reader.readProfileStateDomainsWithRevisionFromDatabase(database.db, ['settings']);
+    #|      if (!fs.existsSync(location.databaseFile)) {
+    #|        if (fs.existsSync(location.dataFile)) throw new Error('INCOMPATIBLE');
+    #|        load('main/persistence/profile-state/profile-state-offline-settings.js').updateAgentHookSettingsFromProfileState(location, defaults.agentStatusHooksEnabled !== false);
+    #|      }
+    #|      const current = reader.readProfileStateDomains(location.databaseFile, location.profileId, ['settings']);
     #|      if (current.kind !== 'values') throw new Error('INVALID');
+    #|      const { DatabaseSync } = require('node:sqlite');
+    #|      const crypto = require('node:crypto');
+    #|      database = new DatabaseSync(location.databaseFile);
+    #|      if (database.prepare('PRAGMA user_version').get().user_version !== 3 || database.prepare("SELECT value FROM profile_state_meta WHERE key = 'profile_id'").get()?.value !== location.profileId) throw new Error('INCOMPATIBLE');
+    #|      const storedVersion = database.prepare("SELECT domain_version FROM profile_state_documents WHERE domain = 'settings'").get()?.domain_version;
+    #|      if (storedVersion !== undefined && storedVersion !== 1) throw new Error('INCOMPATIBLE');
     #|      const settings = { ...defaults, ...current.values.get('settings'), ...payload };
     #|      settings.sourceControlAi = { ...defaults.sourceControlAi, ...current.values.get('settings')?.sourceControlAi, ...payload.sourceControlAi,
     #|        actions: { ...defaults.sourceControlAi.actions, ...current.values.get('settings')?.sourceControlAi?.actions, ...payload.sourceControlAi.actions } };
     #|      phase = 'write';
-    #|      authority.o(database.db, { domain: 'settings', payload: JSON.stringify(settings), expectedRevision: current.revision });
-    #|      database.db.close();
+    #|      const serialized = JSON.stringify(settings);
+    #|      const revision = current.revision + 1;
+    #|      if (!Number.isSafeInteger(revision)) throw new Error('INCOMPATIBLE');
+    #|      database.exec('BEGIN IMMEDIATE');
+    #|      try {
+    #|        database.prepare("INSERT INTO profile_state_documents (domain, payload, domain_version, revision, updated_at, content_hash) VALUES ('settings', ?, 1, ?, ?, ?) ON CONFLICT(domain) DO UPDATE SET payload=excluded.payload, domain_version=excluded.domain_version, revision=excluded.revision, updated_at=excluded.updated_at, content_hash=excluded.content_hash").run(serialized, revision, Date.now(), crypto.createHash('sha256').update(serialized, 'utf8').digest('hex'));
+    #|        database.prepare("INSERT INTO profile_state_meta (key, value) VALUES ('revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(revision));
+    #|        database.exec('COMMIT');
+    #|      } catch (error) { database.exec('ROLLBACK'); throw error; }
+    #|      database.close();
     #|      database = undefined;
     #|      phase = 'verify';
     #|      const saved = read(location).values.get('settings');
@@ -337,7 +338,7 @@ fn orca_settings_script() -> String {
     #|          }
     #|        } else assert.deepEqual(saved[key], payload[key]);
     #|      }
-    #|    } finally { database?.db.close(); maintenance.release(); }
+    #|    } finally { database?.close(); maintenance.release(); }
     #|  } else throw new Error('INVALID');
     #|}
     #|try { main(); } catch (error) {

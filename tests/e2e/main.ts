@@ -128,6 +128,8 @@ try {
   const adapter = resolve("_build/native/release/build/cmd/main/main.exe");
   const definitions = await recipes(source.source, devsy, dhome, provider, adapter);
   orca = await Orca.launch(release.executable, root + "/profile", env, phase.signal);
+  const transferredSettings = { defaultTuiAgent: "codex", disabledTuiAgents: ["claude"], branchPrefix: "custom", branchPrefixCustom: "e2e-settings" };
+  await orca.call("settings", "set", transferredSettings);
   const added = await orca.call<{ repo?: { id: string }; error?: string }>("repos", "add", { path: source.source });
   assert(added.repo, "Orca must register the fixture repository");
   await source.setOrigin(shared.sourceUrl);
@@ -200,6 +202,10 @@ try {
   assert.equal(new Set(routeIds).size, 4);
   const activityStatus = JSON.parse(await run([adapter, "status", "--provider", provider], { env, timeout: budgets.provision })) as { workspaces: { id: string; activity: string; outcome: string }[] };
   const serverWorkspace = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
+  const settingsQuery = `python3 -c 'import glob,json,sqlite3; c=sqlite3.connect(glob.glob("/worktrees/.orca/profiles/*/profile-state.db")[0]); s=json.loads(c.execute("select payload from profile_state_documents where domain = ?", ("settings",)).fetchone()[0]); print(json.dumps({k:s.get(k) for k in ("defaultTuiAgent","disabledTuiAgents","branchPrefix","branchPrefixCustom")}))'`;
+  for (const server of workspaces.filter(w => w.runtime.recipeResult.connection.type === "orca-server")) {
+    assert.deepEqual(JSON.parse(await server.exec(0, settingsQuery)), transferredSettings);
+  }
   const observed = activityStatus.workspaces.find(w => w.id === serverWorkspace.runtime.recipeResult.userData.workspaceId);
   assert(observed && observed.outcome === "observed" && ["idle", "active"].includes(observed.activity), "Activity probe must observe an Orca Server workspace");
   if (phase.signal.aborted) throw new Error("E2E interrupted");
