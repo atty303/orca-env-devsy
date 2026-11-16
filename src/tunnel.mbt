@@ -687,7 +687,7 @@ fn configured_timing_ms(
 
 ///|
 fn connection_timeout_ms(state? : Json) -> Int32 raise {
-  configured_timing_ms("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", 60000, state?)
+  configured_timing_ms("ORCA_ENV_DEVSY_CONNECTION_TIMEOUT_MS", 120000, state?)
 }
 
 ///|
