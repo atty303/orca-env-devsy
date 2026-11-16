@@ -191,7 +191,14 @@ async test "worker fresh active check cancels an otherwise due stop" {
     })
     @fs.write_file(
       directory + "/activity",
-      ({ "schemaVersion": 1, "activity": "active" } : Json).stringify(),
+      (
+        {
+          "ok": true,
+          "result": {
+            "truncated": false,
+            "worktrees": [{ "agents": [{ "state": "working" }] }],
+          },
+        } : Json).stringify(),
     )
     assert_false(@fs.exists(directory + "/stopped"))
     @fs.remove(saved + "/enabled")
@@ -256,36 +263,12 @@ async test "unknown after idle reaches the deadline but cannot authorize stoppin
       let value = idle_status(state)
       field(value, "activity") == Some(Json::string("idle"))
     })
-    for code in ["unsupported_native_capabilities", "unverifiable_process"] {
-      let observation : Json = {
-        "schemaVersion": 1,
-        "activity": "unknown",
-        "errors": [{ "code": code }],
-      }
-      @fs.write_file(directory + "/activity", observation.stringify())
-      idle_wait_for(async fn() {
-        fixture_events(directory).any(event => {
-          match field(event, "evidence") {
-            Some(evidence) =>
-              field(evidence, "observation") == Some(observation)
-            None => false
-          }
-        })
-      })
-    }
+    @fs.write_file(directory + "/fail-idle-connect", "")
     idle_wait_for(async fn() {
-      field(idle_status(state), "reason") ==
-      Some(Json::string("awaiting_idle_confirmation"))
+      field(idle_status(state), "activity") == Some(Json::string("unknown"))
     })
     assert_false(@fs.exists(directory + "/stopped"))
-    assert_eq(
-      field(idle_status(state), "activity"),
-      Some(Json::string("unknown")),
-    )
-    @fs.write_file(
-      directory + "/activity",
-      ({ "schemaVersion": 1, "activity": "idle" } : Json).stringify(),
-    )
+    @fs.remove(directory + "/fail-idle-connect")
     idle_wait_for(async fn() { @fs.exists(directory + "/stopped") })
     @fs.remove(saved + "/enabled")
     assert_eq(child.wait(), 0)
@@ -482,54 +465,5 @@ async test "one VM observer failure does not block another VM from stopping" {
     @fs.remove(second_saved + "/enabled")
     assert_eq(failed.wait(), 0)
     assert_eq(healthy.wait(), 0)
-  })
-}
-
-///|
-async test "failed one-shot observations retain distinct native causes without authorizing idle stop" {
-  let (directory, env, state) = idle_fixture(1)
-  defer cleanup_fixture(directory)
-  @fs.write_file(directory + "/activity-exit", "1")
-  let saved = required(state, "tunnelDirectory")
-  let write = async fn(code : String) {
-    @fs.write_file(
-      directory + "/activity.tmp",
-      (
-        {
-          "schemaVersion": 1,
-          "activity": "unknown",
-          "errors": [{ "source": "observer", "code": code }],
-        } : Json).stringify(),
-    )
-    @fs.rename(
-      directory + "/activity.tmp",
-      directory + "/activity",
-      replace=true,
-    )
-  }
-  write("missing_native_access")
-  @async.with_task_group(async fn(group) {
-    let child = @process.spawn(
-      group,
-      integration_binary(),
-      [
-        "--supervisor",
-        env.get("XDG_STATE_HOME").unwrap() + "/orca-env-devsy",
-        saved,
-      ],
-      extra_env=env,
-      no_wait=true,
-    )
-    for code in ["missing_native_access", "native_restoration_unconfirmed"] {
-      write(code)
-      idle_wait_for(async fn() {
-        let path = env.get("XDG_STATE_HOME").unwrap() +
-          "/orca-env-devsy/events.jsonl"
-        @fs.exists(path) && @fs.read_file(path).text().contains(code)
-      })
-      assert_false(@fs.exists(directory + "/stopped"))
-    }
-    @fs.remove(saved + "/enabled")
-    assert_eq(child.wait(), 0)
   })
 }

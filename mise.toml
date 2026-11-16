@@ -59,7 +59,7 @@ run = [
   trap 'rm -rf "$test_state_dir"' EXIT
   XDG_STATE_HOME="$test_state_dir" moon test --target native --deny-warn
   ''',
-  "bun test tests/release-build.test.ts tests/process.test.ts tests/activity-probe.test.ts tests/server-relay.test.ts tests/e2e/diagnostics.test.ts",
+  "bun test tests/release-build.test.ts tests/process.test.ts tests/server-relay.test.ts tests/e2e/diagnostics.test.ts",
 ]
 
 [tasks.build]

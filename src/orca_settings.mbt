@@ -30,12 +30,6 @@ async fn settings_executable(pid : Int32) -> String {
 }
 
 ///|
-fn settings_parent(path : String) -> String {
-  let parts = path.split("/").to_array()
-  parts[:parts.length() - 1].join("/")
-}
-
-///|
 async fn host_orca_location() -> (String, String, String) {
   let home = environment("HOME")
   let user_data = @env.get_env_var("ORCA_USER_DATA_PATH")
@@ -70,52 +64,30 @@ async fn host_orca_location() -> (String, String, String) {
       }
     }
   }
-  let resource_checks = []
   for executable in executables {
-    let parent = settings_parent(executable)
-    for
-      resources in [
-        parent + "/resources",
-        settings_parent(parent) + "/Resources",
-      ] {
-      let reader = resources +
-        "/app.asar.unpacked/out/main/persistence/profile-state/profile-state-domain-reader.js"
-      let found = @fs.exists(reader)
-      resource_checks.push(resources + ":" + found.to_string())
-      if found {
+    let parts = executable.split("/").to_array()
+    let parent = parts[:parts.length() - 1].join("/")
+    let parent_parts = parent.split("/").to_array()
+    let app_parent = parent_parts[:parent_parts.length() - 1].join("/")
+    for resources in [parent + "/resources", app_parent + "/Resources"] {
+      if @fs.exists(resources + "/app.asar") {
         return (executable, resources, user_data)
       }
     }
   }
-  raise AdapterError(
-    "Cannot locate the running host Orca resources (executable=" +
-    executables.join(",") +
-    ", resources=" +
-    resource_checks.join(",") +
-    ")",
-  )
+  raise AdapterError("Cannot locate the running host Orca resources")
 }
 
 ///|
 async fn host_orca_settings() -> String {
-  let (executable, resources, user_data) = host_orca_location()
+  let (executable, _, user_data) = host_orca_location()
   let env = @env.get_env_vars()
-  let module_layout = if @fs.exists(
-      resources +
-      "/app.asar.unpacked/out/shared/source-control/ai/settings/source-control-ai-settings.js",
-    ) {
-    "relocated"
-  } else {
-    "legacy"
-  }
-  save_diagnostic("orca-settings-module", "selected", phase=module_layout)
-  env.set("ORCA_ENV_DEVSY_SETTINGS_MODULE_LAYOUT", module_layout)
   env.set("ELECTRON_RUN_AS_NODE", "1")
   env.remove("NODE_OPTIONS")
   env.remove("NODE_REPL_EXTERNAL_MODULE")
   settings_process(
     executable,
-    ["-e", orca_settings_script(), "--", "export", resources, user_data],
+    ["-e", orca_settings_script(), "--", "export", user_data],
     environment=env,
   )
 }
@@ -149,11 +121,25 @@ async fn settings_process(
         let error = @json.parse(stderr.text())
         let phase = required(error, "phase")
         let code = required(error, "code")
-        if ["load", "read", "normalize", "input", "profile", "write", "verify"].contains(
-            phase,
-          ) &&
-          ["EACCES", "ENOENT", "EBUSY", "ENOSPC", "INCOMPATIBLE", "INVALID"].contains(
-            code,
+        if [
+            "load", "read", "normalize", "input", "initialize", "profile", "write",
+            "verify",
+          ].contains(phase) &&
+          (
+            [
+              "EACCES", "ENOENT", "EBUSY", "ENOSPC", "INCOMPATIBLE", "INVALID", "SERVER_START",
+              "SERVER_TIMEOUT", "SERVER_STOP", "PROFILE_MISSING",
+            ].contains(code) ||
+            (
+              code.has_prefix("SERVER_EXIT_") &&
+              code.length() > 12 &&
+              code.length() <= 15 &&
+              code[12:].iter().all(c => c >= '0' && c <= '9')
+            ) ||
+            [
+              "SERVER_SPAWN_EAGAIN", "SERVER_SPAWN_EACCES", "SERVER_SPAWN_OTHER",
+              "SERVER_SIGNAL_SIGTERM", "SERVER_SIGNAL_SIGKILL", "SERVER_SIGNAL_OTHER",
+            ].contains(code)
           ) {
           (phase, code)
         } else {
@@ -176,12 +162,13 @@ async fn initialize_orca_settings(state : Json) -> Unit {
   let mut phase = "host"
   save_diagnostic("orca-settings", "started")
   progress_message("orca-settings: running…")
-  @async.with_timeout(30000, async fn() {
+  @async.with_timeout(120000, async fn() {
     let payload = host_orca_settings()
     phase = "remote"
     let script = "unset NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE; ORCA_USER_DATA_PATH=/worktrees/.orca ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
       quote(orca_settings_script()) +
-      " -- import \"$HOME/.local/share/orca-env-devsy/orca/current/resources\" /worktrees/.orca"
+      " -- import /worktrees/.orca " +
+      quote(required(state, "projectRoot"))
     let env = workspace_environment(state)
     ignore(
       settings_process(
@@ -241,110 +228,101 @@ fn orca_settings_script() -> String {
   let script =
     #|const fs = require('node:fs');
     #|const path = require('node:path');
-    #|const os = require('node:os');
-    #|const assert = require('node:assert/strict');
+    #|const { DatabaseSync } = require('node:sqlite');
+    #|const crypto = require('node:crypto');
     #|let phase = 'load';
-    #|function main() {
-    #|  const [mode, resources, userData] = process.argv.slice(-3);
-    #|  const root = path.join(resources, 'app.asar.unpacked/out');
-    #|  function load(name) { return require(path.join(root, name)); }
-    #|  const readerEntry = 'main/persistence/profile-state/profile-state-domain-reader.js';
-    #|  const reader = load(readerEntry);
-    #|  function read(location) {
-    #|    const result = reader.readProfileStateDomains(location.databaseFile, location.profileId, ['settings']);
-    #|    if (result.kind !== 'values' || !result.values.has('settings')) throw new Error('INVALID');
-    #|    return result;
+    #|function location(userData) {
+    #|  const index = JSON.parse(fs.readFileSync(path.join(userData, 'orca-profile-index.json'), 'utf8'));
+    #|  const id = index.activeProfileId;
+    #|  if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id) || !Array.isArray(index.profiles) || !index.profiles.some(p => p?.id === id)) throw new Error('INVALID');
+    #|  return path.join(userData, 'profiles', id, 'profile-state.db');
+    #|}
+    #|function select(object, keys) { return Object.fromEntries(keys.filter(key => Object.hasOwn(object, key)).map(key => [key, object[key]])); }
+    #|function model(source) {
+    #|  return { ...select(source, ['selectedModelByAgent', 'selectedThinkingByModel']), ...(source.selectedModelByAgentByHost?.local ? { selectedModelByAgentByHost: { local: source.selectedModelByAgentByHost.local } } : {}) };
+    #|}
+    #|async function initialize(userData, projectRoot) {
+    #|  const { spawn } = require('node:child_process');
+    #|  const net = require('node:net');
+    #|  const cli = path.join(path.dirname(process.execPath), 'resources/app.asar/out/cli/index.js');
+    #|  const child = spawn(process.execPath, [cli, 'serve', '--no-pairing', '--bind', '127.0.0.1', '--port', '47121', '--project-root', projectRoot], { stdio: 'ignore', detached: true });
+    #|  let exited = false;
+    #|  const done = new Promise(resolve => { child.once('error', error => { exited = true; resolve({ spawn: ['EAGAIN', 'EACCES'].includes(error.code) ? error.code : 'OTHER' }); }); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
+    #|  const kill = signal => { if (child.pid) try { process.kill(-child.pid, signal); } catch (e) { if (e.code !== 'ESRCH') throw e; } };
+    #|  const interrupted = () => { try { kill('SIGKILL'); } finally { process.exit(1); } };
+    #|  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(signal, interrupted);
+    #|  try {
+    #|    const until = Date.now() + 60000;
+    #|    let ready = false;
+    #|    while (!ready && !exited && Date.now() < until) {
+    #|      ready = await new Promise(resolve => { const socket = net.createConnection({ host: '127.0.0.1', port: 47121 }); socket.setTimeout(300); socket.once('connect', () => { socket.destroy(); resolve(true); }); socket.once('error', () => resolve(false)); socket.once('timeout', () => { socket.destroy(); resolve(false); }); });
+    #|      if (!ready) await new Promise(resolve => setTimeout(resolve, 200));
+    #|    }
+    #|    if (exited) { const exit = await done; throw new Error(exit.spawn ? 'SERVER_SPAWN_' + exit.spawn : exit.signal ? 'SERVER_SIGNAL_' + (['SIGTERM', 'SIGKILL'].includes(exit.signal) ? exit.signal : 'OTHER') : 'SERVER_EXIT_' + exit.code); }
+    #|    if (!ready) throw new Error('SERVER_TIMEOUT');
+    #|    if (!fs.existsSync(location(userData))) throw new Error('PROFILE_MISSING');
+    #|    kill('SIGINT');
+    #|    const stopped = await Promise.race([done, new Promise(resolve => { const timer = setTimeout(() => resolve(null), 15000); timer.unref(); })]);
+    #|    if (!stopped || stopped.code !== 0) throw new Error('SERVER_STOP');
+    #|  } finally {
+    #|    if (!exited) { kill('SIGKILL'); await done; }
+    #|    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.removeListener(signal, interrupted);
     #|  }
-    #|  function modelChoice(source) {
-    #|    return {
-    #|      selectedModelByAgent: source?.selectedModelByAgent ?? {},
-    #|      selectedModelByAgentByHost: source?.selectedModelByAgentByHost?.local ? { local: source.selectedModelByAgentByHost.local } : {},
-    #|      selectedThinkingByModel: source?.selectedThinkingByModel ?? {}
-    #|    };
-    #|  }
+    #|}
+    #|async function main() {
+    #|  const [mode, userData, projectRoot] = process.argv.slice(1);
     #|  if (mode === 'export') {
     #|    phase = 'read';
-    #|    const location = load('main/persistence/profile-state/profile-state-active-location.js').getActiveProfileStateLocation(userData);
-    #|    const settings = read(location).values.get('settings');
-    #|    phase = 'normalize';
-    #|    const sourceControlSettings = 'shared/source-control/ai/settings/source-control-ai-settings.js';
-    #|    const source = load(process.env.ORCA_ENV_DEVSY_SETTINGS_MODULE_LAYOUT === 'relocated' ? sourceControlSettings : 'shared/source-control-ai-settings.js').normalizeSourceControlAiSettings(settings.sourceControlAi, settings.commitMessageAi);
-    #|    const autoRename = load('shared/auto-rename-branch-from-work-settings.js').normalizeAutoRenameBranchFromWorkDefaultOn(settings);
-    #|    const actions = {};
-    #|    const modelOverridesByOperation = {};
-    #|    for (const name of ['branchName', 'conversationName']) {
-    #|      const action = source.actions[name];
-    #|      actions[name] = Object.fromEntries(['agentId', 'commandInputTemplate', 'agentArgs'].filter(key => Object.hasOwn(action, key)).map(key => [key, action[key]]));
-    #|      if (source.modelOverridesByOperation?.[name]) modelOverridesByOperation[name] = modelChoice(source.modelOverridesByOperation[name]);
+    #|    let settings;
+    #|    const deadline = Date.now() + 8000;
+    #|    while (true) {
+    #|      const db = new DatabaseSync(location(userData), { readOnly: true });
+    #|      try { const row = db.prepare("SELECT payload FROM profile_state_documents WHERE domain = 'settings'").get(); if (!row) throw new Error('INVALID'); settings = JSON.parse(row.payload); } finally { db.close(); }
+    #|      if (settings.sourceControlAi?.actions && settings.autoRenameBranchFromWorkDefaultedOn === true) break;
+    #|      if (Date.now() >= deadline) throw new Error('INCOMPATIBLE');
+    #|      await new Promise(resolve => setTimeout(resolve, 200));
     #|    }
-    #|    const payload = {
-    #|      defaultTuiAgent: settings.defaultTuiAgent ?? null,
-    #|      disabledTuiAgents: settings.disabledTuiAgents ?? [],
-    #|      ...autoRename,
-    #|      branchPrefix: settings.branchPrefix ?? 'git-username',
-    #|      branchPrefixCustom: settings.branchPrefixCustom ?? '',
-    #|      sourceControlAi: { agentId: source.agentId, actions, ...modelChoice(source), modelOverridesByOperation }
-    #|    };
+    #|    phase = 'normalize';
+    #|    const source = settings.sourceControlAi;
+    #|    const actions = {};
+    #|    const overrides = {};
+    #|    for (const name of ['branchName', 'conversationName']) {
+    #|      if (source.actions[name]) actions[name] = select(source.actions[name], ['agentId', 'commandInputTemplate', 'agentArgs']);
+    #|      if (source.modelOverridesByOperation?.[name]) overrides[name] = model(source.modelOverridesByOperation[name]);
+    #|    }
+    #|    const payload = { ...select(settings, ['defaultTuiAgent', 'disabledTuiAgents', 'autoRenameBranchFromWork', 'autoRenameBranchFromWorkDefaultedOn', 'branchPrefix', 'branchPrefixCustom']), sourceControlAi: { ...select(source, ['agentId']), ...model(source), actions, modelOverridesByOperation: overrides } };
     #|    process.stdout.write(JSON.stringify(payload));
     #|  } else if (mode === 'import') {
     #|    phase = 'input';
     #|    const input = fs.readFileSync(0, 'utf8');
     #|    if (Buffer.byteLength(input) > 4 * 1024 * 1024) throw new Error('INVALID');
     #|    const payload = JSON.parse(input);
+    #|    phase = 'initialize';
+    #|    await initialize(userData, projectRoot);
     #|    phase = 'profile';
-    #|    fs.mkdirSync(userData, { recursive: true, mode: 0o700 });
-    #|    const maintenance = load('main/persistence/profile-state/profile-state-access.js').acquireProfileStateMaintenance(userData);
-    #|    let database;
+    #|    const db = new DatabaseSync(location(userData));
     #|    try {
-    #|      const profile = load('main/orca-profiles/profile-index-store.js').ensureActiveOrcaProfile(userData);
-    #|      const location = { dataFile: profile.dataFile, databaseFile: profile.stateDatabaseFile, profileId: profile.profile.id };
-    #|      const defaults = load('shared/constants.js').getDefaultPersistedState(os.homedir())?.settings;
-    #|      if (!defaults?.sourceControlAi?.actions) throw new Error('INCOMPATIBLE');
-    #|      if (!fs.existsSync(location.databaseFile)) {
-    #|        if (fs.existsSync(location.dataFile)) throw new Error('INCOMPATIBLE');
-    #|        load('main/persistence/profile-state/profile-state-offline-settings.js').updateAgentHookSettingsFromProfileState(location, defaults.agentStatusHooksEnabled !== false);
-    #|      }
-    #|      const current = reader.readProfileStateDomains(location.databaseFile, location.profileId, ['settings']);
-    #|      if (current.kind !== 'values') throw new Error('INVALID');
-    #|      const { DatabaseSync } = require('node:sqlite');
-    #|      const crypto = require('node:crypto');
-    #|      database = new DatabaseSync(location.databaseFile);
-    #|      if (database.prepare('PRAGMA user_version').get().user_version !== 3 || database.prepare("SELECT value FROM profile_state_meta WHERE key = 'profile_id'").get()?.value !== location.profileId) throw new Error('INCOMPATIBLE');
-    #|      const storedVersion = database.prepare("SELECT domain_version FROM profile_state_documents WHERE domain = 'settings'").get()?.domain_version;
-    #|      if (storedVersion !== undefined && storedVersion !== 1) throw new Error('INCOMPATIBLE');
-    #|      const settings = { ...defaults, ...current.values.get('settings'), ...payload };
-    #|      settings.sourceControlAi = { ...defaults.sourceControlAi, ...current.values.get('settings')?.sourceControlAi, ...payload.sourceControlAi,
-    #|        actions: { ...defaults.sourceControlAi.actions, ...current.values.get('settings')?.sourceControlAi?.actions, ...payload.sourceControlAi.actions } };
-    #|      phase = 'write';
+    #|      const row = db.prepare("SELECT payload FROM profile_state_documents WHERE domain = 'settings'").get();
+    #|      if (!row) throw new Error('INVALID');
+    #|      const current = JSON.parse(row.payload);
+    #|      const settings = { ...current, ...payload, sourceControlAi: { ...current.sourceControlAi, ...payload.sourceControlAi, actions: { ...current.sourceControlAi?.actions, ...payload.sourceControlAi.actions } } };
     #|      const serialized = JSON.stringify(settings);
-    #|      const revision = current.revision + 1;
-    #|      if (!Number.isSafeInteger(revision)) throw new Error('INCOMPATIBLE');
-    #|      database.exec('BEGIN IMMEDIATE');
+    #|      phase = 'write';
+    #|      db.exec('BEGIN IMMEDIATE');
     #|      try {
-    #|        database.prepare("INSERT INTO profile_state_documents (domain, payload, domain_version, revision, updated_at, content_hash) VALUES ('settings', ?, 1, ?, ?, ?) ON CONFLICT(domain) DO UPDATE SET payload=excluded.payload, domain_version=excluded.domain_version, revision=excluded.revision, updated_at=excluded.updated_at, content_hash=excluded.content_hash").run(serialized, revision, Date.now(), crypto.createHash('sha256').update(serialized, 'utf8').digest('hex'));
-    #|        database.prepare("INSERT INTO profile_state_meta (key, value) VALUES ('revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(revision));
-    #|        database.exec('COMMIT');
-    #|      } catch (error) { database.exec('ROLLBACK'); throw error; }
-    #|      database.close();
-    #|      database = undefined;
-    #|      phase = 'verify';
-    #|      const saved = read(location).values.get('settings');
-    #|      for (const key of Object.keys(payload)) {
-    #|        if (key === 'sourceControlAi') {
-    #|          for (const name of Object.keys(payload.sourceControlAi)) {
-    #|            if (name === 'actions') {
-    #|              for (const action of Object.keys(payload.sourceControlAi.actions)) assert.deepEqual(saved.sourceControlAi.actions[action], payload.sourceControlAi.actions[action]);
-    #|            } else assert.deepEqual(saved.sourceControlAi[name], payload.sourceControlAi[name]);
-    #|          }
-    #|        } else assert.deepEqual(saved[key], payload[key]);
-    #|      }
-    #|    } finally { database?.close(); maintenance.release(); }
+    #|        const revision = Number(db.prepare("SELECT value FROM profile_state_meta WHERE key = 'revision'").get()?.value) + 1;
+    #|        if (!Number.isSafeInteger(revision)) throw new Error('INVALID');
+    #|        db.prepare("UPDATE profile_state_documents SET payload=?, revision=?, updated_at=?, content_hash=? WHERE domain='settings'").run(serialized, revision, Date.now(), crypto.createHash('sha256').update(serialized, 'utf8').digest('hex'));
+    #|        db.prepare("UPDATE profile_state_meta SET value=? WHERE key='revision'").run(String(revision));
+    #|        db.exec('COMMIT');
+    #|      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    #|    } finally { db.close(); }
     #|  } else throw new Error('INVALID');
     #|}
-    #|try { main(); } catch (error) {
-    #|  const code = ['EACCES', 'ENOENT', 'EBUSY', 'ENOSPC'].includes(error.code) ? error.code : error.message === 'INCOMPATIBLE' ? 'INCOMPATIBLE' : 'INVALID';
+    #|main().catch(error => {
+    #|  const code = ['EACCES', 'ENOENT', 'EBUSY', 'ENOSPC'].includes(error.code) ? error.code : ['INCOMPATIBLE', 'SERVER_TIMEOUT', 'SERVER_STOP', 'PROFILE_MISSING'].includes(error.message) || /^SERVER_(?:SPAWN_(?:EAGAIN|EACCES|OTHER)|EXIT_\d{1,3}|SIGNAL_(?:SIGTERM|SIGKILL|OTHER))$/.test(error.message) ? error.message : 'INVALID';
     #|  process.stderr.write(JSON.stringify({ phase, code }));
     #|  process.exitCode = 1;
-    #|}
+    #|});
   script
 }

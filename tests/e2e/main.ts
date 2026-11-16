@@ -200,14 +200,14 @@ try {
   const routeIds = runtimes.map(runtime => runtime.recipeResult.connection.type === "ssh" ? runtime.sshTargetId : runtime.runtimeEnvironmentId);
   assert(routeIds.every(id => typeof id === "string" && id.length > 0));
   assert.equal(new Set(routeIds).size, 4);
-  const activityStatus = JSON.parse(await run([adapter, "status", "--provider", provider], { env, timeout: budgets.provision })) as { workspaces: { id: string; activity: string; outcome: string }[] };
+  const activityStatus = JSON.parse(await run([adapter, "status", "--provider", provider], { env, timeout: budgets.provision })) as { workspaces: { id: string; activity: string; outcome: string; evidence?: { reason?: string } }[] };
   const serverWorkspace = workspaces.find(w => w.runtime.recipeResult.connection.type === "orca-server")!;
   const settingsQuery = `python3 -c 'import glob,json,sqlite3; c=sqlite3.connect(glob.glob("/worktrees/.orca/profiles/*/profile-state.db")[0]); s=json.loads(c.execute("select payload from profile_state_documents where domain = ?", ("settings",)).fetchone()[0]); print(json.dumps({k:s.get(k) for k in ("defaultTuiAgent","disabledTuiAgents","branchPrefix","branchPrefixCustom")}))'`;
   for (const server of workspaces.filter(w => w.runtime.recipeResult.connection.type === "orca-server")) {
     assert.deepEqual(JSON.parse(await server.exec(0, settingsQuery)), transferredSettings);
   }
   const observed = activityStatus.workspaces.find(w => w.id === serverWorkspace.runtime.recipeResult.userData.workspaceId);
-  assert(observed && observed.outcome === "observed" && ["idle", "active"].includes(observed.activity), "Activity probe must observe an Orca Server workspace");
+  assert(observed && observed.outcome === "observed" && ["idle", "active"].includes(observed.activity), `Activity probe must observe an Orca Server workspace: ${diagnosticTextSummary(observed?.evidence?.reason ?? "no observation", 4096).text}`);
   if (phase.signal.aborted) throw new Error("E2E interrupted");
   const saved = await orca.call<Runtime[]>("ephemeralVm", "listRuntimes");
   for (const runtime of runtimes) assert(saved.some(r => r.id === runtime.id && r.workspaceId === runtime.workspaceId && r.sshTargetId === runtime.sshTargetId && r.runtimeEnvironmentId === runtime.runtimeEnvironmentId));
@@ -256,7 +256,10 @@ try {
     assert.equal(outcomes[0]!.vmSuspendFailure, undefined);
     assert.equal((await orca.call<Runtime[]>("ephemeralVm", "listRuntimes")).find(runtime => runtime.id === current.runtime.id)?.status, "suspended");
     await Promise.all(workspaces.filter(w => w !== current).map(w => w.check()));
-    const resumed: Runtime = await measure("resume-workspace", budgets.lifecycle, () => orca!.call<Runtime>("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), current.index);
+    const resumeResult = await measure("resume-workspace", budgets.lifecycle, () => orca!.call<{ ok: boolean; runtime: Runtime | null }>("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), current.index);
+    assert.equal(resumeResult.ok, true);
+    const resumed = resumeResult.runtime;
+    assert(resumed);
     assert.equal(resumed.status, "running");
     await firstUse(resumed, current.index, env, shared, phase.signal);
     // Receipt-based resume must preserve guest modifications to auth.
@@ -305,7 +308,7 @@ try {
       assert(!volumeNames(listed).includes(current.runtime.recipeResult.userData.orcaVolume), "Adapter destroy must remove its dedicated volume");
     }
     live.splice(live.indexOf(current), 1);
-    assert.equal(await orca.call("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), null, "Deleted workspace must not resume through stale Orca mapping");
+    assert.deepEqual(await orca.call("ephemeralVm", "resumeWorkspace", { workspaceId: current.runtime.workspaceId }), { ok: true, runtime: null }, "Deleted workspace must not resume through stale Orca mapping");
     await measure("stale-receipt-rejected", budgets.operation, () => assert.rejects(() => run([resolve("_build/native/release/build/cmd/main/main.exe"), "recipe", "recover"], { env, timeout: budgets.operation, input: JSON.stringify({ schemaVersion: 1, recipeResult: current.runtime.recipeResult }) })), current.index);
     await Promise.all(live.map(w => w.check()));
   }

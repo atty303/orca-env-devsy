@@ -43,12 +43,7 @@ fn bulk_options(mode : String, args : Array[String]) -> BulkOptions raise {
 ///|
 async fn observe_activity(state : Json) -> Json {
   let directory = required(state, "tunnelDirectory")
-  let pairing = if @fs.exists(directory + "/pairing-code") {
-    @fs.read_file(directory + "/pairing-code").text()
-  } else {
-    ""
-  }
-  let script = activity_command(state)
+  let script = remote_orca_cli(state) + "worktree ps --json --limit 10000"
   let (input, writer) = @process.write_to_process()
   defer writer.close()
   let (output, reader) = @process.read_from_process()
@@ -61,14 +56,12 @@ async fn observe_activity(state : Json) -> Json {
   )
   let mut phase = "master"
   let mut exit_code = None
-  let mut failure_codes : Array[Json] = []
   errdefer save_diagnostic(
     "activity-probe",
     "failed",
     error_type="observation_failed",
     phase~,
     exit_code?,
-    evidence={ "errors": Json::array(failure_codes) },
     error_message=progress.failure_detail(),
     details_truncated=progress.details_truncated,
     tunnel_directory=directory,
@@ -107,8 +100,6 @@ async fn observe_activity(state : Json) -> Json {
         }
         @utf8.decode(buffer.to_bytes())
       })
-      let payload : Json = { "pairingCode": pairing }
-      writer.write(payload.stringify())
       writer.close()
       phase = "result"
       let code = child.wait()
@@ -117,46 +108,15 @@ async fn observe_activity(state : Json) -> Json {
       phase = "schema"
       let raw = reading.wait()
       let parsed = Some(@json.parse(raw)) catch { _ => None }
-      if parsed is Some(value) &&
-        field(value, "errors") is Some(Json::Array(errors)) {
-        failure_codes = errors.filter_map(error => {
-          match field(error, "code") {
-            Some(Json::String(code)) if code.length() > 0 &&
-              code.length() <= 80 &&
-              code.iter().all(c => (c >= 'a' && c <= 'z') || c == '_') =>
-              Some(Json::string(code))
-            _ => None
-          }
-        })
-      }
       guard code == 0 else {
-        raise AdapterError(
-          "Remote activity probe failed (exit \{code}; errors " +
-          Json::array(failure_codes).stringify() +
-          ")",
-        )
+        raise AdapterError("Remote activity probe failed (exit \{code})")
       }
       guard parsed is Some(value) else {
         raise AdapterError("Invalid activity JSON")
       }
-      guard field(value, "schemaVersion") == Some(Json::number(1)) &&
-        ["idle", "active", "unknown"].contains(required(value, "activity")) else {
-        raise AdapterError("Invalid activity response")
-      }
-      value
+      activity_from_worktree_ps(value)
     })
   })
-}
-
-///|
-fn activity_command(state : Json) -> String {
-  (if field(state, "orcaVolume") is Some(_) {
-    "ORCA_USER_DATA_PATH=/worktrees/.orca "
-  } else {
-    ""
-  }) +
-  "ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
-  quote(activity_probe_source())
 }
 
 ///|

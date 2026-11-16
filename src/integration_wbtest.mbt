@@ -89,7 +89,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'-- import '* )
     #|    cat > "$HOME/delivered-settings"
     #|    if test -f "$HOME/fail-settings"; then printf '{"phase":"write","code":"ENOSPC"}' >&2; exit 1; fi ;;
-    #|  *'const fs = require'* )
+    #|  *'worktree ps --json --limit 10000'* )
     #|    test -n "$control" && test -f "$control"
     #|    printf 'start\n' >> "$HOME/idle-starts"
     #|    printf '%s\n' "$$" > "$HOME/idle-pid"
@@ -99,9 +99,9 @@ async fn fixture() -> (String, Map[String, String]) {
     #|    if test -f "$HOME/fail-idle-connect"; then exit 3; fi
     #|    if test -f "$HOME/drop-idle-once"; then rm "$HOME/drop-idle-once"; exit 4; fi
     #|    count=$(wc -l < "$HOME/idle-requests")
-    #|    if test "$count" -ge 3 && test -f "$HOME/idle-final-active"; then printf '{"schemaVersion":1,"activity":"active"}\n';
+    #|    if test "$count" -ge 3 && test -f "$HOME/idle-final-active"; then printf '{"ok":true,"result":{"truncated":false,"worktrees":[{"agents":[{"state":"working"}]}]}}\n';
     #|    elif test -f "$HOME/activity"; then cat "$HOME/activity"; printf '\n';
-    #|    else printf '{"schemaVersion":1,"activity":"idle","terminals":[],"chats":[],"errors":[]}\n'; fi
+    #|    else printf '{"ok":true,"result":{"truncated":false,"worktrees":[]}}\n'; fi
     #|    if test -f "$HOME/activity-exit"; then exit "$(cat "$HOME/activity-exit")"; fi ;;
     #|  *'orca-relay-readiness'*)
     #|    touch "$HOME/relay-probed"
