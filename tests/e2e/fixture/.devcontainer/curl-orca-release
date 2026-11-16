@@ -3,7 +3,7 @@ set -eu
 for arg do
   shift
   case "$arg" in
-    https://github.com/stablyai/orca/releases/latest/download/orca-linux.AppImage|https://github.com/stablyai/orca/releases/latest/download/orca-linux-arm64.AppImage)
+    https://github.com/stablyai/orca/releases/latest/download/orca-server-linux-x64.tar.gz|https://github.com/stablyai/orca/releases/latest/download/orca-server-linux-arm64.tar.gz)
       version=${ORCA_E2E_VERSION:?Missing fixture Orca version}
       case "$version" in ''|*[!0-9.]*) printf '%s\n' 'Invalid fixture Orca version' >&2; exit 64 ;; esac
       arg="https://github.com/stablyai/orca/releases/download/v$version/${arg##*/}"

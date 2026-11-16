@@ -289,7 +289,7 @@ test("the guest download wrapper pins only Orca assets and preserves curl argume
     await writeFile(delegate, `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2))); process.exit(7);\n`, { mode: 0o700 });
     const script = await readFile("tests/e2e/fixture/.devcontainer/curl-orca-release", "utf8");
     await writeFile(root + "/wrapper", script.replace("exec /usr/bin/curl", `exec '${delegate}'`), { mode: 0o700 });
-    const urls = ["orca-linux.AppImage", "orca-linux-arm64.AppImage"].map(name => "https://github.com/stablyai/orca/releases/latest/download/" + name);
+    const urls = ["orca-server-linux-x64.tar.gz", "orca-server-linux-arm64.tar.gz"].map(name => "https://github.com/stablyai/orca/releases/latest/download/" + name);
     const args = ["--data-binary", privateValue + " with spaces", urls[0], "--output", "file with spaces", "https://example.invalid/releases/latest/download/orca-linux.AppImage", urls[1]];
     const child = Bun.spawn([root + "/wrapper", ...args], { env: { ...process.env, ORCA_E2E_VERSION: "1.4.224" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const output = await new Response(child.stdout).text();

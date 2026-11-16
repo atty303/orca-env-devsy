@@ -165,7 +165,9 @@ async fn initialize_orca_settings(state : Json) -> Unit {
   @async.with_timeout(120000, async fn() {
     let payload = host_orca_settings()
     phase = "remote"
-    let script = "unset NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE; ORCA_USER_DATA_PATH=/worktrees/.orca ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
+    let script = "unset NODE_OPTIONS NODE_REPL_EXTERNAL_MODULE; export ORCA_USER_DATA_PATH=/worktrees/.orca; " +
+      orca_remote_functions() +
+      "export ORCA_ADAPTER_CLI=\"$base/bin/orca-ide\"; if test ! -x \"$ORCA_ADAPTER_CLI\"; then unset ORCA_ADAPTER_CLI; fi; orca_node -e " +
       quote(orca_settings_script()) +
       " -- import /worktrees/.orca " +
       quote(required(state, "projectRoot"))
@@ -245,7 +247,8 @@ fn orca_settings_script() -> String {
     #|  const { spawn } = require('node:child_process');
     #|  const net = require('node:net');
     #|  const cli = path.join(path.dirname(process.execPath), 'resources/app.asar/out/cli/index.js');
-    #|  const child = spawn(process.execPath, [cli, 'serve', '--no-pairing', '--bind', '127.0.0.1', '--port', '47121', '--project-root', projectRoot], { stdio: 'ignore', detached: true });
+    #|  const serverCli = process.env.ORCA_ADAPTER_CLI;
+    #|  const child = spawn(serverCli || process.execPath, [...serverCli ? [] : [cli], 'serve', '--no-pairing', '--bind', '127.0.0.1', '--port', '47121', '--project-root', projectRoot], { stdio: 'ignore', detached: true });
     #|  let exited = false;
     #|  const done = new Promise(resolve => { child.once('error', error => { exited = true; resolve({ spawn: ['EAGAIN', 'EACCES'].includes(error.code) ? error.code : 'OTHER' }); }); child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }); }); });
     #|  const kill = signal => { if (child.pid) try { process.kill(-child.pid, signal); } catch (e) { if (e.code !== 'ESRCH') throw e; } };

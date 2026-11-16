@@ -105,28 +105,39 @@ fn server_update_prepare_script(version : String) -> String {
     #|set -eu
     #|version=VERSION
     #|case "$(uname -s)-$(uname -m)" in
-    #|  Linux-x86_64) asset=orca-linux.AppImage ;;
-    #|  Linux-aarch64) asset=orca-linux-arm64.AppImage ;;
+    #|  Linux-x86_64) asset=orca-server-linux-x64.tar.gz ;;
+    #|  Linux-aarch64) asset=orca-server-linux-arm64.tar.gz ;;
     #|  *) printf 'Unsupported remote Orca platform\n' >&2; exit 1 ;;
     #|esac
     #|base="$HOME/.local/share/orca-env-devsy/orca"
     #|candidate="$base/update-$version"
     #|umask 077
     #|if test -e "$base/current"; then test -d "$base/current" && test ! -L "$base/current"; else test -d "$base/update-previous" && test ! -L "$base/update-previous"; fi
+    #|choice=download-server
     #|if test -e "$candidate"; then
     #|  test -d "$candidate" && test ! -L "$candidate"
-    #|else
+    #|  if test ! -x "$candidate/bin/orca-ide"; then
+    #|    choice=replace-appimage
+    #|    printf '{"kind":"distribution-selection","asset":"%s","choice":"%s"}\n' "$asset" "$choice"
+    #|    actual=$(ELECTRON_RUN_AS_NODE=1 "$candidate/orca-ide" "$candidate/resources/app.asar/out/cli/index.js" --version)
+    #|    test "$actual" = "$version"
+    #|    rm -rf "$candidate"
+    #|  else
+    #|    choice=reuse-server
+    #|  fi
+    #|fi
+    #|if test "$choice" != replace-appimage; then printf '{"kind":"distribution-selection","asset":"%s","choice":"%s"}\n' "$asset" "$choice"; fi
+    #|if test ! -e "$candidate"; then
     #|  work=$(mktemp -d "$base/update.XXXXXX")
     #|  trap 'rm -rf "$work"' EXIT
-    #|  curl -fLsS "https://github.com/stablyai/orca/releases/download/v$version/$asset" -o "$work/orca.AppImage"
-    #|  chmod +x "$work/orca.AppImage"
-    #|  (cd "$work" && ./orca.AppImage --appimage-extract >/dev/null)
-    #|  test -x "$work/squashfs-root/orca-ide"
-    #|  actual=$(ELECTRON_RUN_AS_NODE=1 "$work/squashfs-root/orca-ide" "$work/squashfs-root/resources/app.asar/out/cli/index.js" --version)
+    #|  curl -fLsS "https://github.com/stablyai/orca/releases/download/v$version/$asset" -o "$work/server.tar.gz"
+    #|  mkdir "$work/server"
+    #|  tar -xzf "$work/server.tar.gz" -C "$work/server" --strip-components=1
+    #|  actual=$("$work/server/bin/orca-ide" --version)
     #|  test "$actual" = "$version"
-    #|  mv "$work/squashfs-root" "$candidate"
+    #|  mv "$work/server" "$candidate"
     #|fi
-    #|actual=$(ELECTRON_RUN_AS_NODE=1 "$candidate/orca-ide" "$candidate/resources/app.asar/out/cli/index.js" --version)
+    #|actual=$("$candidate/bin/orca-ide" --version)
     #|test "$actual" = "$version"
   script.replace_all(old="VERSION", new=quote(version))
 }
@@ -252,7 +263,8 @@ fn server_update_process_script(
   } else {
     ""
   }) +
-  "base=\"$HOME/.local/share/orca-env-devsy/orca\"; binary=\"$base/current/orca-ide\"; if test ! -x \"$binary\"; then binary=\"$base/update-previous/orca-ide\"; fi; ELECTRON_RUN_AS_NODE=1 \"$binary\" -e " +
+  orca_remote_functions() +
+  "if test ! -e \"$base\"; then base=\"$HOME/.local/share/orca-env-devsy/orca/update-previous\"; fi; orca_node -e " +
   quote(script) +
   " " +
   quote(root) +
@@ -364,7 +376,9 @@ async fn update_one_server(
     set_field(result, "retry", Json::boolean(pending))
     phase = "version"
     let installed = update_remote(
-        state, "base=\"$HOME/.local/share/orca-env-devsy/orca\"; dir=\"$base/current\"; if test ! -x \"$dir/orca-ide\"; then dir=\"$base/update-previous\"; fi; ELECTRON_RUN_AS_NODE=1 \"$dir/orca-ide\" \"$dir/resources/app.asar/out/cli/index.js\" --version",
+        state,
+        orca_remote_functions() +
+        "if test ! -e \"$base\"; then base=\"$HOME/.local/share/orca-env-devsy/orca/update-previous\"; fi; orca_cli --version",
         "server-update-version",
       )
       .trim()
@@ -437,7 +451,8 @@ async fn update_one_server(
     ignore(launch_server(state, update_marker=(marker_name, launch_id)))
     phase = "verify"
     let actual = update_remote(
-        state, "base=\"$HOME/.local/share/orca-env-devsy/orca/current\"; ELECTRON_RUN_AS_NODE=1 \"$base/orca-ide\" \"$base/resources/app.asar/out/cli/index.js\" --version",
+        state,
+        orca_remote_functions() + "orca_cli --version",
         "server-update-verify-version",
       )
       .trim()

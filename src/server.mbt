@@ -112,7 +112,7 @@ async fn recover_server(
     if field(state, "orcaVolume") is Some(_) {
       prepare_orca_storage(state)
       let installation = remote(
-          state, "if test -x \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\"; then printf installed; else printf missing; fi",
+          state, "if test -x \"$HOME/.local/share/orca-env-devsy/orca/current/bin/orca-ide\" || test -x \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\"; then printf installed; else printf missing; fi",
           "orca-install-probe",
         )
         .trim()
@@ -329,7 +329,8 @@ fn server_launch_script(
       })
       .unwrap_or("")
     return marker +
-      "ELECTRON_RUN_AS_NODE=1 exec \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" \"$HOME/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js\" serve --recipe-json --project-root " +
+      orca_remote_functions() +
+      "orca_cli serve --recipe-json --project-root " +
       quote(root) +
       " --port 47121 --pairing-address " +
       quote("ws://127.0.0.1:\{port}") +
@@ -392,8 +393,11 @@ fn server_launch_script(
     #|if (missing) { process.stderr.write("Required remote environment variable " + missing + " is not defined\n"); process.exit(1); }
     #|if (process.argv[6]) { if (Object.hasOwn(environment, process.argv[6])) { process.stderr.write("Server update marker collision\n"); process.exit(1); } environment[process.argv[6]] = process.argv[7]; }
     #|const cp = require("child_process");
-    #|const cli = process.env.HOME + "/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js";
-    #|const child = cp.spawnSync(process.execPath, [cli, "serve", "--recipe-json", "--project-root", process.argv[4], "--port", "47121", "--pairing-address", process.argv[5]], {env: environment, stdio: ["ignore", "inherit", "ignore"]});
+    #|const base = process.env.HOME + "/.local/share/orca-env-devsy/orca/current";
+    #|const serverCli = base + "/bin/orca-ide";
+    #|const standalone = require("fs").existsSync(serverCli);
+    #|const cli = base + "/resources/app.asar/out/cli/index.js";
+    #|const child = cp.spawnSync(standalone ? serverCli : process.execPath, [...standalone ? [] : [cli], "serve", "--recipe-json", "--project-root", process.argv[4], "--port", "47121", "--pairing-address", process.argv[5]], {env: environment, stdio: ["ignore", "inherit", "ignore"]});
     #|if (child.error) process.exit(1);
     #|process.exit(child.status === null ? 1 : child.status);
   (if names.is_empty() {
@@ -401,7 +405,9 @@ fn server_launch_script(
   } else {
     "printf '%s\\0'" + inputs.to_string()
   }) +
-  " | ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" -e " +
+  " | ( " +
+  orca_remote_functions() +
+  "orca_node -e " +
   quote(code) +
   " " +
   quote(Json::array(fields).stringify()) +
@@ -416,7 +422,8 @@ fn server_launch_script(
   " " +
   quote(update_marker.map(pair => pair.0).unwrap_or("")) +
   " " +
-  quote(update_marker.map(pair => pair.1).unwrap_or(""))
+  quote(update_marker.map(pair => pair.1).unwrap_or("")) +
+  " )"
 }
 
 ///|
@@ -424,8 +431,8 @@ fn server_install_script() -> String {
   let script =
     #|set -eu
     #|case "$(uname -s)-$(uname -m)" in
-    #|  Linux-x86_64) asset=orca-linux.AppImage ;;
-    #|  Linux-aarch64) asset=orca-linux-arm64.AppImage ;;
+    #|  Linux-x86_64) asset=orca-server-linux-x64.tar.gz ;;
+    #|  Linux-aarch64) asset=orca-server-linux-arm64.tar.gz ;;
     #|  *) printf 'Unsupported remote Orca platform\n' >&2; exit 1 ;;
     #|esac
     #|base="$HOME/.local/share/orca-env-devsy/orca"
@@ -433,20 +440,20 @@ fn server_install_script() -> String {
     #|mkdir -p "$base"
     #|if test -e "$base/current"; then
     #|  test -d "$base/current" && test ! -L "$base/current"
-    #|  test -x "$base/current/orca-ide"
-    #|  ELECTRON_RUN_AS_NODE=1 "$base/current/orca-ide" "$base/current/resources/app.asar/out/cli/index.js" --version >/dev/null
+    #|  if test -x "$base/current/bin/orca-ide"; then choice=reuse-server; else choice=reuse-appimage; fi
+    #|  printf '{"kind":"distribution-selection","asset":"%s","choice":"%s"}\n' "$asset" "$choice"
+    #|  if test "$choice" = reuse-server; then "$base/current/bin/orca-ide" --version >/dev/null; else ELECTRON_RUN_AS_NODE=1 "$base/current/orca-ide" "$base/current/resources/app.asar/out/cli/index.js" --version >/dev/null; fi
     #|  exit 0
     #|fi
+    #|printf '{"kind":"distribution-selection","asset":"%s","choice":"download-server"}\n' "$asset"
     #|work=$(mktemp -d "$base/install.XXXXXX")
     #|trap 'rm -rf "$work"' EXIT
-    #|curl -fLsS "https://github.com/stablyai/orca/releases/latest/download/$asset" -o "$work/orca.AppImage"
-    #|chmod +x "$work/orca.AppImage"
-    #|cd "$work"
-    #|./orca.AppImage --appimage-extract >/dev/null
-    #|test -x squashfs-root/orca-ide
-    #|ELECTRON_RUN_AS_NODE=1 ./squashfs-root/orca-ide ./squashfs-root/resources/app.asar/out/cli/index.js --version >/dev/null
+    #|curl -fLsS "https://github.com/stablyai/orca/releases/latest/download/$asset" -o "$work/server.tar.gz"
+    #|mkdir "$work/server"
+    #|tar -xzf "$work/server.tar.gz" -C "$work/server" --strip-components=1
+    #|"$work/server/bin/orca-ide" --version >/dev/null
     #|test ! -e "$base/current"
-    #|mv squashfs-root "$base/current"
+    #|mv "$work/server" "$base/current"
   script
 }
 

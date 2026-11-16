@@ -119,7 +119,7 @@ async fn fixture() -> (String, Map[String, String]) {
     #|  *'rev-parse'*'refs/remotes/origin/'*) printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'rev-parse HEAD'*) test ! -f "$HOME/fail-root"; printf '%s\n' "${FAKE_BUILD_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
     #|  *'then printf installed; else printf missing; fi'*) if test -f "$HOME/missing-orca"; then printf missing; else printf installed; fi ;;
-    #|  *'./orca.AppImage --appimage-extract'*) rm -f "$HOME/missing-orca" ;;
+    #|  *'tar -xzf'*'server.tar.gz'*) rm -f "$HOME/missing-orca" ;;
     #|  *'Sec-WebSocket-Version'*) if test -f "$HOME/served"; then printf 101; else printf 000; fi ;;
     #|  *'repo add --json'*) test ! -f "$HOME/fail-project"; printf '{"ok":true,"result":{}}\n' ;;
     #|  *'project setups'*) printf '{"ok":true,"result":{"setups":[{"id":"fixture-setup","path":"/workspace/repo"}]}}\n' ;;

@@ -419,6 +419,24 @@ async fn Progress::line(
     return
   }
   let event = @json.parse(line) catch { _ => Json::null() }
+  if (self.stage == "orca-install" || self.stage == "server-update-prepare") &&
+    field(event, "kind") == Some(Json::string("distribution-selection")) &&
+    field(event, "asset") is Some(Json::String(asset)) &&
+    ["orca-server-linux-x64.tar.gz", "orca-server-linux-arm64.tar.gz"].contains(
+      asset,
+    ) &&
+    field(event, "choice") is Some(Json::String(choice)) &&
+    ["download-server", "reuse-server", "reuse-appimage", "replace-appimage"].contains(
+      choice,
+    ) {
+    save_diagnostic(
+      self.stage,
+      "selected",
+      evidence={ "asset": asset, "choice": choice },
+      recording=self.recording,
+    )
+    return
+  }
   if field(event, "kind") == Some(Json::string("status")) {
     if field(event, "state") == Some(Json::string("failed")) &&
       field(event, "error") is Some(error) {

@@ -56,13 +56,21 @@ async fn prepare_orca_storage(state : Json) -> Unit {
 }
 
 ///|
+fn orca_remote_functions() -> String {
+  "base=\"$HOME/.local/share/orca-env-devsy/orca/current\"; " +
+  "orca_cli() { if test -x \"$base/bin/orca-ide\"; then \"$base/bin/orca-ide\" \"$@\"; else ELECTRON_RUN_AS_NODE=1 \"$base/orca-ide\" \"$base/resources/app.asar/out/cli/index.js\" \"$@\"; fi; }; " +
+  "orca_node() { if test -x \"$base/bin/orca-ide\"; then for node in \"$base\"/runtimes/node-*/bin/node; do test -x \"$node\" || return 1; exec \"$node\" \"$@\"; done; return 1; else ELECTRON_RUN_AS_NODE=1 exec \"$base/orca-ide\" \"$@\"; fi; }; "
+}
+
+///|
 fn remote_orca_cli(state : Json) -> String {
   (if field(state, "orcaVolume") is Some(_) {
-    "ORCA_USER_DATA_PATH=/worktrees/.orca "
+    "export ORCA_USER_DATA_PATH=/worktrees/.orca; "
   } else {
     ""
   }) +
-  "ELECTRON_RUN_AS_NODE=1 \"$HOME/.local/share/orca-env-devsy/orca/current/orca-ide\" \"$HOME/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js\" "
+  orca_remote_functions() +
+  "orca_cli "
 }
 
 ///|

@@ -237,7 +237,7 @@ else:
     await check();
     let serverVersion: string | undefined;
     if (runtime.recipeResult.connection.type === "orca-server") {
-      const version = await exec(0, 'ELECTRON_RUN_AS_NODE=1 "$HOME/.local/share/orca-env-devsy/orca/current/orca-ide" "$HOME/.local/share/orca-env-devsy/orca/current/resources/app.asar/out/cli/index.js" --version');
+      const version = await exec(0, '"$HOME/.local/share/orca-env-devsy/orca/current/bin/orca-ide" --version');
       serverVersion = /\d+\.\d+\.\d+/.exec(version)?.[0];
       assert(serverVersion, "Installed Orca server must report its version");
     }

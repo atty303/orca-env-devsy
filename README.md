@@ -67,16 +67,13 @@ Create `.devcontainer/devcontainer.json`:
 
 ```json
 {
-  "image": "mcr.microsoft.com/playwright:v1.64.1-noble",
-  "remoteUser": "pwuser"
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "remoteUser": "vscode"
 }
 ```
 
-The Microsoft Playwright image includes the browser runtime libraries required
-by Orca, plus Git, curl and SSH tools. The adapter downloads Orca itself on first
-creation.
-If you already have a Dev Container, adapt it instead of replacing it, and ensure
-it supplies these libraries and tools. Project-specific build tools can be added
+The image includes Git, curl and SSH tools. If you already have a Dev Container,
+adapt it instead of replacing it, and ensure it supplies these tools. Project-specific build tools can be added
 after the first successful connection.
 
 ### 3. Add an Orca recipe
