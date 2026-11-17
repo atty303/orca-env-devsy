@@ -3102,13 +3102,11 @@ async fn cleanup_fixture(directory : String, state_home? : String) -> Unit {
   let state_home = state_home.unwrap_or(directory + "/.local/state")
   let leased = @fs.exists(directory + "/fixture-permit")
   defer (if leased { fixture_permits.release() })
-  if @fs.exists(directory + "/orca-host/orca-runtime.json") {
-    let metadata = @json.parse(
-      @fs.read_file(directory + "/orca-host/orca-runtime.json").text(),
+  if @fs.exists(directory + "/orca-host/fixture-pid") {
+    let pid = @string.parse_int(
+      @fs.read_file(directory + "/orca-host/fixture-pid").text(),
     )
-    if field(metadata, "pid") is Some(Json::Number(pid, ..)) {
-      ignore(proxy_signal(pid.to_int(), 15))
-    }
+    ignore(proxy_signal(pid, 15))
   }
   let base = state_home + "/orca-env-devsy/tunnels"
   if @fs.exists(base) {

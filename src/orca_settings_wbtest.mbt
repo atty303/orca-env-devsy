@@ -5,7 +5,7 @@ async fn settings_fixture(
 ) -> Unit {
   let host = directory + "/orca-host"
   env.set("ORCA_USER_DATA_PATH", host)
-  if @fs.exists(host + "/orca-runtime.json") {
+  if @fs.exists(host + "/fixture-pid") {
     return
   }
   @fs.mkdir(host + "/resources/app.asar", recursive=true)
@@ -44,10 +44,16 @@ async fn settings_fixture(
   )
   let executable = settings_executable(pid)
   assert_eq(executable, @fs.realpath(host + "/orca-ide"))
-  @fs.write_file(
-    host + "/orca-runtime.json",
-    "{\"pid\":" + pid.to_string() + "}",
-  )
+  @fs.write_file(host + "/fixture-pid", pid.to_string())
+  let cli =
+    #|#!/bin/sh
+    #|test "$*" = 'status --environment local --json' || exit 2
+    #|if test -f "$HOME/fail-orca-status"; then echo 'desktop version lookup failed' >&2; exit 7; fi
+    #|if test -f "$HOME/orca-status-output"; then cat "$HOME/orca-status-output"; exit 0; fi
+    #|printf '{"ok":true,"result":{"app":{"running":true,"pid":%s},"runtime":{"reachable":true,"appVersion":"1.4.242"}}}\n' "$(cat "$ORCA_USER_DATA_PATH/fixture-pid")"
+  for name in ["orca", "orca-ide"] {
+    @fs.write_file(directory + "/bin/" + name, cli + "\n", permission=0o700)
+  }
 }
 
 ///|
@@ -250,4 +256,104 @@ async test "settings transfer failure prevents serving and reclaims created work
     assert_true(events.contains("\"errorType\":\"ENOSPC\""))
     assert_true(events.contains("\"exitCode\":1"))
   })
+}
+
+///|
+async test "host Orca status failures identify the failed validation" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  settings_fixture(directory, env)
+  for
+    pair in [
+      ("{", "invalid_json"),
+      ("{\"ok\":false}", "status_unavailable"),
+      (
+        "{\"ok\":true,\"result\":{\"app\":{\"running\":false}}}", "app_not_running",
+      ),
+      (
+        "{\"ok\":true,\"result\":{\"app\":{\"running\":true},\"runtime\":{\"reachable\":false}}}",
+        "runtime_unreachable",
+      ),
+      (
+        "{\"ok\":true,\"result\":{\"app\":{\"running\":true},\"runtime\":{\"reachable\":true,\"appVersion\":\"bad\"}}}",
+        "invalid_version",
+      ),
+    ] {
+    @fs.write_file(directory + "/orca-status-output", pair.0)
+    let (status, _, _) = @process.collect_output(
+      integration_binary(),
+      ["update"],
+      extra_env=env,
+    )
+    assert_true(status != 0)
+    assert_true(
+      fixture_events(directory)
+      .iter()
+      .any(event => {
+        field(event, "stage") == Some(Json::string("desktop-orca-version")) &&
+        field(event, "status") == Some(Json::string("invalid-response")) &&
+        field(event, "errorType") == Some(Json::string(pair.1))
+      }),
+    )
+  }
+}
+
+///|
+async test "settings transfer rejects invalid host Orca PID" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  with_fake_tunnel(directory, async fn() {
+    @fs.write_file(
+      directory + "/orca.yaml",
+      "devsy: {connection: orca-server, buildRef: refs/heads/main}\nenvironmentRecipes: [{id: test}]\n",
+    )
+    settings_fixture(directory, env)
+    @fs.write_file(
+      directory + "/orca-status-output",
+      "{\"ok\":true,\"result\":{\"app\":{\"running\":true,\"pid\":0}}}",
+    )
+    let (status, _, errors) = invoke("create", env, directory)
+    assert_true(status != 0)
+    assert_true(
+      fixture_events(directory)
+      .iter()
+      .any(event => {
+        field(event, "stage") == Some(Json::string("host-orca-status")) &&
+        field(event, "errorType") == Some(Json::string("invalid_pid"))
+      }),
+      msg=errors,
+    )
+  })
+}
+
+///|
+async test "host Orca status records the selected profile" {
+  let (directory, env) = fixture()
+  defer cleanup_fixture(directory)
+  settings_fixture(directory, env)
+  let profiles = [directory + "/orca-host", directory + "/other-profile"]
+  @fs.mkdir(profiles[1])
+  @fs.write_file(
+    profiles[1] + "/fixture-pid",
+    @fs.read_file(profiles[0] + "/fixture-pid").text(),
+  )
+  for profile in profiles {
+    env.set("ORCA_USER_DATA_PATH", profile)
+    let (status, _, errors) = @process.collect_output(
+      integration_binary(),
+      ["update"],
+      extra_env=env,
+    )
+    assert_eq(status, 0, msg=errors.text())
+    assert_true(
+      fixture_events(directory)
+      .iter()
+      .any(event => {
+        field(event, "stage") == Some(Json::string("desktop-orca-version")) &&
+        field(event, "status") == Some(Json::string("validated")) &&
+        field(field(event, "evidence").unwrap_or(Json::null()), "profilePath") ==
+        Some(Json::string(profile))
+      }),
+    )
+  }
 }

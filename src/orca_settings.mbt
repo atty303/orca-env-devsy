@@ -30,27 +30,76 @@ async fn settings_executable(pid : Int32) -> String {
 }
 
 ///|
-async fn host_orca_location() -> (String, String, String) {
+fn host_orca_user_data() -> String raise {
   let home = environment("HOME")
-  let user_data = @env.get_env_var("ORCA_USER_DATA_PATH")
-    .filter(p => p != "")
-    .unwrap_or(
-      if @async.platform is MacOS {
-        home + "/Library/Application Support/orca"
-      } else {
-        @env.get_env_var("XDG_CONFIG_HOME")
-        .filter(p => p != "")
-        .unwrap_or(home + "/.config") +
-        "/orca"
-      },
-    )
-  let metadata = @json.parse(
-    @fs.read_file(user_data + "/orca-runtime.json").text(),
+  @env.get_env_var("ORCA_USER_DATA_PATH")
+  .filter(p => p != "")
+  .unwrap_or(
+    if @async.platform is MacOS {
+      home + "/Library/Application Support/orca"
+    } else {
+      @env.get_env_var("XDG_CONFIG_HOME")
+      .filter(p => p != "")
+      .unwrap_or(home + "/.config") +
+      "/orca"
+    },
   )
-  let pid = match field(metadata, "pid") {
+}
+
+///|
+async fn host_orca_status(stage : String) -> Json {
+  let cli = if @async.platform is Linux { "orca-ide" } else { "orca" }
+  let output = command(
+    cli,
+    ["status", "--environment", "local", "--json"],
+    stage,
+  )
+  let status = @json.parse(output) catch {
+    _ => {
+      save_diagnostic(stage, "invalid-response", error_type="invalid_json")
+      raise AdapterError("Invalid host Orca status response")
+    }
+  }
+  guard field(status, "ok") == Some(Json::boolean(true)) else {
+    save_diagnostic(stage, "invalid-response", error_type="status_unavailable")
+    raise AdapterError("Cannot query host Orca status")
+  }
+  let result = field(status, "result").unwrap_or(Json::null())
+  let app = field(result, "app").unwrap_or(Json::null())
+  guard field(app, "running") == Some(Json::boolean(true)) else {
+    save_diagnostic(stage, "invalid-response", error_type="app_not_running")
+    raise AdapterError("Host Orca is not running")
+  }
+  let profile_source = match @env.get_env_var("ORCA_USER_DATA_PATH") {
+    None => "unset"
+    Some("") => "empty"
+    Some(_) => "environment"
+  }
+  let progress = Progress::new(stage)
+  let profile = progress.safe_message(host_orca_user_data())
+  save_diagnostic(stage, "validated", evidence={
+    "profileSource": profile_source,
+    "profilePath": profile.unwrap_or("[unavailable]"),
+  })
+  result
+}
+
+///|
+async fn host_orca_location() -> (String, String, String) {
+  let user_data = host_orca_user_data()
+  let status = host_orca_status("host-orca-status")
+  let app = field(status, "app").unwrap_or(Json::null())
+  let pid = match field(app, "pid") {
     Some(Json::Number(value, ..)) if value > 1 && value == value.trunc() =>
       value.to_int()
-    _ => raise AdapterError("Invalid host Orca runtime PID")
+    _ => {
+      save_diagnostic(
+        "host-orca-status",
+        "invalid-response",
+        error_type="invalid_pid",
+      )
+      raise AdapterError("Invalid host Orca runtime PID")
+    }
   }
   let executables = [settings_executable(pid)]
   if @async.platform is Linux {

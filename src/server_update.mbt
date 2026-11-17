@@ -68,20 +68,36 @@ fn server_version_is_older(target : String, current : String) -> Bool raise {
 
 ///|
 async fn desktop_orca_version() -> String {
-  let (executable, resources, _) = host_orca_location()
-  let env = @env.get_env_vars()
-  env.set("ELECTRON_RUN_AS_NODE", "1")
-  env.remove("NODE_OPTIONS")
-  env.remove("NODE_REPL_EXTERNAL_MODULE")
-  let version = command(
-      executable,
-      [resources + "/app.asar/out/cli/index.js", "--version"],
+  let status = host_orca_status("desktop-orca-version")
+  let runtime = field(status, "runtime").unwrap_or(Json::null())
+  guard field(runtime, "reachable") == Some(Json::boolean(true)) else {
+    save_diagnostic(
       "desktop-orca-version",
-      environment=env,
+      "invalid-response",
+      error_type="runtime_unreachable",
     )
-    .trim()
-    .to_owned()
-  ignore(server_version(version))
+    raise AdapterError("Host Orca runtime is not reachable")
+  }
+  let version = match field(runtime, "appVersion") {
+    Some(Json::String(value)) => value
+    _ => {
+      save_diagnostic(
+        "desktop-orca-version",
+        "invalid-response",
+        error_type="invalid_version",
+      )
+      raise AdapterError("Invalid host Orca version")
+    }
+  }
+  let checked = {
+    errdefer save_diagnostic(
+      "desktop-orca-version",
+      "invalid-response",
+      error_type="invalid_version",
+    )
+    server_version(version)
+  }
+  ignore(checked)
   version
 }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, realpath, writeFile, readFile, symlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { run as cleanupRun, processScope, children, stop, terminate, quote, type Environment } from "../../scripts/process.ts";
 import { Orca, latestOrca, type Provision, type Runtime } from "./orca.ts";
 import { interruptibleRun, cleanupDeadline } from "./control.ts";
@@ -68,6 +68,12 @@ try {
   await writeFile(env.HOME + "/.ssh/config", "", { mode: 0o600 });
   await writeFile(sshWrapper, '#!/bin/sh\nexec /usr/bin/ssh -F "$HOME/.ssh/config" "$@"\n', { mode: 0o700 });
   const release = await latestOrca(phase.signal);
+  const cliDirectory = process.platform === "darwin"
+    ? join(dirname(dirname(release.executable)), "Resources", "bin")
+    : join(dirname(release.executable), "resources", "bin");
+  const cliName = process.platform === "linux" ? "orca-ide" : "orca";
+  assert(await Bun.file(join(cliDirectory, cliName)).exists(), "Orca release must provide its CLI");
+  env.PATH = cliDirectory + ":" + env.PATH;
   versions.orca = release.version;
   console.log(`E2E ${provider} ${process.platform}/${process.arch} Orca ${release.version}`);
   const version = async (argv: string[], timeout = budgets.operation) => {
