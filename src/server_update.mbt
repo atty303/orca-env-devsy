@@ -147,12 +147,28 @@ fn server_update_process_script(
   root : String,
   version? : String,
   relay_mode? : String,
+  orca_volume~ : Bool = false,
 ) -> String {
   let script =
     #|const fs = require('fs');
     #|const root = process.argv[1];
     #|const expectedVersion = process.argv[2];
     #|const relayMode = process.argv[3];
+    #|const base = process.argv[4];
+    #|const cp = require('child_process');
+    #|const cli = (args, profile) => {
+    #|  const env = {...process.env, ELECTRON_RUN_AS_NODE:'1'};
+    #|  if (profile) env.ORCA_USER_DATA_PATH = profile;
+    #|  delete env.ORCA_ENVIRONMENT; delete env.ORCA_PAIRING_CODE;
+    #|  const binary = base + '/orca-ide';
+    #|  const serverBinary = base + '/bin/orca-ide';
+    #|  const command = fs.existsSync(serverBinary) ? serverBinary : binary;
+    #|  const prefix = command === binary ? [base + '/resources/app.asar/out/cli/index.js'] : [];
+    #|  const result = JSON.parse(cp.execFileSync(command, [...prefix, ...args, '--json'], {env, encoding:'utf8', timeout:10000, maxBuffer:1048576}));
+    #|  if (!result.ok || !result.result) throw Error('Orca CLI status unavailable');
+    #|  return result;
+    #|};
+    #|const ticks = pid => fs.readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ').pop().split(' ')[19];
     #|const inodes = new Set();
     #|for (const table of ['tcp', 'tcp6']) {
     #|  for (const row of fs.readFileSync('/proc/net/' + table, 'utf8').trim().split('\n').slice(1)) {
@@ -161,19 +177,13 @@ fn server_update_process_script(
     #|  }
     #|}
     #|if (!inodes.size) { if (expectedVersion) throw Error('Orca Server is not listening'); process.exit(0); }
-    #|const owners = [];
-    #|for (const pid of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) {
-    #|  try {
-    #|    const dir = '/proc/' + pid;
-    #|    if (!fs.readdirSync(dir + '/fd').some(fd => { try { return inodes.has(fs.readlinkSync(dir + '/fd/' + fd)); } catch (_) { return false; } })) continue;
-    #|    const args = fs.readFileSync(dir + '/cmdline').toString().split('\0');
-    #|    if (!args.some(x => x.endsWith('/orcad-server.js')) || !args.some((x,i) => x === '--project-root' && args[i+1] === root)) throw Error('Port owner is not the expected Orca Server');
-    #|    owners.push(Number(pid));
-    #|  } catch (e) { if (e.code !== 'ENOENT' && e.code !== 'EACCES' && e.code !== 'EPERM') throw e; }
-    #|}
-    #|if (owners.length !== 1) throw Error('Cannot identify a unique Orca Server port owner');
-    #|const owner = owners[0];
-    #|const identity = fs.readFileSync('/proc/' + owner + '/stat', 'utf8').split(') ').pop().split(' ')[19];
+    #|const status = cli(['status']);
+    #|const owner = status.result.app && status.result.app.pid;
+    #|if (!status.result.app || !status.result.app.running || !Number.isSafeInteger(owner) || owner <= 0 || !status.result.runtime || !status.result.runtime.reachable || !status.result.runtime.runtimeId || !status._meta || status._meta.runtimeId !== status.result.runtime.runtimeId) throw Error('Cannot identify Orca Server from CLI status');
+    #|const ownsSocket = () => fs.readdirSync('/proc/' + owner + '/fd').some(fd => { try { return inodes.has(fs.readlinkSync('/proc/' + owner + '/fd/' + fd)); } catch (_) { return false; } });
+    #|const ownsProject = () => { const args = fs.readFileSync('/proc/' + owner + '/cmdline').toString().split('\0'); return args.some((x, i) => x === '--project-root' && args[i + 1] === root); };
+    #|if (!ownsSocket() || !ownsProject()) throw Error('Orca Server does not own the expected project and listening port');
+    #|const identity = ticks(owner);
     #|if (relayMode) {
     #|  const path = require('path');
     #|  const readEnv = pid => Object.fromEntries(fs.readFileSync('/proc/' + pid + '/environ').toString().split('\0').filter(x => x.includes('=')).map(x => { const i = x.indexOf('='); return [x.slice(0, i), x.slice(i + 1)]; }));
@@ -182,46 +192,28 @@ fn server_update_process_script(
     #|  if (!profile || !path.isAbsolute(profile)) throw Error('Cannot identify Orca Server profile');
     #|  const realProfile = fs.realpathSync(profile);
     #|  const serverInstance = serverEnv.DEVSY_GH_INSTANCE || '';
-    #|  const daemonDir = path.join(realProfile, 'daemon');
-    #|  let entries;
-    #|  try { entries = fs.readdirSync(daemonDir); } catch (e) { if (e.code !== 'ENOENT') throw e; entries = []; }
-    #|  const records = new Map();
-    #|  let invalidRecord = false;
-    #|  for (const file of entries.filter(x => /^daemon-v[^/]+\.pid$/.test(x))) {
-    #|    let record;
-    #|    try { record = JSON.parse(fs.readFileSync(path.join(daemonDir, file), 'utf8')); } catch (e) { if (e instanceof SyntaxError) { invalidRecord = true; continue; } throw e; }
-    #|    if (!record || !Number.isSafeInteger(record.pid) || record.pid <= 0 || typeof record.linuxStartTicks !== 'string' && typeof record.linuxStartTicks !== 'number' || typeof record.entryPath !== 'string' || records.has(record.pid)) { invalidRecord = true; continue; }
-    #|    records.set(record.pid, record);
-    #|  }
-    #|  const daemons = [];
-    #|  const uid = fs.statSync('/proc/' + owner).uid;
-    #|  for (const pid of fs.readdirSync('/proc').filter(x => /^\d+$/.test(x))) {
-    #|    let stat;
-    #|    try { stat = fs.statSync('/proc/' + pid); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
-    #|    if (stat.uid !== uid) continue;
-    #|    let args;
-    #|    try { args = fs.readFileSync('/proc/' + pid + '/cmdline').toString().split('\0'); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') continue; throw Error('Cannot inspect Orca daemon processes'); }
-    #|    if (!args.some(x => x.endsWith('/daemon-entry.js'))) continue;
+    #|  const daemonStatus = cli(['terminal-daemon', 'status'], realProfile);
+    #|  if (!daemonStatus._meta || daemonStatus._meta.runtimeId !== status._meta.runtimeId || !daemonStatus.result.daemon) throw Error('Cannot identify Orca daemon from CLI status');
+    #|  const reported = daemonStatus.result.daemon;
+    #|  if (reported.verdict === 'live' && daemonStatus.result.severed && daemonStatus.result.severed.pid !== reported.pid) throw Error('Cannot identify a unique Orca daemon');
+    #|  if (reported.verdict !== 'live' && reported.verdict !== 'exited') throw Error('Orca daemon status is unverifiable');
+    #|  let daemon;
+    #|  if (reported.verdict === 'live') {
+    #|    const pid = reported.pid;
+    #|    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === owner || fs.statSync('/proc/' + pid).uid !== fs.statSync('/proc/' + owner).uid) throw Error('Cannot verify Orca daemon ownership');
+    #|    const start = ticks(pid);
     #|    let env;
-    #|    try { env = readEnv(pid); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') continue; throw Error('Cannot read Orca daemon environment'); }
+    #|    try { env = readEnv(pid); } catch (_) { throw Error('Cannot read Orca daemon environment'); }
     #|    const daemonProfile = env.ORCA_USER_DATA || env.ORCA_USER_DATA_PATH || env.ORCA_SERVE_USER_DATA_PATH;
-    #|    if (!daemonProfile) throw Error('Cannot identify Orca daemon profile');
-    #|    if (fs.realpathSync(daemonProfile) !== realProfile) continue;
-    #|    if (invalidRecord) throw Error('Invalid or ambiguous Orca daemon PID records');
-    #|    const record = records.get(Number(pid));
-    #|    const ticks = fs.readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ').pop().split(' ')[19];
-    #|    if (!record || String(record.linuxStartTicks) !== ticks || !args.includes(record.entryPath)) throw Error('Cannot verify Orca daemon ownership');
-    #|    const boot = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-    #|    if (typeof record.bootId !== 'string' || record.bootId !== boot) throw Error('Cannot verify Orca daemon boot identity');
-    #|    daemons.push({pid:Number(pid), ticks, entry:record.entryPath, instance:env.DEVSY_GH_INSTANCE || ''});
+    #|    if (!daemonProfile || fs.realpathSync(daemonProfile) !== realProfile) throw Error('Cannot verify Orca daemon profile');
+    #|    const confirmed = cli(['terminal-daemon', 'status'], realProfile);
+    #|    if (!confirmed._meta || confirmed._meta.runtimeId !== status._meta.runtimeId || !confirmed.result.daemon || confirmed.result.daemon.verdict !== 'live' || confirmed.result.daemon.pid !== pid || confirmed.result.severed && confirmed.result.severed.pid !== pid || ticks(pid) !== start || ticks(owner) !== identity) throw Error('Orca daemon ownership changed');
+    #|    daemon = {pid, ticks:start, instance:env.DEVSY_GH_INSTANCE || ''};
     #|  }
-    #|  if (daemons.length > 1) throw Error('Cannot identify a unique Orca daemon');
-    #|  const daemon = daemons[0];
     #|  const daemonInstance = daemon ? daemon.instance : null;
     #|  if (serverInstance.length > 1024 || daemonInstance && daemonInstance.length > 1024) throw Error('Orca relay instance exceeds limit');
     #|  let relayInstance = null;
     #|  if (serverInstance || daemonInstance || relayMode === 'verify-required') {
-    #|    const cp = require('child_process');
     #|    const raw = cp.execFileSync('curl', ['--disable', '--noproxy', '*', '--silent', '--show-error', '--fail', '--max-time', '2', '--max-filesize', '4096', 'http://localhost:12049/ready'], {encoding:'utf8', timeout:3000});
     #|    const ready = JSON.parse(raw);
     #|    if (typeof ready.instance !== 'string' || !ready.instance || ready.instance.length > 1024) throw Error('Relay instance unavailable');
@@ -235,22 +227,21 @@ fn server_update_process_script(
     #|  global.relayDaemon = daemon;
     #|}
     #|if (expectedVersion) {
-    #|  const env = fs.readFileSync('/proc/' + owners[0] + '/environ').toString().split('\0');
+    #|  const env = fs.readFileSync('/proc/' + owner + '/environ').toString().split('\0');
     #|  if (!env.includes(expectedVersion)) throw Error('Listening Orca Server is not the updated process');
     #|  process.exit(0);
     #|}
     #|const currentStat = fs.readFileSync('/proc/' + owner + '/stat', 'utf8').split(') ').pop().split(' ')[19];
-    #|const currentArgs = fs.readFileSync('/proc/' + owner + '/cmdline').toString().split('\0');
-    #|if (identity !== currentStat || !currentArgs.some(x => x.endsWith('/orcad-server.js')) || !currentArgs.some((x,i) => x === '--project-root' && currentArgs[i+1] === root) || !fs.readdirSync('/proc/' + owner + '/fd').some(fd => { try { return inodes.has(fs.readlinkSync('/proc/' + owner + '/fd/' + fd)); } catch (_) { return false; } })) throw Error('Orca Server ownership changed');
+    #|if (identity !== currentStat || !ownsSocket() || !ownsProject()) throw Error('Orca Server ownership changed');
     #|process.kill(owner, 'SIGTERM');
     #|const deadline = Date.now() + 10000;
     #|const finish = () => {
     #|  const daemon = global.relayDaemon;
     #|  if (!daemon) { if (relayMode) process.stdout.write(JSON.stringify(global.relayEvidence)); return; }
     #|  const dir = '/proc/' + daemon.pid;
-    #|  let stat, args;
-    #|  try { stat = fs.readFileSync(dir + '/stat', 'utf8'); args = fs.readFileSync(dir + '/cmdline').toString().split('\0'); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') { process.stdout.write(JSON.stringify(global.relayEvidence)); return; } throw e; }
-    #|  if (stat.split(') ').pop().split(' ')[19] !== daemon.ticks || !args.includes(daemon.entry)) throw Error('Orca daemon ownership changed');
+    #|  let stat;
+    #|  try { stat = fs.readFileSync(dir + '/stat', 'utf8'); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') { process.stdout.write(JSON.stringify(global.relayEvidence)); return; } throw e; }
+    #|  if (stat.split(') ').pop().split(' ')[19] !== daemon.ticks) throw Error('Orca daemon ownership changed');
     #|  process.kill(daemon.pid, 'SIGTERM');
     #|  const daemonDeadline = Date.now() + 10000;
     #|  const waitDaemon = () => { try { const current = fs.readFileSync(dir + '/stat', 'utf8'); if (/\) Z /.test(current)) { process.stdout.write(JSON.stringify(global.relayEvidence)); return; } if (current.split(') ').pop().split(' ')[19] !== daemon.ticks) throw Error('Orca daemon identity changed while stopping'); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ESRCH') { process.stdout.write(JSON.stringify(global.relayEvidence)); return; } throw e; } if (Date.now() >= daemonDeadline) throw Error('Orca daemon did not stop'); setTimeout(waitDaemon, 100); };
@@ -263,6 +254,11 @@ fn server_update_process_script(
   } else {
     ""
   }) +
+  (if orca_volume {
+    "export ORCA_USER_DATA_PATH=/worktrees/.orca; "
+  } else {
+    ""
+  }) +
   orca_remote_functions() +
   "if test ! -e \"$base\"; then base=\"$HOME/.local/share/orca-env-devsy/orca/update-previous\"; fi; orca_node -e " +
   quote(script) +
@@ -271,7 +267,8 @@ fn server_update_process_script(
   " " +
   quote(version.unwrap_or("")) +
   " " +
-  quote(relay_mode.unwrap_or(""))
+  quote(relay_mode.unwrap_or("")) +
+  " \"$base\""
 }
 
 ///|
@@ -422,7 +419,10 @@ async fn update_one_server(
     ignore(
       update_remote(
         state,
-        server_update_process_script(required(state, "projectRoot")),
+        server_update_process_script(
+          required(state, "projectRoot"),
+          orca_volume=field(state, "orcaVolume") is Some(_),
+        ),
         "server-update-stop",
       ),
     )
@@ -471,6 +471,7 @@ async fn update_one_server(
         server_update_process_script(
           required(state, "projectRoot"),
           version=marker_name + "=" + launch_id,
+          orca_volume=field(state, "orcaVolume") is Some(_),
         ),
         "server-update-verify-owner",
       ),

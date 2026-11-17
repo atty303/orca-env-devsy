@@ -27,6 +27,7 @@ async fn server_relay_check(
       server_update_process_script(
         required(state, "projectRoot"),
         relay_mode=mode,
+        orca_volume=field(state, "orcaVolume") is Some(_),
       ),
     ),
     stage,
